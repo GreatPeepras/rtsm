@@ -18,6 +18,23 @@ import numpy as np
 import torch
 import cv2
 
+# ---------- depth coordinate mapping ----------
+
+def _depth_coords(
+    ys: np.ndarray, xs: np.ndarray,
+    depth_shape: Tuple[int, int], mask_shape: Tuple[int, int],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Map mask-space (y, x) to depth-space.  No-op when shapes match."""
+    dh, dw = depth_shape
+    mh, mw = mask_shape
+    if dh == mh and dw == mw:
+        return ys, xs
+    sy = dh / mh
+    sx = dw / mw
+    dy = np.clip((ys * sy).astype(int), 0, dh - 1)
+    dx = np.clip((xs * sx).astype(int), 0, dw - 1)
+    return dy, dx
+
 # ---------- erosion helper ----------
 
 def _erode_mask(mask: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
@@ -65,7 +82,12 @@ def _depth_quantiles(mask: torch.Tensor, depth_m: np.ndarray, erode_px: int = 0)
     if erode_px > 0:
         mask = _erode_mask(mask, kernel_size=erode_px * 2 + 1)
     m = mask.contiguous().numpy()
-    z = depth_m[m]
+    ys, xs = np.where(m)
+    if ys.size == 0:
+        return 0.0, None, None
+    # Map mask-space coords to depth-space (no-op when resolutions match)
+    dy, dx = _depth_coords(ys, xs, depth_m.shape, m.shape)
+    z = depth_m[dy, dx]
     good = np.isfinite(z) & (z > 0.0)
     if not good.any(): return 0.0, None, None  # valid_pct, p50, spread
     zg = z[good]
@@ -86,6 +108,7 @@ def _centroid_cam(mask: torch.Tensor, depth_m: np.ndarray,
     """Compute 3D centroid in camera frame from mask and depth.
 
     Uses fast vectorized single-pixel depth sampling.
+    Handles depth at different resolution than mask (coordinate scaling).
     """
     # Optionally erode mask to avoid edge depth artifacts
     if erode_px > 0:
@@ -96,11 +119,13 @@ def _centroid_cam(mask: torch.Tensor, depth_m: np.ndarray,
     ys = ys[::stride]; xs = xs[::stride]
     if ys.size == 0: return None
 
-    # Fast vectorized single-pixel depth sampling
-    z = depth_m[ys, xs].astype(np.float32)
+    # Map to depth-space for lookup (no-op when resolutions match)
+    dy, dx = _depth_coords(ys, xs, depth_m.shape, m.shape)
+    z = depth_m[dy, dx].astype(np.float32)
 
     good = np.isfinite(z) & (z > 0.0)
     if not good.any(): return None
+    # Keep RGB-space coords for back-projection (intrinsics are RGB-space)
     ys = ys[good].astype(np.float32)
     xs = xs[good].astype(np.float32)
     z  = z[good]
@@ -131,10 +156,13 @@ def _sample_cam_points_from_mask(
     xs = xs[::stride]
     if ys.size == 0:
         return None
-    z = depth_m[ys, xs].astype(np.float32)
+    # Map to depth-space for lookup (no-op when resolutions match)
+    dy, dx = _depth_coords(ys, xs, depth_m.shape, m.shape)
+    z = depth_m[dy, dx].astype(np.float32)
     good = np.isfinite(z) & (z > 0.0)
     if not good.any():
         return None
+    # Keep RGB-space coords for back-projection (intrinsics are RGB-space)
     ys = ys[good].astype(np.float32)
     xs = xs[good].astype(np.float32)
     z  = z[good]

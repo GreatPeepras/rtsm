@@ -104,3 +104,48 @@ def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> NDArray[n
         [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
         [-sp,     cp * sr,                cp * cr               ]
     ], dtype=np.float32)
+
+
+def rotmat_to_quat_xyzw(R: NDArray[np.float32]) -> NDArray[np.float32]:
+    """
+    Convert a 3x3 rotation matrix to quaternion [x, y, z, w].
+
+    Uses Shepperd's method for numerical stability (avoids division
+    by near-zero when trace is small).
+
+    Args:
+        R: 3x3 rotation matrix (SO(3))
+
+    Returns:
+        Quaternion as numpy array [x, y, z, w] (Hamilton convention)
+    """
+    trace = float(R[0, 0] + R[1, 1] + R[2, 2])
+
+    if trace > 0:
+        s = 0.5 / math.sqrt(trace + 1.0)
+        w = 0.25 / s
+        x = (R[2, 1] - R[1, 2]) * s
+        y = (R[0, 2] - R[2, 0]) * s
+        z = (R[1, 0] - R[0, 1]) * s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + float(R[0, 0]) - float(R[1, 1]) - float(R[2, 2]))
+        w = (R[2, 1] - R[1, 2]) / s
+        x = 0.25 * s
+        y = (R[0, 1] + R[1, 0]) / s
+        z = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + float(R[1, 1]) - float(R[0, 0]) - float(R[2, 2]))
+        w = (R[0, 2] - R[2, 0]) / s
+        x = (R[0, 1] + R[1, 0]) / s
+        y = 0.25 * s
+        z = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = 2.0 * math.sqrt(1.0 + float(R[2, 2]) - float(R[0, 0]) - float(R[1, 1]))
+        w = (R[1, 0] - R[0, 1]) / s
+        x = (R[0, 2] + R[2, 0]) / s
+        y = (R[1, 2] + R[2, 1]) / s
+        z = 0.25 * s
+
+    q = np.array([x, y, z, w], dtype=np.float32)
+    q /= float(np.linalg.norm(q) + 1e-12)
+    return q

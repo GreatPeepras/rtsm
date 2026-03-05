@@ -50,9 +50,20 @@ clip:
 
 # -------------------- I/O & Network --------------------
 io:
-  # ZMQ endpoints for dual-socket subscription
-  camera_endpoint: tcp://172.27.240.1:5555    # D435i camera.rgbd topic
-  rtabmap_endpoint: tcp://127.0.0.1:6000      # RTABMap pose topics
+  # Receiver backend: zeromq (D435i + RTABMap) or websocket (Calabi Lens ARKit)
+  receiver: zeromq                              # zeromq | websocket
+
+  # ZMQ endpoints for dual-socket subscription (only when receiver: zeromq)
+  camera_endpoint: tcp://172.27.240.1:5555      # D435i camera.rgbd topic
+  rtabmap_endpoint: tcp://127.0.0.1:6000        # RTABMap pose topics
+
+  # WebSocket receiver config (only when receiver: websocket)
+  websocket:
+    host: "0.0.0.0"
+    port: 8765
+    require_tracking_normal: true               # drop frames where tracking_state != "normal"
+    keyframe_every_n: 30                        # mark every Nth frame as keyframe
+    nonkf_min_interval_s: 0.5                   # throttle non-KF to max ~2/s
 
 units:
   # Convert incoming values to meters at ingestion
