@@ -15,7 +15,7 @@ from rtsm.stores.sweep_cache import SweepCache
 from rtsm.io.ingest_queue import IngestQueue
 from rtsm.io.zeromq import ZeroMQSubscriber
 from rtsm.io.websocket import WebSocketReceiver
-from rtsm.utils.net import print_server_addresses
+from rtsm.utils.net import print_server_addresses, get_local_ipv4_addresses
 from rtsm.stores.sweep_policy import SweepPolicy
 from rtsm.api.server import create_app, start_server, ResetComponents
 
@@ -104,6 +104,10 @@ def main():
         )
         logger.info("Visualization server initialized")
 
+    # Resolve display IP (use real network IP instead of 0.0.0.0)
+    local_ips = get_local_ipv4_addresses()
+    display_host = local_ips[0] if local_ips else "0.0.0.0"
+
     # ---------------- Receiver (ZMQ or WebSocket) ----------------
     io_cfg = cfg.get("io", {})
     units_cfg = cfg.get("units", {})
@@ -121,11 +125,12 @@ def main():
             require_tracking_normal=bool(ws_cfg.get("require_tracking_normal", True)),
             keyframe_every_n=int(ws_cfg.get("keyframe_every_n", 30)),
             nonkf_min_interval_s=float(ws_cfg.get("nonkf_min_interval_s", 0.5)),
+            on_keyframe=vis_server.handle_frame_packet if vis_server else None,
         )
         ws_receiver.start()
         ws_port = int(ws_cfg.get("port", 8765))
         print_server_addresses(ws_port)
-        logger.info(f"WebSocket receiver started on port {ws_port}")
+        logger.info(f"WebSocket receiver started on ws://{display_host}:{ws_port}/stream")
 
     elif receiver_type == "zeromq":
         sub = ZeroMQSubscriber(
@@ -150,7 +155,8 @@ def main():
     # Start visualization server if enabled
     if vis_server:
         vis_server.start()
-        logger.info(f"Visualization WebSocket server started on port {vis_cfg.get('port', 8081)}")
+        vis_port_val = vis_cfg.get("port", 8081)
+        logger.info(f"Visualization server started on ws://{display_host}:{vis_port_val}/ws")
 
     pipe = Pipeline(
         cfg=cfg,
@@ -187,21 +193,21 @@ def main():
         reset_components=reset_components,
     )
     start_server(app, host=host, port=port)
-    logger.info(f"FastAPI server started on http://{host}:{port}")
+    logger.info(f"FastAPI server started on http://{display_host}:{port}")
 
     print("=" * 60)
     print("  RTSM is running! Waiting for data...")
     if receiver_type == "websocket":
         ws_port = int(io_cfg.get("websocket", {}).get("port", 8765))
-        print(f"  Receiver: WebSocket (ws://0.0.0.0:{ws_port}/stream)")
+        print(f"  Receiver: WebSocket (ws://{display_host}:{ws_port}/stream)")
     else:
         print(f"  Receiver: ZeroMQ")
         print(f"  Camera:  {io_cfg.get('camera_endpoint', 'tcp://127.0.0.1:5555')}")
         print(f"  RTABMap: {io_cfg.get('rtabmap_endpoint', 'tcp://127.0.0.1:6000')}")
-    print(f"  API:     http://{host}:{port}")
+    print(f"  API:     http://{display_host}:{port}")
     if vis_server:
         vis_port = vis_cfg.get("port", 8081)
-        print(f"  Vis WS:  ws://0.0.0.0:{vis_port}/ws")
+        print(f"  Vis WS:  ws://{display_host}:{vis_port}/ws")
     print("  Press Ctrl+C to stop")
     print("=" * 60)
 
