@@ -196,6 +196,7 @@ class WebSocketReceiver:
         require_tracking_normal: bool = True,
         keyframe_every_n: int = 30,
         nonkf_min_interval_s: float = 0.5,
+        on_keyframe: Optional[callable] = None,
     ) -> None:
         self.ingest_q = ingest_queue
         self._host = host
@@ -203,6 +204,7 @@ class WebSocketReceiver:
         self._require_tracking_normal = require_tracking_normal
         self._keyframe_every_n = max(1, keyframe_every_n)
         self._nonkf_min_interval_s = nonkf_min_interval_s
+        self._on_keyframe = on_keyframe
 
         # Per-session state (reset on each new client connection)
         self._frame_count: int = 0
@@ -306,6 +308,12 @@ class WebSocketReceiver:
                             self._last_enq_ts_ns = pkt.time.t_sensor_ns
                             if not pkt.is_keyframe:
                                 self._last_nonkf_enq_mono = time.monotonic()
+                            # Forward keyframes to visualization server
+                            if pkt.is_keyframe and self._on_keyframe is not None:
+                                try:
+                                    self._on_keyframe(pkt)
+                                except Exception as e:
+                                    logger.error(f"[websocket] on_keyframe callback error: {e}")
                             frame_type = "KF" if pkt.is_keyframe else "frame"
                             logger.debug(
                                 f"[websocket] enqueued {frame_type} "

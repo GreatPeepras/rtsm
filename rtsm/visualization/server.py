@@ -20,6 +20,7 @@ from typing import Optional, Callable, Any, Dict, List
 from contextlib import asynccontextmanager
 
 import numpy as np
+import cv2
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -393,6 +394,73 @@ class VisualizationServer:
                     self._loop
                 )
             logger.debug(f"[visualization] Pose updated for KF {mesh_id} (BA/LC)")
+
+    def handle_frame_packet(self, pkt) -> None:
+        """
+        Handle a decoded FramePacket from the WebSocket receiver.
+
+        Generates a point cloud from the already-decoded RGB + depth + pose
+        and broadcasts it to visualization clients. Called from the WebSocket
+        receiver thread for keyframes only.
+        """
+        try:
+            if pkt.depth_m is None or pkt.pose is None or pkt.intr is None:
+                return
+
+            mesh_id = f"ws_{pkt.time.seq}"
+
+            # Build 3x3 intrinsics matrix
+            K = np.array([
+                [pkt.intr.fx, 0, pkt.intr.cx],
+                [0, pkt.intr.fy, pkt.intr.cy],
+                [0, 0, 1],
+            ], dtype=np.float32)
+
+            rgb = pkt.rgb
+            depth_m = pkt.depth_m
+
+            # Resize depth to RGB resolution if mismatched (ARKit LiDAR 256x192 vs RGB 640x480)
+            rgb_h, rgb_w = rgb.shape[:2]
+            dep_h, dep_w = depth_m.shape[:2]
+            if dep_h != rgb_h or dep_w != rgb_w:
+                depth_m = cv2.resize(depth_m, (rgb_w, rgb_h), interpolation=cv2.INTER_NEAREST)
+
+            # Filter and back-project
+            depth_filtered = self.processor.filter_depth(depth_m)
+            positions, colors = self.processor.backproject(depth_filtered, rgb, K)
+
+            if positions.shape[0] == 0:
+                logger.debug(f"[visualization] Frame {mesh_id} produced 0 points, skipping")
+                return
+
+            # Build 4x4 T_wc pose
+            pose = pkt.pose.T_wc()
+
+            # Debug: log pose translation
+            t_vis = pose[:3, 3]
+            logger.debug(f"[visualization] WS frame {mesh_id} pose: [{t_vis[0]:.3f}, {t_vis[1]:.3f}, {t_vis[2]:.3f}]")
+
+            # Register and broadcast
+            self.registry.register(
+                mesh_id=mesh_id,
+                timestamp_ns=int(pkt.time.t_sensor_ns or 0),
+                positions=positions,
+                colors=colors,
+                pose=pose,
+                map_id="websocket",
+            )
+
+            if self._loop and self._running:
+                asyncio.run_coroutine_threadsafe(
+                    self.broadcaster.send_mesh_create(mesh_id, positions, colors, pose),
+                    self._loop,
+                )
+
+            stats = self.registry.stats()
+            logger.debug(f"[visualization] WS {mesh_id}: {positions.shape[0]:,} pts | Total: {stats['keyframes']} KFs")
+
+        except Exception as e:
+            logger.error(f"[visualization] Error processing frame packet: {e}")
 
     def _run_server(self) -> None:
         """Run uvicorn server in background thread."""
