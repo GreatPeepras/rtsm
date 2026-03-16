@@ -10,6 +10,7 @@ from PIL import Image
 
 from rtsm.utils.mask_staging import run_heuristics, MaskStats
 from rtsm.utils.prepare_ann import prepare_ann
+from rtsm.utils.transforms import orientation_to_rot90_k, rotate_image, unrotate_masks
 from rtsm.utils.periodic_logger import PeriodicLogger
 from rtsm.models.segmentation import SegmentationAdapter, SegmentationResult
 from rtsm.models.clip.adapter import CLIPAdapter
@@ -125,7 +126,8 @@ class Pipeline:
                 H, W = snap.rgb.shape[:2]
                 Z = None
                 if snap.depth_m is not None:
-                    zc = float(snap.depth_m[H//2, W//2])
+                    dH, dW = snap.depth_m.shape[:2]
+                    zc = float(snap.depth_m[dH//2, dW//2])
                     if np.isfinite(zc) and zc > 0:
                         Z = zc
                 ts_ns = int(pkt.time.t_sensor_ns or 0)
@@ -167,9 +169,14 @@ class Pipeline:
             return
 
         # 1) segmentation -> masks
-        # SegmentationAdapter expects a PIL.Image
-        rgb_img = snap.rgb
-        pil_img = Image.fromarray(rgb_img) if isinstance(rgb_img, np.ndarray) else rgb_img
+        # Determine ML rotation from device orientation (opt-in: no rotation when absent)
+        rot_k = 0
+        if pkt is not None:
+            rot_k = orientation_to_rot90_k(getattr(pkt, 'device_orientation', None))
+
+        # SegmentationAdapter expects a PIL.Image — rotate to gravity-aligned for ML
+        rgb_for_seg = rotate_image(snap.rgb, rot_k) if rot_k else snap.rgb
+        pil_img = Image.fromarray(rgb_for_seg) if isinstance(rgb_for_seg, np.ndarray) else rgb_for_seg
 
         # Get segmentation vocab from config (for open-vocab models like YOLO-World)
         seg_cfg = self.cfg.get("segmentation", {})
@@ -185,28 +192,78 @@ class Pipeline:
             # Fallback for detection-only models (no masks)
             ann_bool = torch.empty(0, pil_img.height, pil_img.width, dtype=torch.bool)
 
+        # Rotate masks back to original sensor space (geometry stays untouched)
+        if rot_k and ann_bool.shape[0] > 0:
+            ann_bool = unrotate_masks(ann_bool, rot_k)
+
+        if rot_k:
+            logger.debug(f"[pipeline] applied {rot_k*90}° CCW rotation for {pkt.device_orientation} orientation")
+
         n_masks = int(ann_bool.shape[0]) if hasattr(ann_bool, 'shape') else 0
 
         # 2) heuristics -> keep + stats
+        #    Overlay per-frame intrinsics so mask staging uses the actual camera,
+        #    not the static YAML defaults (critical for WebSocket/ARKit path).
+        heur_cfg = self.cfg
+        if snap.intrinsics:
+            heur_cfg = {**self.cfg, "camera": {**self.cfg.get("camera", {}), **snap.intrinsics}}
+            # Also propagate width/height from the actual frame
+            h_frame, w_frame = snap.rgb.shape[:2]
+            heur_cfg["camera"]["width"] = w_frame
+            heur_cfg["camera"]["height"] = h_frame
+        # Safety: if mask resolution differs from RGB (e.g. retina_masks=False
+        # or a different segmentation backend), scale intrinsics to mask space
+        # so _centroid_cam back-projects with consistent coordinates.
+        mask_hw = None
+        if ann_bool.shape[0] > 0:
+            mask_h, mask_w = ann_bool.shape[1], ann_bool.shape[2]
+            rgb_h_frame, rgb_w_frame = snap.rgb.shape[:2]
+            if mask_h != rgb_h_frame or mask_w != rgb_w_frame:
+                mask_hw = (mask_h, mask_w)
+                sx = mask_w / rgb_w_frame
+                sy = mask_h / rgb_h_frame
+                cam = heur_cfg.get("camera", {})
+                heur_cfg = {**heur_cfg, "camera": {
+                    **cam,
+                    "fx": float(cam.get("fx", 0)) * sx,
+                    "fy": float(cam.get("fy", 0)) * sy,
+                    "cx": float(cam.get("cx", 0)) * sx,
+                    "cy": float(cam.get("cy", 0)) * sy,
+                    "width": mask_w,
+                    "height": mask_h,
+                }}
+                logger.debug(
+                    f"mask/RGB resolution mismatch ({mask_w}x{mask_h} vs "
+                    f"{rgb_w_frame}x{rgb_h_frame}), scaled intrinsics to mask space"
+                )
+
         kept_masks, stats = run_heuristics(
             ann_bool,
             snap.depth_m,
-            cfg=self.cfg,
+            cfg=heur_cfg,
         )
         logger.debug(f"staging: kept {len(kept_masks)}/{n_masks} masks after heuristics")
 
         # 3) compute priorities (soft-features) and pick top-K
-        cands = self._score_and_select(kept_masks, stats)
-        
+        #    Use mask resolution for frame_hw when masks differ from RGB
+        select_hw = mask_hw if mask_hw else snap.rgb.shape[:2]
+        cands = self._score_and_select(kept_masks, stats, frame_hw=select_hw)
+
         # 4) pre-CLIP crop only top-K, then batch encode
-        self._make_crops_inplace(cands, snap.rgb)
+        #    Crops are extracted from original (sensor-space) RGB, then rotated
+        #    to gravity-aligned for better CLIP classification quality.
+        self._make_crops_inplace(cands, snap.rgb, rot_k=rot_k)
         self._clip_batch_inplace(cands)
 
         # 5) associate and update memory/index (if components provided)
         m, c = 0, 0
         is_kf = bool(pkt.is_keyframe) if pkt is not None else False
+        # Build frame_id for WM pose correction tracking (matches vis server mesh_id)
+        frame_id = None
+        if pkt is not None and pkt.time.seq is not None:
+            frame_id = f"ws_{pkt.time.seq}"
         if self.associator is not None and self.working_mem is not None and self.proximity_index is not None:
-            stats_assoc = self.associator.update_with_candidates(cands, snap, self.working_mem, self.proximity_index, is_keyframe=is_kf)
+            stats_assoc = self.associator.update_with_candidates(cands, snap, self.working_mem, self.proximity_index, is_keyframe=is_kf, frame_id=frame_id)
             try:
                 if isinstance(stats_assoc, dict):
                     m = int(stats_assoc.get("matched", 0))
@@ -266,7 +323,9 @@ class Pipeline:
         try:
             if pkt.pose is not None:
                 T_wc = pkt.pose.T_wc()
-                # Debug: log T_wc before inversion (periodically)
+                # Note: ARKit→OpenCV camera flip is applied at ingestion
+                # (WebSocketReceiver) so T_wc is already in OpenCV convention.
+                # Debug: log T_wc (periodically)
                 if not hasattr(self, '_pipe_pose_log_count'):
                     self._pipe_pose_log_count = 0
                 self._pipe_pose_log_count += 1
@@ -274,7 +333,7 @@ class Pipeline:
                     t_raw = pkt.pose.t_wc
                     t_from_matrix = T_wc[:3, 3]
                     logger.debug(f"[pipeline] pkt.pose.t_wc={t_raw}, T_wc[:3,3]={t_from_matrix}")
-                # inverse to get T_cam_world
+                # inverse to get T_cam_world (maps world → OpenCV camera frame)
                 R = T_wc[:3, :3]
                 t = T_wc[:3, 3]
                 T = np.eye(4, dtype=np.float32)
@@ -285,7 +344,8 @@ class Pipeline:
         return Snapshot(rgb=rgb, depth_m=depth_m, intrinsics=intr, pose_cam_T_world=T), pkt
 
     def _score_and_select(
-        self, masks: List[torch.Tensor], stats: List[MaskStats]
+        self, masks: List[torch.Tensor], stats: List[MaskStats],
+        frame_hw: Optional[Tuple[int, int]] = None,
     ) -> List[Candidate]:
         """
         This function takes a list of candidate masks and their computed statistics,
@@ -309,7 +369,10 @@ class Pipeline:
         The returned list is sorted in descending order of priority.
         """
         
-        H, W = self.cfg.get("camera",{}).get("height"), self.cfg.get("camera",{}).get("width")
+        if frame_hw is not None:
+            H, W = frame_hw
+        else:
+            H, W = self.cfg.get("camera",{}).get("height"), self.cfg.get("camera",{}).get("width")
         # weights from cfg with safe defaults
         w_cov   = float(self.cfg.get("staging",{}).get("w_coverage", 1.0))
         w_edge  = float(self.cfg.get("staging",{}).get("w_border_fraction", -2.0))
@@ -434,11 +497,11 @@ class Pipeline:
 
         return kept[:topK]
 
-    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray):
+    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray, rot_k: int = 0):
         pad = int(self.cfg.get("staging",{}).get("crop_pad_px", 6))
         size = int(self.cfg.get("staging",{}).get("clip_input", 224))
         H, W, _ = rgb.shape
-        
+
         for c in cands:
             x0, y0, x1, y1 = c.stats.bbox  # x1/y1 are exclusive (as we computed earlier)
 
@@ -455,6 +518,10 @@ class Pipeline:
             if crop.size == 0:
                 c.crop = None
                 continue
+
+            # Rotate crop to gravity-aligned for better CLIP quality
+            if rot_k:
+                crop = rotate_image(crop, rot_k)
 
             crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_LINEAR)
             c.crop = crop

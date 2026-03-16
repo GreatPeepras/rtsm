@@ -38,9 +38,14 @@ logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = 1
 
 # Supported format values
-_RGB_FORMATS = {"jpeg", "png", "bgra"}
+_RGB_FORMATS = {"jpeg", "png", "bgra", "nv12"}
 _DEPTH_FORMATS = {"uint16_mm", "float32_m", "png_uint16"}
 _POSE_FORMATS = {"matrix4x4_col_major", "quat_translation"}
+
+# ARKit camera (Y-up, Z-toward-viewer) → OpenCV camera (Y-down, Z-forward)
+# Right-multiplying T_wc by this converts camera columns from ARKit to OpenCV
+# convention. diag(1, -1, -1, 1) is its own inverse.
+_ARKIT_TO_OPENCV = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
 
 
 # ─────────────────── Data Conversion Functions ───────────────────
@@ -52,7 +57,7 @@ def decode_rgb(raw: bytes, fmt: str, width: int, height: int) -> np.ndarray:
 
     Args:
         raw: Raw byte payload.
-        fmt: ``"jpeg"`` | ``"png"`` | ``"bgra"``.
+        fmt: ``"jpeg"`` | ``"png"`` | ``"bgra"`` | ``"nv12"``.
         width, height: Expected image dimensions.
 
     Returns:
@@ -76,6 +81,17 @@ def decode_rgb(raw: bytes, fmt: str, width: int, height: int) -> np.ndarray:
             )
         img = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)
         return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+    elif fmt == "nv12":
+        # NV12: Y plane (H*W) + interleaved UV plane (H/2 * W)
+        # Total bytes = H * W * 3 / 2
+        expected = height * width * 3 // 2
+        if len(raw) != expected:
+            raise ValueError(
+                f"nv12 buffer size mismatch: got {len(raw)}, "
+                f"expected {expected} ({width}x{height} * 1.5)"
+            )
+        yuv = np.frombuffer(raw, dtype=np.uint8).reshape(height * 3 // 2, width)
+        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
     else:
         raise ValueError(f"Unsupported rgb_format: {fmt!r}")
 
@@ -196,7 +212,11 @@ class WebSocketReceiver:
         require_tracking_normal: bool = True,
         keyframe_every_n: int = 30,
         nonkf_min_interval_s: float = 0.5,
+        confidence_threshold: int = 1,
+        apply_camera_flip: bool = False,
         on_keyframe: Optional[callable] = None,
+        on_pose_corrections: Optional[callable] = None,
+        on_pose_corrections_batch: Optional[callable] = None,
     ) -> None:
         self.ingest_q = ingest_queue
         self._host = host
@@ -204,7 +224,11 @@ class WebSocketReceiver:
         self._require_tracking_normal = require_tracking_normal
         self._keyframe_every_n = max(1, keyframe_every_n)
         self._nonkf_min_interval_s = nonkf_min_interval_s
+        self._confidence_threshold = confidence_threshold
+        self._apply_camera_flip = apply_camera_flip
         self._on_keyframe = on_keyframe
+        self._on_pose_corrections = on_pose_corrections
+        self._on_pose_corrections_batch = on_pose_corrections_batch
 
         # Per-session state (reset on each new client connection)
         self._frame_count: int = 0
@@ -294,37 +318,47 @@ class WebSocketReceiver:
         frames_enqueued = 0
         t_start = time.monotonic()
 
-        # ── Binary receive loop ──
+        # ── Receive loop (binary frames + text messages) ──
         try:
             while True:
-                data = await ws.receive_bytes()
-                frames_received += 1
-                try:
-                    pkt = self._parse_binary_message(data)
-                    if pkt is not None:
-                        ok = self.ingest_q.put(pkt, block=False)
-                        if ok:
-                            frames_enqueued += 1
-                            self._last_enq_ts_ns = pkt.time.t_sensor_ns
-                            if not pkt.is_keyframe:
-                                self._last_nonkf_enq_mono = time.monotonic()
-                            # Forward keyframes to visualization server
-                            if pkt.is_keyframe and self._on_keyframe is not None:
-                                try:
-                                    self._on_keyframe(pkt)
-                                except Exception as e:
-                                    logger.error(f"[websocket] on_keyframe callback error: {e}")
-                            frame_type = "KF" if pkt.is_keyframe else "frame"
-                            logger.debug(
-                                f"[websocket] enqueued {frame_type} "
-                                f"-> queue={self.ingest_q.qsize()}"
-                            )
-                        else:
-                            logger.warning(
-                                "[websocket] ingest queue full; dropping frame"
-                            )
-                except Exception as e:
-                    logger.error(f"[websocket] frame parse error: {e}")
+                msg = await ws.receive()
+                if msg["type"] == "websocket.receive":
+                    if "bytes" in msg and msg["bytes"]:
+                        # Binary frame
+                        frames_received += 1
+                        try:
+                            pkt = self._parse_binary_message(msg["bytes"])
+                            if pkt is not None:
+                                ok = self.ingest_q.put(pkt, block=False)
+                                if ok:
+                                    frames_enqueued += 1
+                                    self._last_enq_ts_ns = pkt.time.t_sensor_ns
+                                    if not pkt.is_keyframe:
+                                        self._last_nonkf_enq_mono = time.monotonic()
+                                    if pkt.is_keyframe and self._on_keyframe is not None:
+                                        try:
+                                            self._on_keyframe(pkt)
+                                        except Exception as e:
+                                            logger.error(f"[websocket] on_keyframe callback error: {e}")
+                                    frame_type = "KF" if pkt.is_keyframe else "frame"
+                                    logger.debug(
+                                        f"[websocket] enqueued {frame_type} "
+                                        f"-> queue={self.ingest_q.qsize()}"
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[websocket] ingest queue full; dropping frame"
+                                    )
+                        except Exception as e:
+                            logger.error(f"[websocket] frame parse error: {e}")
+                    elif "text" in msg and msg["text"]:
+                        # Text message (pose_corrections, etc.)
+                        try:
+                            self._handle_text_message(msg["text"])
+                        except Exception as e:
+                            logger.error(f"[websocket] text message error: {e}")
+                elif msg["type"] == "websocket.disconnect":
+                    break
         except WebSocketDisconnect:
             pass
         except Exception as e:
@@ -337,6 +371,63 @@ class WebSocketReceiver:
                 f"{elapsed:.1f}s duration"
             )
             self._active_session_id = None
+
+    # ── Text message handling ──
+
+    def _handle_text_message(self, text: str) -> None:
+        """Handle a JSON text message (e.g. pose_corrections from RTAB-Map)."""
+        msg = json.loads(text)
+        msg_type = msg.get("type")
+
+        if msg_type == "pose_corrections":
+            corrections = msg.get("corrections", {})
+            if not corrections:
+                return
+
+            # Build full corrections dict (apply camera flip if active)
+            batch = {}
+            for kf_id, pose_data in corrections.items():
+                pose_4x4 = self._corrections_pose_to_4x4(pose_data)
+                if pose_4x4 is not None:
+                    if self._apply_camera_flip:
+                        pose_4x4 = pose_4x4 @ _ARKIT_TO_OPENCV
+                    batch[kf_id] = pose_4x4
+
+            if not batch:
+                return
+
+            # Prefer batch callback (TSDF), fall back to per-correction
+            if self._on_pose_corrections_batch is not None:
+                self._on_pose_corrections_batch(batch)
+            elif self._on_pose_corrections is not None:
+                for kf_id, pose in batch.items():
+                    self._on_pose_corrections(kf_id, pose)
+            else:
+                logger.debug("[websocket] pose_corrections received but no callback registered")
+                return
+
+            logger.info(f"[websocket] Applied {len(batch)} pose corrections (loop closure)")
+        else:
+            logger.debug(f"[websocket] Ignoring text message type: {msg_type}")
+
+    @staticmethod
+    def _corrections_pose_to_4x4(pose_data: list) -> Optional[np.ndarray]:
+        """Convert pose correction data to a 4x4 row-major matrix."""
+        if len(pose_data) == 16:
+            # Column-major 4x4 (same as ARKit binary frames)
+            return np.array(pose_data, dtype=np.float32).reshape(4, 4, order="F")
+        elif len(pose_data) == 7:
+            # [qx, qy, qz, qw, tx, ty, tz]
+            from scipy.spatial.transform import Rotation
+            qx, qy, qz, qw, tx, ty, tz = pose_data
+            R = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
+            mat = np.eye(4, dtype=np.float32)
+            mat[:3, :3] = R
+            mat[:3, 3] = [tx, ty, tz]
+            return mat
+        else:
+            logger.warning(f"[websocket] pose_corrections: unexpected {len(pose_data)} elements, skipping")
+            return None
 
     # ── Binary message parsing ──
 
@@ -379,8 +470,25 @@ class WebSocketReceiver:
             logger.warning("[websocket] message truncated at depth payload")
             return None
         depth_bytes = data[offset : offset + depth_len]
+        offset += depth_len
 
-        # 4. Tracking state filter
+        # 4. Confidence payload (optional � backward compatible)
+        confidence_m = None
+        confidence_fmt = header.get("confidence_format")
+        if confidence_fmt is not None and (n - offset) >= 4:
+            (conf_len,) = struct.unpack_from("<I", data, offset)
+            offset += 4
+            if conf_len > 0 and (n - offset) >= conf_len:
+                conf_bytes = data[offset : offset + conf_len]
+                offset += conf_len
+                conf_w = int(header.get("confidence_width", 0) or 0)
+                conf_h = int(header.get("confidence_height", 0) or 0)
+                if conf_w > 0 and conf_h > 0 and len(conf_bytes) == conf_w * conf_h:
+                    confidence_m = np.frombuffer(
+                        conf_bytes, dtype=np.uint8
+                    ).reshape(conf_h, conf_w)
+
+        # 5. Tracking state filter
         tracking_state = header.get("tracking_state", "not_available")
         if self._require_tracking_normal and tracking_state != "normal":
             logger.debug(
@@ -424,6 +532,16 @@ class WebSocketReceiver:
             pose_format=header.get("pose_format", "matrix4x4_col_major"),
         )
 
+        # 9b. Camera convention flip: ARKit (Y-up, Z-back) → OpenCV (Y-down, Z-forward)
+        # Applied once at ingestion so ALL downstream consumers (pipeline, TSDF,
+        # visualization, sweep cache) see poses in OpenCV camera convention.
+        if self._apply_camera_flip:
+            T_wc_mat = PoseStamped(
+                stamp_ns=0, frame_id="", t_wc=t_wc, q_wc_xyzw=q_xyzw
+            ).T_wc() @ _ARKIT_TO_OPENCV
+            t_wc = T_wc_mat[:3, 3].astype(np.float32)
+            q_xyzw = rotmat_to_quat_xyzw(T_wc_mat[:3, :3].astype(np.float32))
+
         # 10. Build intrinsics (scale if intrinsics resolution differs from RGB)
         intr_w = int(header.get("intrinsics_width", rgb_w))
         intr_h = int(header.get("intrinsics_height", rgb_h))
@@ -465,7 +583,24 @@ class WebSocketReceiver:
             q_wc_xyzw=q_xyzw,
         )
 
-        # 13. Build FramePacket
+        # 13. Apply confidence filtering (if confidence map available)
+        if confidence_m is not None and depth_m is not None and self._confidence_threshold > 0:
+            # Resize confidence to depth resolution if needed
+            dep_h, dep_w = depth_m.shape[:2]
+            conf_h, conf_w = confidence_m.shape[:2]
+            if conf_h != dep_h or conf_w != dep_w:
+                confidence_m = cv2.resize(
+                    confidence_m, (dep_w, dep_h),
+                    interpolation=cv2.INTER_NEAREST
+                )
+            # Zero out low-confidence depth pixels
+            low_conf = confidence_m < self._confidence_threshold
+            depth_m[low_conf] = np.nan
+
+        # 14. Parse device orientation (optional — old clients may not send this)
+        device_orientation = header.get("device_orientation")
+
+        # 15. Build FramePacket
         return FramePacket(
             time=tb,
             rgb=rgb,
@@ -473,6 +608,8 @@ class WebSocketReceiver:
             pose=pose,
             intr=intr,
             is_keyframe=is_keyframe,
+            confidence=confidence_m,
+            device_orientation=device_orientation,
         )
 
     # ── Server lifecycle ──

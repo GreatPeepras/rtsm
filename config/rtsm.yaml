@@ -64,6 +64,7 @@ io:
     require_tracking_normal: true               # drop frames where tracking_state != "normal"
     keyframe_every_n: 30                        # mark every Nth frame as keyframe
     nonkf_min_interval_s: 0.5                   # throttle non-KF to max ~2/s
+    confidence_threshold: 2                     # 0=accept all, 1=medium+high, 2=high only (2 matches official RTABMap)
 
 units:
   # Convert incoming values to meters at ingestion
@@ -227,11 +228,46 @@ visualization:
   enable: true                    # Enable embedded visualization server
   host: 0.0.0.0
   port: 8081                      # WebSocket port for frontend
+  apply_camera_flip: true           # Flip ARKit camera (Y-up, Z-back) to OpenCV (Y-down, Z-forward)
+
+  # Depth filtering for visualization pipeline
+  depth:
+    min_m: 0.1                    # Minimum depth (meters)
+    max_m: 3.5                    # Maximum depth (meters) - tighter for indoor quality
+
+  # TSDF volumetric fusion (replaces naive per-frame point cloud accumulation)
+  tsdf:
+    enable: true
+    integration_max_width: 640    # Downsample RGB before integration (depth is 256x192)
+    voxel_size: 0.01              # 1cm voxels for indoor
+    sdf_trunc: 0.04               # truncation distance (meters)
+    max_depth_m: 3.5              # max depth for TSDF integration
+    extract_every_n: 30           # extract mesh every N integrated frames
+    extract_interval_s: 2.0       # or extract on timer (seconds), whichever first
+    frame_buffer_size: 200        # ring buffer for re-integration on loop closure
+    correction_reset_threshold_m: 0.05  # if max pose correction > this, reset+re-integrate
 
   # Object overlay settings
   objects:
     push_interval_ms: 200         # How often to push WM objects to clients
     include_proto: true           # Include proto (unconfirmed) objects
+
+# -------------------- SLAM (on-device, via Calabi Lens) --------------------
+# RTAB-Map runs on the iPhone. These settings control how RTSM handles
+# SLAM-corrected poses received from the client.
+slam:
+  # Log pose_source from client (arkit_vio vs rtabmap_slam)
+  log_pose_source: true
+
+  # Accept retroactive pose corrections from on-device SLAM loop closures.
+  # When enabled, the client sends a "pose_corrections" text message after
+  # loop closure, and RTSM updates past keyframe poses in the visualization.
+  accept_pose_corrections: true
+
+  # Also correct WorkingMemory object positions when loop closure corrections
+  # arrive. Each object is corrected using the delta from the spatially
+  # nearest corrected camera position.
+  correct_working_memory: true
 
 # -------------------- Runtime --------------------
 logging:

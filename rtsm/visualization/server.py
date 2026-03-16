@@ -29,6 +29,13 @@ from rtsm.visualization.processor import PointCloudProcessor, ProcessorConfig
 from rtsm.visualization.registry import KeyframeRegistry
 from rtsm.visualization.broadcaster import WSBroadcaster
 
+# TSDF fusion (optional � requires open3d)
+try:
+    from rtsm.visualization.tsdf_integrator import TSDFIntegrator, TSDFConfig
+    _HAS_TSDF = True
+except ImportError:
+    _HAS_TSDF = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -145,10 +152,58 @@ class VisualizationServer:
         self._push_interval_ms = vis_cfg.get("objects", {}).get("push_interval_ms", 200)
         self._include_proto = vis_cfg.get("objects", {}).get("include_proto", True)
 
+        # Depth config for visualization
+        depth_cfg = vis_cfg.get("depth", {})
+        proc_depth_min = float(depth_cfg.get("min_m", 0.1))
+        proc_depth_max = float(depth_cfg.get("max_m", 3.5))
+
         # Components
-        self.processor = PointCloudProcessor(ProcessorConfig())
+        self.processor = PointCloudProcessor(ProcessorConfig(
+            depth_min_m=proc_depth_min,
+            depth_max_m=proc_depth_max,
+        ))
         self.registry = KeyframeRegistry()
         self.broadcaster = WSBroadcaster()
+
+        # TSDF volumetric fusion (optional)
+        self.tsdf = None
+        tsdf_cfg = vis_cfg.get("tsdf", {})
+        if tsdf_cfg.get("enable", False) and _HAS_TSDF:
+            try:
+                self.tsdf = TSDFIntegrator(
+                    TSDFConfig(
+                        voxel_size=float(tsdf_cfg.get("voxel_size", 0.01)),
+                        sdf_trunc=float(tsdf_cfg.get("sdf_trunc", 0.04)),
+                        max_depth_m=float(tsdf_cfg.get("max_depth_m", proc_depth_max)),
+                        min_depth_m=proc_depth_min,
+                        extract_every_n=int(tsdf_cfg.get("extract_every_n", 30)),
+                        extract_interval_s=float(tsdf_cfg.get("extract_interval_s", 2.0)),
+                        frame_buffer_size=int(tsdf_cfg.get("frame_buffer_size", 200)),
+                        correction_reset_threshold_m=float(
+                            tsdf_cfg.get("correction_reset_threshold_m", 0.05)
+                        ),
+                    ),
+                )
+                logger.info("[visualization] TSDF fusion enabled")
+            except RuntimeError as e:
+                logger.warning(f"[visualization] TSDF unavailable: {e}")
+        elif tsdf_cfg.get("enable", False) and not _HAS_TSDF:
+            logger.warning(
+                "[visualization] TSDF enabled in config but open3d not installed"
+            )
+
+        # Max resolution for TSDF/visualization integration
+        # (LiDAR depth is 256x192; upscaling to 1920x1440 RGB wastes compute)
+        self._integration_max_width = int(tsdf_cfg.get("integration_max_width", 640))
+
+        # Pose history for retroactive WM correction (frame_id -> T_wc 4x4)
+        self._pose_history: Dict[str, np.ndarray] = {}
+        self._pose_history_max = int(
+            tsdf_cfg.get("frame_buffer_size", 200) * 2
+        )  # keep slightly more history than TSDF buffer
+        self._correct_wm = bool(
+            cfg.get("slam", {}).get("correct_working_memory", True)
+        )
 
         # Server state
         self._app: Optional[FastAPI] = None
@@ -196,8 +251,19 @@ class VisualizationServer:
             await websocket.accept()
             await self.broadcaster.connect(websocket)
 
-            # Sync existing keyframes to new client
+            # Sync existing keyframes/TSDF mesh to new client
             synced = await self.broadcaster.sync_new_client(websocket, self.registry)
+            # Also send latest TSDF mesh if available
+            if self.tsdf is not None:
+                latest = self.tsdf.get_latest_mesh()
+                if latest is not None:
+                    positions, colors = latest
+                    identity = np.eye(4, dtype=np.float32)
+                    data = self.broadcaster._pack_mesh_create(
+                        "tsdf_fused", positions, colors, identity
+                    )
+                    await self.broadcaster._send_bytes_to(websocket, data)
+                    synced += 1
             logger.debug(f"[visualization] New client synced with {synced} keyframes")
 
             try:
@@ -219,10 +285,13 @@ class VisualizationServer:
 
         @app.get("/stats")
         async def stats():
-            return {
+            result = {
                 **self.registry.stats(),
-                "clients": self.broadcaster.client_count
+                "clients": self.broadcaster.client_count,
             }
+            if self.tsdf is not None:
+                result.update(self.tsdf.stats())
+            return result
 
         return app
 
@@ -232,8 +301,10 @@ class VisualizationServer:
 
         if cmd == "clear":
             count = self.registry.clear()
+            if self.tsdf is not None:
+                self.tsdf.reset()
             await self.broadcaster._broadcast_json({"type": "clear"})
-            logger.info(f"[visualization] Cleared {count} keyframes")
+            logger.info(f"[visualization] Cleared {count} keyframes (TSDF reset: {self.tsdf is not None})")
 
         elif cmd == "stats":
             stats = self.registry.stats()
@@ -383,7 +454,7 @@ class VisualizationServer:
         """
         Handle pose correction from bundle adjustment or loop closure.
 
-        Called from ZMQ subscriber thread.
+        Called from ZMQ subscriber thread or WebSocket receiver.
         """
         mesh_id = kf_id
 
@@ -395,6 +466,39 @@ class VisualizationServer:
                 )
             logger.debug(f"[visualization] Pose updated for KF {mesh_id} (BA/LC)")
 
+    def handle_pose_corrections_batch(self, corrections: dict) -> None:
+        """
+        Handle a batch of pose corrections from loop closure.
+
+        When TSDF is enabled, applies corrections to the TSDF volume.
+        Otherwise delegates per-correction to handle_kf_pose_update.
+        Also retroactively corrects WorkingMemory object positions.
+        """
+        if not corrections:
+            return
+
+        # ---- Correct WorkingMemory objects ----
+        if self._correct_wm and self.wm is not None:
+            self._apply_wm_pose_corrections(corrections)
+
+        # ---- Correct TSDF / per-frame meshes ----
+        if self.tsdf is not None:
+            was_reset = self.tsdf.handle_pose_corrections(corrections)
+            if was_reset:
+                threading.Thread(
+                    target=self._extract_and_broadcast_tsdf,
+                    daemon=True,
+                    name="tsdf-reintegrate-extract",
+                ).start()
+        else:
+            for kf_id, corr_pose in corrections.items():
+                self.handle_kf_pose_update(kf_id, corr_pose)
+
+        # Update pose history with corrected poses
+        for kf_id, new_pose in corrections.items():
+            if isinstance(new_pose, np.ndarray):
+                self._pose_history[kf_id] = new_pose.copy()
+
     def handle_frame_packet(self, pkt) -> None:
         """
         Handle a decoded FramePacket from the WebSocket receiver.
@@ -402,6 +506,9 @@ class VisualizationServer:
         Generates a point cloud from the already-decoded RGB + depth + pose
         and broadcasts it to visualization clients. Called from the WebSocket
         receiver thread for keyframes only.
+
+        When TSDF is enabled, integrates frames into the TSDF volume and
+        periodically extracts a fused point cloud.
         """
         try:
             if pkt.depth_m is None or pkt.pose is None or pkt.intr is None:
@@ -419,12 +526,80 @@ class VisualizationServer:
             rgb = pkt.rgb
             depth_m = pkt.depth_m
 
-            # Resize depth to RGB resolution if mismatched (ARKit LiDAR 256x192 vs RGB 640x480)
+            # Apply additional confidence filtering for visualization quality
+            # (pipeline already filters at ingestion, but vis may benefit from stricter threshold)
+            confidence = getattr(pkt, 'confidence', None)
+            if confidence is not None and depth_m is not None:
+                dep_h, dep_w = depth_m.shape[:2]
+                conf_h, conf_w = confidence.shape[:2]
+                if conf_h != dep_h or conf_w != dep_w:
+                    confidence = cv2.resize(
+                        confidence, (dep_w, dep_h),
+                        interpolation=cv2.INTER_NEAREST
+                    )
+                # For visualization/TSDF, only use high-confidence depth (level 2)
+                depth_m = depth_m.copy()
+                depth_m[confidence < 2] = np.nan
+
+            # Downsample to target resolution for efficiency
+            # (LiDAR depth is 256x192; upscaling to 1920x1440 RGB wastes compute)
             rgb_h, rgb_w = rgb.shape[:2]
+            max_w = self._integration_max_width
+            if rgb_w > max_w:
+                scale = max_w / rgb_w
+                target_h = int(rgb_h * scale)
+                rgb = cv2.resize(rgb, (max_w, target_h), interpolation=cv2.INTER_AREA)
+                K = K.copy()
+                K[0, 0] *= scale
+                K[1, 1] *= scale
+                K[0, 2] *= scale
+                K[1, 2] *= scale
+                rgb_h, rgb_w = target_h, max_w
+
+            # Resize depth to match (downsampled) RGB if mismatched
             dep_h, dep_w = depth_m.shape[:2]
             if dep_h != rgb_h or dep_w != rgb_w:
                 depth_m = cv2.resize(depth_m, (rgb_w, rgb_h), interpolation=cv2.INTER_NEAREST)
 
+            # Build 4x4 T_wc pose
+            pose = pkt.pose.T_wc()
+
+            # Store original pose for retroactive WM correction
+            self._pose_history[mesh_id] = pose.copy()
+            if len(self._pose_history) > self._pose_history_max:
+                # Evict oldest entries (dict preserves insertion order in Python 3.7+)
+                excess = len(self._pose_history) - self._pose_history_max
+                for key in list(self._pose_history.keys())[:excess]:
+                    del self._pose_history[key]
+
+            # Note: ARKit→OpenCV camera flip is applied at ingestion
+            # (WebSocketReceiver) so pose is already in OpenCV convention.
+
+            # ---- TSDF path ----
+            if self.tsdf is not None:
+                # Convert BGR -> RGB (pkt.rgb is BGR from OpenCV decode)
+                rgb_for_tsdf = rgb[:, :, ::-1].copy()
+
+                should_extract = self.tsdf.integrate(
+                    frame_id=mesh_id,
+                    rgb=rgb_for_tsdf,
+                    depth_m=depth_m,
+                    K=K,
+                    pose_T_wc=pose,
+                    width=rgb_w,
+                    height=rgb_h,
+                    timestamp_ns=int(pkt.time.t_sensor_ns or 0),
+                )
+
+                if should_extract and self._loop and self._running:
+                    threading.Thread(
+                        target=self._extract_and_broadcast_tsdf,
+                        daemon=True,
+                        name="tsdf-extract",
+                    ).start()
+                return  # Skip per-frame mesh path when TSDF is active
+
+            # ---- Legacy per-frame path ----
             # Filter and back-project
             depth_filtered = self.processor.filter_depth(depth_m)
             positions, colors = self.processor.backproject(depth_filtered, rgb, K)
@@ -432,9 +607,6 @@ class VisualizationServer:
             if positions.shape[0] == 0:
                 logger.debug(f"[visualization] Frame {mesh_id} produced 0 points, skipping")
                 return
-
-            # Build 4x4 T_wc pose
-            pose = pkt.pose.T_wc()
 
             # Debug: log pose translation
             t_vis = pose[:3, 3]
@@ -461,6 +633,78 @@ class VisualizationServer:
 
         except Exception as e:
             logger.error(f"[visualization] Error processing frame packet: {e}")
+
+    def _apply_wm_pose_corrections(self, corrections: dict) -> None:
+        """
+        Compute per-frame rigid correction deltas and apply them to WM objects.
+
+        For each corrected frame where we have the original pose in history,
+        computes delta_R, delta_t such that:  p_new = delta_R @ p_old + delta_t
+
+        Passes a frame_id-keyed dict to wm.apply_pose_corrections so that
+        objects are corrected using the exact delta from the frame that last
+        updated them, with spatial proximity fallback for unlinked objects.
+        """
+        # Build frame_id -> (old_cam_pos, delta_R, delta_t)
+        frame_corrections: Dict[str, tuple] = {}
+
+        for kf_id, new_pose in corrections.items():
+            old_pose = self._pose_history.get(kf_id)
+            if old_pose is None:
+                continue
+            if not isinstance(new_pose, np.ndarray):
+                continue
+
+            old_pose = old_pose.astype(np.float64)
+            new_pose_f64 = new_pose.astype(np.float64)
+
+            # delta_T = T_wc_new @ inv(T_wc_old)
+            # p_world_new = delta_T @ p_world_old  (homogeneous)
+            try:
+                delta_T = new_pose_f64 @ np.linalg.inv(old_pose)
+            except np.linalg.LinAlgError:
+                continue
+
+            delta_R = delta_T[:3, :3].astype(np.float32)
+            delta_t = delta_T[:3, 3].astype(np.float32)
+            old_cam_pos = old_pose[:3, 3].astype(np.float32)
+
+            frame_corrections[kf_id] = (old_cam_pos, delta_R, delta_t)
+
+        if frame_corrections:
+            try:
+                n = self.wm.apply_pose_corrections(frame_corrections)
+                logger.info(
+                    f"[visualization] WM pose correction: {n} objects updated "
+                    f"from {len(frame_corrections)} frame deltas"
+                )
+            except Exception as e:
+                logger.error(f"[visualization] WM pose correction failed: {e}")
+
+    def _extract_and_broadcast_tsdf(self) -> None:
+        """Extract fused point cloud from TSDF and broadcast to clients."""
+        try:
+            positions, colors = self.tsdf.extract_point_cloud()
+            if positions.shape[0] == 0:
+                return
+
+            # TSDF points are already in world frame; use identity pose
+            identity = np.eye(4, dtype=np.float32)
+
+            if self._loop and self._running:
+                asyncio.run_coroutine_threadsafe(
+                    self.broadcaster.send_mesh_create(
+                        "tsdf_fused", positions, colors, identity
+                    ),
+                    self._loop,
+                )
+
+            logger.debug(
+                f"[visualization] TSDF extracted {positions.shape[0]:,} pts "
+                f"(v{self.tsdf.mesh_version})"
+            )
+        except Exception as e:
+            logger.error(f"[visualization] TSDF extraction error: {e}")
 
     def _run_server(self) -> None:
         """Run uvicorn server in background thread."""

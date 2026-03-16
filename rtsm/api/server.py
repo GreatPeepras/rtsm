@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import threading
 from typing import Any, Callable, Optional, Dict, List
@@ -340,13 +341,25 @@ def create_app(
             except Exception as e:
                 result["cleared"]["frame_window"] = {"error": str(e)}
 
-        # Clear VisualizationServer registry (keyframes)
+        # Clear VisualizationServer (registry + TSDF + broadcast clear to clients)
         if reset_components and reset_components.vis_server:
             try:
                 vis = reset_components.vis_server
+                vis_result = {}
                 if hasattr(vis, 'registry') and vis.registry:
                     kf_cleared = vis.registry.clear()
-                    result["cleared"]["visualization"] = {"keyframes_cleared": kf_cleared}
+                    vis_result["keyframes_cleared"] = kf_cleared
+                if hasattr(vis, 'tsdf') and vis.tsdf is not None:
+                    vis.tsdf.reset()
+                    vis_result["tsdf_reset"] = True
+                # Broadcast clear to all connected web clients
+                if hasattr(vis, 'broadcaster') and vis._loop and vis._running:
+                    asyncio.run_coroutine_threadsafe(
+                        vis.broadcaster._broadcast_json({"type": "clear"}),
+                        vis._loop,
+                    )
+                    vis_result["clients_notified"] = True
+                result["cleared"]["visualization"] = vis_result
             except Exception as e:
                 result["cleared"]["visualization"] = {"error": str(e)}
 

@@ -31,3 +31,4 @@ torchaudio ; sys_platform != "win32"
 open-clip-torch
 faiss-cpu ; sys_platform == "win32"
 faiss-cpu ; sys_platform == "linux"
+open3d>=0.18.0
