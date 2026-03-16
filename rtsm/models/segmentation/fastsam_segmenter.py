@@ -63,10 +63,13 @@ class FastSAMSegmenter(SegmentationAdapter):
             SegmentationResult with masks (no labels, no embeddings)
         """
         # Run FastSAM inference
+        # retina_masks=True ensures masks are at the original image resolution,
+        # which is required for correct centroid backprojection with per-frame
+        # intrinsics (especially when RGB is 1920x1440 from ARKit).
         everything_results = self.model(
             image,
             device=self.device,
-            retina_masks=False,
+            retina_masks=True,
             imgsz=self.imgsz,
             conf=self.conf,
             iou=self.iou,

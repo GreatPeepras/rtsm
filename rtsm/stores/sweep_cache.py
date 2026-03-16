@@ -30,12 +30,15 @@ class SweepCache:
         pitch_bins: int = 5,
         pitch_deg: float = 60.0,
         look_lru_keep: int = 8,
+        up_axis: str = "z",
     ) -> None:
         # --- spatial grid ---
         self.grid = float(grid_size_m)
         self.cap = int(per_cell_cap)
         self.neighbors_max = int(neighbors_max)
         self.two_d = bool(two_d)
+        # World-frame up axis: "z" for ROS/D435i, "y" for ARKit
+        self.up_axis = up_axis.lower()
 
         # --- membership ---
         self.h: Dict[Cell, Set[str]] = defaultdict(set)   # cell -> {oid}
@@ -57,24 +60,31 @@ class SweepCache:
     def cell_from_xyz(self, xyz: np.ndarray) -> Cell:
         gx = int(math.floor(float(xyz[0]) / self.grid))
         gy = int(math.floor(float(xyz[1]) / self.grid))
+        gz = int(math.floor(float(xyz[2]) / self.grid))
         if self.two_d:
-            gz = 0
-        else:
-            gz = int(math.floor(float(xyz[2]) / self.grid))
+            # Drop the vertical axis: Z for Z-up (ROS/D435i), Y for Y-up (ARKit)
+            if self.up_axis == "y":
+                gy = 0
+            else:
+                gz = 0
         return (gx, gy, gz)
 
     def vbin_from_forward(self, fwd: np.ndarray) -> VBin:
-        # expects a (3,) vector; will normalize
+        # expects a (3,) world-frame forward vector; will normalize
         f = np.asarray(fwd, dtype=float)
         n = float(np.linalg.norm(f))
         if n == 0.0:
             # degenerate; put into bin 0, mid pitch
             return (0, self.pitch_bins // 2)
         f = f / n
-        # yaw in [-pi, pi]
-        yaw = math.atan2(float(f[1]), float(f[0]))
-        # pitch in [-pi/2, pi/2]
-        pitch = math.asin(max(-1.0, min(1.0, float(f[2]))))
+        if self.up_axis == "y":
+            # Y-up (ARKit): yaw = rotation around Y, pitch = elevation toward Y
+            yaw = math.atan2(float(f[0]), float(-f[2]))
+            pitch = math.asin(max(-1.0, min(1.0, float(f[1]))))
+        else:
+            # Z-up (ROS/D435i): yaw = rotation around Z, pitch = elevation toward Z
+            yaw = math.atan2(float(f[1]), float(f[0]))
+            pitch = math.asin(max(-1.0, min(1.0, float(f[2]))))
         # clamp pitch to useful range ±pitch_max
         pitch = max(-self.pitch_max, min(self.pitch_max, pitch))
         # normalize to [0,1]

@@ -6,7 +6,9 @@ Provides conversions between rotation representations (Euler angles, quaternions
 
 from __future__ import annotations
 import math
+from typing import Optional
 import numpy as np
+import torch
 from numpy.typing import NDArray
 
 
@@ -149,3 +151,37 @@ def rotmat_to_quat_xyzw(R: NDArray[np.float32]) -> NDArray[np.float32]:
     q = np.array([x, y, z, w], dtype=np.float32)
     q /= float(np.linalg.norm(q) + 1e-12)
     return q
+
+
+# ─────────────── Image orientation utilities ───────────────
+
+_ORIENTATION_TO_K = {
+    "portrait": 1,            # 90° CCW to upright
+    "landscapeLeft": 2,       # 180°
+    "portraitUpsideDown": 3,  # 270° CCW
+}
+
+
+def orientation_to_rot90_k(device_orientation: Optional[str]) -> int:
+    """Map device orientation string to np.rot90 k value.
+
+    Returns 0 (no rotation) for landscapeRight, unknown, or None.
+    """
+    return _ORIENTATION_TO_K.get(device_orientation, 0)
+
+
+def rotate_image(img: NDArray[np.uint8], k: int) -> NDArray[np.uint8]:
+    """Rotate image by k*90° CCW. k=0 returns unchanged."""
+    if k == 0:
+        return img
+    return np.rot90(img, k=k).copy()
+
+
+def unrotate_masks(masks: torch.Tensor, k: int) -> torch.Tensor:
+    """Reverse a k*90°-CCW rotation on masks [N,H,W].
+
+    Applies (4-k)*90° CCW = k*90° CW to bring masks back to sensor space.
+    """
+    if k == 0:
+        return masks
+    return torch.rot90(masks, k=4 - k, dims=[1, 2]).contiguous()

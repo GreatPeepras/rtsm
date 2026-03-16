@@ -44,6 +44,8 @@ class AssocUpdate:
     crop: Optional[np.ndarray] = None
     # keyframe flag for EMA weighting (keyframes dominate position smoothing)
     is_keyframe: bool = False
+    # frame_id for precise pose correction tracking in WM
+    frame_id: Optional[str] = None
 
 # ---------- math helpers ----------
 
@@ -86,7 +88,7 @@ class Associator:
     def __init__(self, cfg: Dict[str, Any]) -> None:
         self.cfg = cfg
 
-    def update_with_candidates(self, cands, snap, wm, index, *, per_cell_spawn_counter: Optional[Dict[Tuple[int, int, int] | Tuple[int, int], int]] = None, is_keyframe: bool = False) -> Dict[str, int]:
+    def update_with_candidates(self, cands, snap, wm, index, *, per_cell_spawn_counter: Optional[Dict[Tuple[int, int, int] | Tuple[int, int], int]] = None, is_keyframe: bool = False, frame_id: Optional[str] = None) -> Dict[str, int]:
         """Process a batch of Candidates for one Snapshot.
         - cands: iterable of Candidate (duck-typed: .stats.centroid_cam, .emb_vis, .stats.centroid_px, .priority)
         - snap: Snapshot (duck-typed: .pose_cam_T_world [4x4], .intrinsics {fx,fy,cx,cy})
@@ -299,6 +301,7 @@ class Associator:
                     label_topk=getattr(c, 'label_topk', None),
                     crop=getattr(c, 'crop', None),
                     is_keyframe=is_keyframe,
+                    frame_id=frame_id,
                 )
                 wm.update_object(best_id, assoc_update)
                 wm.maybe_promote(best_id)
@@ -320,6 +323,7 @@ class Associator:
                 view_dir_cam=(p_cam.astype(np.float32) / (np.linalg.norm(p_cam) + 1e-12)),
                 centroid_px=getattr(c.stats, 'centroid_px', None),
                 crop=getattr(c, 'crop', None),
+                frame_id=frame_id,
             )
             # No promote here; will happen after subsequent matches
             if oid is not None:
