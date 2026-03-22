@@ -135,6 +135,9 @@ class ObjectState:
     # RGB crop gallery (JPEG-compressed bytes, most recent last)
     image_crops: List[bytes]
 
+    # Frame tracking for precise pose corrections
+    last_update_frame_id: Optional[str]
+
     # cache
     _dim: int
 
@@ -164,6 +167,8 @@ class WorkingMemory:
 
         self._map: Dict[str, ObjectState] = {}
         self._lock = threading.RLock()
+        # Reverse index: frame_id -> set of object IDs last updated on that frame
+        self._frame_to_objects: Dict[str, set] = {}
         # Min-heap of (deadline_mono, oid) for proto expiry (lazy re-schedule on matches)
         self._proto_heap: List[Tuple[float, str]] = []
 
@@ -228,7 +233,8 @@ class WorkingMemory:
                       label_topk: Optional[List[Tuple[str, float]]] = None,
                       view_dir_cam: Optional[np.ndarray] = None,
                       centroid_px: Optional[Tuple[float, float]] = None,
-                      crop: Optional[np.ndarray] = None) -> Optional[str]:
+                      crop: Optional[np.ndarray] = None,
+                      frame_id: Optional[str] = None) -> Optional[str]:
         """Spawn a new proto object. Index is updated here as well.
 
         Returns:
@@ -300,10 +306,14 @@ class WorkingMemory:
             last_upsert_emb=None,
             last_upsert_xyz=None,
             image_crops=image_crops,
+            last_update_frame_id=frame_id,
             _dim=D,
         )
         with self._lock:
             self._map[oid] = o
+            # Register in frame → objects reverse index
+            if frame_id is not None:
+                self._frame_to_objects.setdefault(frame_id, set()).add(oid)
             # schedule proto expiry (confirmed objects are never scheduled here)
             self._schedule_proto(oid, o)
         if self.index is not None:
@@ -407,6 +417,7 @@ class WorkingMemory:
         stab = min(1.0, o.stability + self.stab_k * gain * (1.0 - o.stability))
 
         # --- write back (under lock), and index move if needed ---
+        new_frame_id = getattr(obs, "frame_id", None)
         with self._lock:
             o.xyz_world = xyz_new.astype(np.float32)
             o.cov_world = o_cov.astype(np.float32)
@@ -416,6 +427,17 @@ class WorkingMemory:
             o.last_seen_mono = now_m
             o.last_seen_wall_utc = now_w
             o.last_seen_px = getattr(obs, "centroid_px", None)
+            # Update frame → objects reverse index
+            if new_frame_id is not None:
+                old_frame_id = o.last_update_frame_id
+                if old_frame_id is not None and old_frame_id != new_frame_id:
+                    old_set = self._frame_to_objects.get(old_frame_id)
+                    if old_set is not None:
+                        old_set.discard(oid)
+                        if not old_set:
+                            del self._frame_to_objects[old_frame_id]
+                self._frame_to_objects.setdefault(new_frame_id, set()).add(oid)
+                o.last_update_frame_id = new_frame_id
             # view_bins, label_scores, label_primary already updated on o
             # If still proto, push a fresh deadline (lazy heap pattern tolerates duplicates)
             if not o.confirmed:
@@ -568,6 +590,13 @@ class WorkingMemory:
                     # deadline extended; push a fresh entry (lazy heap pattern)
                     heapq.heappush(self._proto_heap, (true_deadline, oid))
                     continue
+                # Clean up frame → objects reverse index
+                if o.last_update_frame_id is not None:
+                    fset = self._frame_to_objects.get(o.last_update_frame_id)
+                    if fset is not None:
+                        fset.discard(oid)
+                        if not fset:
+                            del self._frame_to_objects[o.last_update_frame_id]
                 # really expired
                 removed.append(oid)
                 del self._map[oid]
@@ -581,6 +610,84 @@ class WorkingMemory:
         """Push a (deadline, oid) for a proto object into the heap. Lock must be held."""
         deadline = o.last_seen_mono + self.proto_ttl_s
         heapq.heappush(self._proto_heap, (deadline, oid))
+
+    # ---------- pose corrections (loop closure) ----------
+
+    def apply_pose_corrections(
+        self,
+        frame_corrections: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    ) -> int:
+        """Apply retroactive pose corrections from SLAM loop closure.
+
+        Uses the frame_id → object_ids reverse index for precise correction:
+        objects linked to a corrected frame get that frame's exact delta.
+        Objects not linked to any corrected frame fall back to the delta
+        from the spatially nearest corrected camera position.
+
+        Args:
+            frame_corrections: dict mapping frame_id to
+                (old_cam_pos_3, delta_R_3x3, delta_t_3).
+                delta transforms a world point: p_new = delta_R @ p_old + delta_t
+
+        Returns:
+            Number of objects corrected.
+        """
+        if not frame_corrections:
+            return 0
+
+        corrected_oids: set = set()
+        corrected = 0
+
+        with self._lock:
+            # Phase 1: Direct frame_id → object lookup
+            for frame_id, (_, delta_R, delta_t) in frame_corrections.items():
+                linked_oids = self._frame_to_objects.get(frame_id, set())
+                for oid in linked_oids:
+                    o = self._map.get(oid)
+                    if o is None:
+                        continue
+                    old_xyz = o.xyz_world.copy()
+                    new_xyz = (delta_R @ old_xyz + delta_t).astype(np.float32)
+                    o.xyz_world = new_xyz
+                    corrected += 1
+                    corrected_oids.add(oid)
+                    if self.index is not None:
+                        old_cell = self.index.grid.cell(old_xyz)
+                        new_cell = self.index.grid.cell(new_xyz)
+                        if old_cell != new_cell:
+                            self.index.update(oid, old_xyz, new_xyz, wm_lookup=self.lookup_min)
+
+            # Phase 2: Spatial fallback for objects not linked to any corrected frame
+            uncorrected = [o for o in self._map.values() if o.id not in corrected_oids]
+            if uncorrected:
+                cam_positions = np.array(
+                    [v[0] for v in frame_corrections.values()], dtype=np.float32
+                )
+                deltas_list = list(frame_corrections.values())
+                for o in uncorrected:
+                    old_xyz = o.xyz_world.copy()
+                    diffs = cam_positions - old_xyz[None, :]
+                    dists = np.linalg.norm(diffs, axis=1)
+                    nearest_idx = int(np.argmin(dists))
+                    _, delta_R, delta_t = deltas_list[nearest_idx]
+                    new_xyz = (delta_R @ old_xyz + delta_t).astype(np.float32)
+                    o.xyz_world = new_xyz
+                    corrected += 1
+                    if self.index is not None:
+                        old_cell = self.index.grid.cell(old_xyz)
+                        new_cell = self.index.grid.cell(new_xyz)
+                        if old_cell != new_cell:
+                            self.index.update(o.id, old_xyz, new_xyz, wm_lookup=self.lookup_min)
+
+        if corrected > 0:
+            direct = len(corrected_oids)
+            fallback = corrected - direct
+            logger.info(
+                f"[WM] Applied pose corrections to {corrected} objects "
+                f"({direct} direct, {fallback} fallback) "
+                f"from {len(frame_corrections)} frame deltas"
+            )
+        return corrected
 
     # ---------- utilities ----------
 
@@ -613,9 +720,10 @@ class WorkingMemory:
             # Clear object map
             self._map.clear()
 
-            # Clear scheduling heaps
+            # Clear scheduling heaps and reverse index
             self._proto_heap.clear()
             self._ltm_heap.clear()
+            self._frame_to_objects.clear()
 
             # Reset counters
             self._upsert_count_total = 0

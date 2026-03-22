@@ -724,7 +724,7 @@ setMode('Free')
 const initialCamPos = camera.position.clone()
 const initialTarget = controls.target.clone()
 
-let flippedX = true, flippedY = true, flippedZ = false
+let flippedX = false, flippedY = false, flippedZ = false
 
 function applyFlipScale() {
   world.scale.set(flippedX ? -1 : 1, flippedY ? -1 : 1, flippedZ ? -1 : 1)

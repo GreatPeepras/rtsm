@@ -33,19 +33,24 @@ class GridSpec:
     """
     World-space uniform grid.
     - cell_m: cell size in meters
-    - use_3d: True => (ix,iy,iz) keys; False => (ix,iy) keys
+    - use_3d: True => (ix,iy,iz) keys; False => 2D keys (drops vertical axis)
+    - up_axis: "z" (ROS/D435i) or "y" (ARKit) — controls which axis is vertical
     """
     cell_m: float = 0.25
     use_3d: bool = True
+    up_axis: str = "z"
 
     def cell(self, xyz_world: np.ndarray) -> Cell:
         x, y, z = float(xyz_world[0]), float(xyz_world[1]), float(xyz_world[2])
         ix = int(math.floor(x / self.cell_m))
         iy = int(math.floor(y / self.cell_m))
+        iz = int(math.floor(z / self.cell_m))
         if self.use_3d:
-            iz = int(math.floor(z / self.cell_m))
             return (ix, iy, iz)
-        return (ix, iy)
+        # 2D: keep the two horizontal axes, drop the vertical one
+        if self.up_axis == "y":
+            return (ix, iz)  # Y-up (ARKit): keep X, Z
+        return (ix, iy)      # Z-up (ROS): keep X, Y
 
     def neighbors(self, c: Cell, rings: int = 1) -> Iterable[Cell]:
         if rings <= 0:
@@ -58,10 +63,10 @@ class GridSpec:
                     for dz in range(-rings, rings + 1):
                         yield (ix + dx, iy + dy, iz + dz)
         else:
-            ix, iy = c  # type: ignore[misc]
-            for dx in range(-rings, rings + 1):
-                for dy in range(-rings, rings + 1):
-                    yield (ix + dx, iy + dy)
+            a, b = c  # type: ignore[misc]
+            for da in range(-rings, rings + 1):
+                for db in range(-rings, rings + 1):
+                    yield (a + da, b + db)
 
 # --------- proximity index (object membership by cell) ---------
 

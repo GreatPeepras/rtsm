@@ -3,7 +3,7 @@ import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 
 from rtsm.core.pipeline import Pipeline
-from rtsm.models.fastsam.adapter import FastSAMAdapter
+from rtsm.models.segmentation import get_segmenter
 from rtsm.models.clip.adapter import CLIPAdapter
 from rtsm.stores.working_memory import WorkingMemory
 from rtsm.stores.proximity_index import ProximityIndex, GridSpec
@@ -14,6 +14,8 @@ from rtsm.models.clip.vocab_classifier import ClipVocabClassifier
 from rtsm.stores.sweep_cache import SweepCache
 from rtsm.io.ingest_queue import IngestQueue
 from rtsm.io.zeromq import ZeroMQSubscriber
+from rtsm.io.websocket import WebSocketReceiver
+from rtsm.utils.net import print_server_addresses, get_local_ipv4_addresses
 from rtsm.stores.sweep_policy import SweepPolicy
 from rtsm.api.server import create_app, start_server, ResetComponents
 
@@ -41,17 +43,25 @@ def main():
 
     cfg = yaml.safe_load(open("config/rtsm.yaml", "r"))
     logger.info("Configuration loaded from config/rtsm.yaml")
-    fastsam = FastSAMAdapter("model_store/fastsam/FastSAM-x.pt", cfg.get("device","cuda"))
-    logger.info(f"FastSAM model successfully loaded from model_store/fastsam/FastSAM-x.pt")
+
+    # Create segmenter from config (FastSAM, YOLO-World, etc.)
+    segmenter = get_segmenter(cfg)
+    logger.info(f"Segmentation backend loaded: {segmenter.name}")
     clip = CLIPAdapter("ViT-B-32", "openai", "model_store/clip", device=cfg.get("device","cuda"))
     logger.info(f"CLIP model successfully loaded from model_store/clip")
+    # Determine world-frame up axis from receiver type (ARKit=Y-up, D435i/ROS=Z-up)
+    io_cfg = cfg.get("io", {})
+    receiver_type = str(io_cfg.get("receiver", "zeromq")).lower()
+    up_axis_default = "y" if receiver_type == "websocket" else "z"
+
     # Proximity index config
     scfg = cfg.get("sweep_cache", {})
     two_d = bool(scfg.get("two_d", True))
     cell_m = float(scfg.get("grid_size_m", 0.25))
     per_cell_cap = int(scfg.get("per_cell_cap", 64))
     neighbors_max = int(scfg.get("neighbors_max", 128))
-    pi_grid = GridSpec(cell_m=cell_m, use_3d=not two_d)
+    up_axis = str(scfg.get("up_axis", up_axis_default))
+    pi_grid = GridSpec(cell_m=cell_m, use_3d=not two_d, up_axis=up_axis)
     proximity_index = ProximityIndex(pi_grid, per_cell_cap=per_cell_cap, neighbors_max=neighbors_max)
     logger.info(f"Proximity index successfully initialized")
     wm = WorkingMemory(cfg, index=proximity_index)
@@ -84,6 +94,7 @@ def main():
         pitch_bins=int(cfg.get("sweep_cache", {}).get("pitch_bins", 5)),
         pitch_deg=float(cfg.get("sweep_cache", {}).get("pitch_deg", 60.0)),
         look_lru_keep=int(cfg.get("sweep_cache", {}).get("look_lru_keep", 8)),
+        up_axis=up_axis,
     )
     logger.info(f"Sweep cache successfully initialized")
 
@@ -100,41 +111,73 @@ def main():
         )
         logger.info("Visualization server initialized")
 
-    # Start ZMQ subscriber in background (dual-socket: camera + RTABMap)
-    # Unit scales (incoming → meters). Defaults provided match typical RTABMap setup.
-    io_cfg = cfg.get("io", {})
+    # Resolve display IP (use real network IP instead of 0.0.0.0)
+    local_ips = get_local_ipv4_addresses()
+    display_host = local_ips[0] if local_ips else "0.0.0.0"
+
+    # ---------------- Receiver (ZMQ or WebSocket) ----------------
     units_cfg = cfg.get("units", {})
 
-    sub = ZeroMQSubscriber(
-        camera_endpoint=io_cfg.get("camera_endpoint", "tcp://127.0.0.1:5555"),
-        rtabmap_endpoint=io_cfg.get("rtabmap_endpoint", "tcp://127.0.0.1:6000"),
-        ingest_queue=ingest_q,
-        depth_m_per_unit=float(units_cfg.get("depth_m_per_unit", 0.001)),
-        pose_m_per_unit=float(units_cfg.get("pose_m_per_unit", 1.0)),
-        # Visualization callbacks (None if disabled)
-        on_kf_packet=vis_server.handle_kf_packet if vis_server else None,
-        on_kf_pose_update=vis_server.handle_kf_pose_update if vis_server else None,
-    )
-    t = threading.Thread(target=sub.run_forever, daemon=True)
-    t.start()
-    logger.info(f"ZeroMQ dual-socket subscriber started (camera + RTABMap)")
+    # Will be set to FrameWindow or None depending on receiver
+    frame_window_for_reset = None
+
+    if receiver_type == "websocket":
+        ws_cfg = io_cfg.get("websocket", {})
+        ws_receiver = WebSocketReceiver(
+            ingest_queue=ingest_q,
+            host=str(ws_cfg.get("host", "0.0.0.0")),
+            port=int(ws_cfg.get("port", 8765)),
+            require_tracking_normal=bool(ws_cfg.get("require_tracking_normal", True)),
+            keyframe_every_n=int(ws_cfg.get("keyframe_every_n", 30)),
+            nonkf_min_interval_s=float(ws_cfg.get("nonkf_min_interval_s", 0.5)),
+            confidence_threshold=int(ws_cfg.get("confidence_threshold", 1)),
+            apply_camera_flip=bool(vis_cfg.get("apply_camera_flip", False)),
+            on_keyframe=vis_server.handle_frame_packet if vis_server else None,
+            on_pose_corrections=vis_server.handle_kf_pose_update if vis_server else None,
+            on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
+        )
+        ws_receiver.start()
+        ws_port = int(ws_cfg.get("port", 8765))
+        print_server_addresses(ws_port)
+        logger.info(f"WebSocket receiver started on ws://{display_host}:{ws_port}/stream")
+
+    elif receiver_type == "zeromq":
+        sub = ZeroMQSubscriber(
+            camera_endpoint=io_cfg.get("camera_endpoint", "tcp://127.0.0.1:5555"),
+            rtabmap_endpoint=io_cfg.get("rtabmap_endpoint", "tcp://127.0.0.1:6000"),
+            ingest_queue=ingest_q,
+            depth_m_per_unit=float(units_cfg.get("depth_m_per_unit", 0.001)),
+            pose_m_per_unit=float(units_cfg.get("pose_m_per_unit", 1.0)),
+            on_kf_packet=vis_server.handle_kf_packet if vis_server else None,
+            on_kf_pose_update=vis_server.handle_kf_pose_update if vis_server else None,
+        )
+        t = threading.Thread(target=sub.run_forever, daemon=True)
+        t.start()
+        logger.info(f"ZeroMQ dual-socket subscriber started (camera + RTABMap)")
+        frame_window_for_reset = sub.fw
+
+    else:
+        raise ValueError(
+            f"Unknown io.receiver: {receiver_type!r}. Choose 'zeromq' or 'websocket'."
+        )
 
     # Start visualization server if enabled
     if vis_server:
         vis_server.start()
-        logger.info(f"Visualization WebSocket server started on port {vis_cfg.get('port', 8081)}")
+        vis_port_val = vis_cfg.get("port", 8081)
+        logger.info(f"Visualization server started on ws://{display_host}:{vis_port_val}/ws")
 
     pipe = Pipeline(
-        cfg=cfg, 
-        fastsam=fastsam, 
-        clip=clip, 
-        working_mem=wm, 
-        proximity_index=proximity_index, 
-        associator=assoc, 
-        ingest_gate=ingest_gate, 
-        vocab_clf=vocab_clf, 
-        vectors=vectors, 
-        ingest_q=ingest_q, 
+        cfg=cfg,
+        segmenter=segmenter,
+        clip=clip,
+        working_mem=wm,
+        proximity_index=proximity_index,
+        associator=assoc,
+        ingest_gate=ingest_gate,
+        vocab_clf=vocab_clf,
+        vectors=vectors,
+        ingest_q=ingest_q,
         sweep_cache=sweep_cache )
 
     # ---------------- Start FastAPI control-plane ----------------
@@ -145,7 +188,7 @@ def main():
     # Components that can be reset without restarting RTSM
     reset_components = ResetComponents(
         sweep_cache=sweep_cache,
-        frame_window=sub.fw,  # FrameWindow created inside ZeroMQSubscriber
+        frame_window=frame_window_for_reset,  # FrameWindow (ZMQ) or None (WebSocket)
         vis_server=vis_server,
     )
 
@@ -159,16 +202,21 @@ def main():
         reset_components=reset_components,
     )
     start_server(app, host=host, port=port)
-    logger.info(f"FastAPI server started on http://{host}:{port}")
+    logger.info(f"FastAPI server started on http://{display_host}:{port}")
 
     print("=" * 60)
     print("  RTSM is running! Waiting for data...")
-    print(f"  Camera:  {io_cfg.get('camera_endpoint', 'tcp://127.0.0.1:5555')}")
-    print(f"  RTABMap: {io_cfg.get('rtabmap_endpoint', 'tcp://127.0.0.1:6000')}")
-    print(f"  API:     http://{host}:{port}")
+    if receiver_type == "websocket":
+        ws_port = int(io_cfg.get("websocket", {}).get("port", 8765))
+        print(f"  Receiver: WebSocket (ws://{display_host}:{ws_port}/stream)")
+    else:
+        print(f"  Receiver: ZeroMQ")
+        print(f"  Camera:  {io_cfg.get('camera_endpoint', 'tcp://127.0.0.1:5555')}")
+        print(f"  RTABMap: {io_cfg.get('rtabmap_endpoint', 'tcp://127.0.0.1:6000')}")
+    print(f"  API:     http://{display_host}:{port}")
     if vis_server:
         vis_port = vis_cfg.get("port", 8081)
-        print(f"  Vis WS:  ws://0.0.0.0:{vis_port}/ws")
+        print(f"  Vis WS:  ws://{display_host}:{vis_port}/ws")
     print("  Press Ctrl+C to stop")
     print("=" * 60)
 

@@ -309,8 +309,10 @@ class ZeroMQSubscriber:
             map_id = str(metadata.get('map_id', 0))
             timestamp_ns = metadata.get('ts_ns', 0)
 
-            # Parse intrinsics
+            # Parse intrinsics (warn if falling back to defaults)
             intrinsics = metadata.get('intrinsics', {})
+            if not intrinsics or 'fx' not in intrinsics:
+                logger.warning("[zeromq] kf_packet missing intrinsics, using D435i defaults")
             fx = intrinsics.get('fx', 615.0)
             fy = intrinsics.get('fy', 615.0)
             cx = intrinsics.get('cx', 320.0)
