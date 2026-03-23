@@ -193,6 +193,9 @@ class WorkingMemory:
         pose_cfg = cfg.get("pose", {})
         self.meas_var_xyz_cm2 = np.array(pose_cfg.get("meas_var_xyz_cm2", [1.5, 1.5, 3.0]), dtype=np.float32) / 1e4
         self.proc_var_xyz_cm2 = np.array(pose_cfg.get("proc_var_xyz_cm2", [0.2, 0.2, 0.4]), dtype=np.float32) / 1e4
+        # Threshold (meters) above which a pose correction demotes confirmed objects
+        # back to proto so they must re-earn confirmation from good-pose frames.
+        self.pose_demote_thresh_m: float = float(pose_cfg.get("demote_thresh_m", 0.30))
 
         ltm_cfg = cfg.get("ltm", {})
         self.reupsert_cos_max: float = float(ltm_cfg.get("reupsert_cos_max", 0.995))
@@ -611,6 +614,26 @@ class WorkingMemory:
         deadline = o.last_seen_mono + self.proto_ttl_s
         heapq.heappush(self._proto_heap, (deadline, oid))
 
+    # ---------- demotion (bad-pose recovery) ----------
+
+    def _demote_object(self, o: ObjectState) -> None:
+        """Demote a confirmed object back to proto. Lock must be held.
+
+        Resets hits and stability so the object must re-earn confirmation
+        from future good-pose frames.  Schedules it for proto TTL expiry
+        so it gets cleaned up if not re-observed.
+        """
+        was_confirmed = o.confirmed
+        o.confirmed = False
+        o.hits = 0
+        o.stability = 0.0
+        self._schedule_proto(o.id, o)
+        if was_confirmed:
+            logger.info(
+                f"[WM] demoted oid={o.id} label={o.label_primary or '-'} "
+                f"back to proto (large pose correction)"
+            )
+
     # ---------- pose corrections (loop closure) ----------
 
     def apply_pose_corrections(
@@ -636,7 +659,9 @@ class WorkingMemory:
             return 0
 
         corrected_oids: set = set()
+        demoted_oids: list = []
         corrected = 0
+        thresh = self.pose_demote_thresh_m
 
         with self._lock:
             # Phase 1: Direct frame_id → object lookup
@@ -648,9 +673,18 @@ class WorkingMemory:
                         continue
                     old_xyz = o.xyz_world.copy()
                     new_xyz = (delta_R @ old_xyz + delta_t).astype(np.float32)
+                    shift_m = float(np.linalg.norm(new_xyz - old_xyz))
                     o.xyz_world = new_xyz
                     corrected += 1
                     corrected_oids.add(oid)
+
+                    # Demote if the correction is large — the frame that last
+                    # updated this object had a bad pose, so the observations
+                    # that drove promotion are untrustworthy.
+                    if shift_m >= thresh:
+                        self._demote_object(o)
+                        demoted_oids.append(oid)
+
                     if self.index is not None:
                         old_cell = self.index.grid.cell(old_xyz)
                         new_cell = self.index.grid.cell(new_xyz)
@@ -671,8 +705,14 @@ class WorkingMemory:
                     nearest_idx = int(np.argmin(dists))
                     _, delta_R, delta_t = deltas_list[nearest_idx]
                     new_xyz = (delta_R @ old_xyz + delta_t).astype(np.float32)
+                    shift_m = float(np.linalg.norm(new_xyz - old_xyz))
                     o.xyz_world = new_xyz
                     corrected += 1
+
+                    if shift_m >= thresh:
+                        self._demote_object(o)
+                        demoted_oids.append(o.id)
+
                     if self.index is not None:
                         old_cell = self.index.grid.cell(old_xyz)
                         new_cell = self.index.grid.cell(new_xyz)
@@ -686,6 +726,7 @@ class WorkingMemory:
                 f"[WM] Applied pose corrections to {corrected} objects "
                 f"({direct} direct, {fallback} fallback) "
                 f"from {len(frame_corrections)} frame deltas"
+                f"{f', demoted {len(demoted_oids)} back to proto' if demoted_oids else ''}"
             )
         return corrected
 

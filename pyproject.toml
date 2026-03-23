@@ -3,8 +3,31 @@ name = "rtsm"
 version = "0.1.0"
 description = "Real-Time Spatio-Semantic Memory for spatial AI and robotics"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
+    # Base
+    "matplotlib>=3.2.2",
+    "opencv-python>=4.6.0",
+    "Pillow>=7.1.2",
+    "PyYAML>=5.3.1",
+    "requests>=2.23.0",
+    "scipy>=1.4.1",
+    "tqdm>=4.64.0",
+    "pandas>=1.1.4",
+    "seaborn>=0.11.0",
+    "numpy",
+    "setuptools>=64",
+    # API
+    "fastapi>=0.95.0",
+    "uvicorn[standard]>=0.22.0",
+    "prometheus-client>=0.16.0",
+    # ZeroMQ
+    "pyzmq>=25.0.0",
+    # PyTorch (nightly CUDA 13.0; Blackwell/5090 support)
+    "torch",
+    "torchvision",
+    # CLIP
+    "open-clip-torch",
     "faiss-cpu>=1.12.0",
     "open3d>=0.18.0",
     "psutil>=7.0.0",
@@ -16,6 +39,18 @@ rtsm-run = "rtsm.run:main"
 [build-system]
 requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[[tool.uv.index]]
+name = "pytorch-nightly"
+url = "https://download.pytorch.org/whl/nightly/cu130"
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-nightly" }]
+torchvision = [{ index = "pytorch-nightly" }]
+
+[tool.uv]
+prerelease = "allow"
+index-strategy = "unsafe-best-match"
 
 [tool.setuptools.packages.find]
 include = ["rtsm*","ultralytics*"]

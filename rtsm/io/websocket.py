@@ -597,10 +597,7 @@ class WebSocketReceiver:
             low_conf = confidence_m < self._confidence_threshold
             depth_m[low_conf] = np.nan
 
-        # 14. Parse device orientation (optional — old clients may not send this)
-        device_orientation = header.get("device_orientation")
-
-        # 15. Build FramePacket
+        # 14. Build FramePacket
         return FramePacket(
             time=tb,
             rgb=rgb,
@@ -609,7 +606,6 @@ class WebSocketReceiver:
             intr=intr,
             is_keyframe=is_keyframe,
             confidence=confidence_m,
-            device_orientation=device_orientation,
         )
 
     # ── Server lifecycle ──

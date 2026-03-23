@@ -711,6 +711,18 @@ const galleryPreview = document.getElementById('gallery-preview') as HTMLImageEl
 const galleryInfo = document.getElementById('gallery-info')
 const galleryLoading = document.getElementById('gallery-loading')
 const galleryTitle = document.getElementById('gallery-title')
+const ssRotateSelect = document.getElementById('ss-rotate') as HTMLSelectElement
+
+// SS Rotate: apply CSS rotation to snapshot preview + thumbnails
+ssRotateSelect?.addEventListener('change', () => {
+  const rot = `rotate(${ssRotateSelect.value}deg)`
+  if (galleryPreview) {
+    galleryPreview.style.transform = rot
+  }
+  galleryImages?.querySelectorAll('.gallery-thumb').forEach((img) => {
+    ;(img as HTMLElement).style.transform = rot
+  })
+})
 
 // Gallery state
 let gallerySnapshots: Array<{ index: number; data: string; size_bytes: number }> = []
@@ -973,6 +985,9 @@ async function loadObjectSnapshots(objectId: string) {
       const img = document.createElement('img')
       img.className = 'gallery-thumb' + (i === 0 ? ' selected' : '')
       img.src = snap.data
+      if (ssRotateSelect?.value && ssRotateSelect.value !== '0') {
+        img.style.transform = `rotate(${ssRotateSelect.value}deg)`
+      }
       img.alt = `Snapshot ${i + 1}`
       img.dataset.index = String(i)
       img.addEventListener('click', () => selectSnapshot(i))

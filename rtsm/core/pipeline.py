@@ -10,7 +10,6 @@ from PIL import Image
 
 from rtsm.utils.mask_staging import run_heuristics, MaskStats
 from rtsm.utils.prepare_ann import prepare_ann
-from rtsm.utils.transforms import orientation_to_rot90_k, rotate_image, unrotate_masks
 from rtsm.utils.periodic_logger import PeriodicLogger
 from rtsm.models.segmentation import SegmentationAdapter, SegmentationResult
 from rtsm.models.clip.adapter import CLIPAdapter
@@ -169,14 +168,7 @@ class Pipeline:
             return
 
         # 1) segmentation -> masks
-        # Determine ML rotation from device orientation (opt-in: no rotation when absent)
-        rot_k = 0
-        if pkt is not None:
-            rot_k = orientation_to_rot90_k(getattr(pkt, 'device_orientation', None))
-
-        # SegmentationAdapter expects a PIL.Image — rotate to gravity-aligned for ML
-        rgb_for_seg = rotate_image(snap.rgb, rot_k) if rot_k else snap.rgb
-        pil_img = Image.fromarray(rgb_for_seg) if isinstance(rgb_for_seg, np.ndarray) else rgb_for_seg
+        pil_img = Image.fromarray(snap.rgb) if isinstance(snap.rgb, np.ndarray) else snap.rgb
 
         # Get segmentation vocab from config (for open-vocab models like YOLO-World)
         seg_cfg = self.cfg.get("segmentation", {})
@@ -191,13 +183,6 @@ class Pipeline:
         else:
             # Fallback for detection-only models (no masks)
             ann_bool = torch.empty(0, pil_img.height, pil_img.width, dtype=torch.bool)
-
-        # Rotate masks back to original sensor space (geometry stays untouched)
-        if rot_k and ann_bool.shape[0] > 0:
-            ann_bool = unrotate_masks(ann_bool, rot_k)
-
-        if rot_k:
-            logger.debug(f"[pipeline] applied {rot_k*90}° CCW rotation for {pkt.device_orientation} orientation")
 
         n_masks = int(ann_bool.shape[0]) if hasattr(ann_bool, 'shape') else 0
 
@@ -250,9 +235,7 @@ class Pipeline:
         cands = self._score_and_select(kept_masks, stats, frame_hw=select_hw)
 
         # 4) pre-CLIP crop only top-K, then batch encode
-        #    Crops are extracted from original (sensor-space) RGB, then rotated
-        #    to gravity-aligned for better CLIP classification quality.
-        self._make_crops_inplace(cands, snap.rgb, rot_k=rot_k)
+        self._make_crops_inplace(cands, snap.rgb)
         self._clip_batch_inplace(cands)
 
         # 5) associate and update memory/index (if components provided)
@@ -275,10 +258,16 @@ class Pipeline:
         # Update periodic logger with this frame's stats
         self._periodic_logger.tick(matched=m, created=c, masks=len(kept_masks))
 
-        # 6) periodic flush/upsert to vector store (if configured)
+        # 6) expire stale proto-objects past their TTL
+        if self.working_mem is not None:
+            expired = self.working_mem.expire_timeouts()
+            if expired:
+                logger.debug(f"expired {len(expired)} proto-objects: {expired}")
+
+        # 7) periodic flush/upsert to vector store (if configured)
         self._maybe_flush_vectors()
 
-        # 7) periodic summary log
+        # 8) periodic summary log
         if self.working_mem is not None:
             queue_size = self.ingest_q.qsize() if self.ingest_q else 0
             self._periodic_logger.maybe_log(
@@ -497,7 +486,7 @@ class Pipeline:
 
         return kept[:topK]
 
-    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray, rot_k: int = 0):
+    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray):
         pad = int(self.cfg.get("staging",{}).get("crop_pad_px", 6))
         size = int(self.cfg.get("staging",{}).get("clip_input", 224))
         H, W, _ = rgb.shape
@@ -518,10 +507,6 @@ class Pipeline:
             if crop.size == 0:
                 c.crop = None
                 continue
-
-            # Rotate crop to gravity-aligned for better CLIP quality
-            if rot_k:
-                crop = rotate_image(crop, rot_k)
 
             crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_LINEAR)
             c.crop = crop

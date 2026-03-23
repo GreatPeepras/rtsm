@@ -143,7 +143,6 @@ class FramePacket:
     intr: Optional[PinholeIntrinsics]
     is_keyframe: bool = False
     confidence: Optional[NDArray[np.uint8]] = None  # (H,W) uint8 ARKit confidence 0/1/2
-    device_orientation: Optional[str] = None  # "portrait", "landscapeRight", "landscapeLeft", "portraitUpsideDown"
 
     # convenience helpers
     @property

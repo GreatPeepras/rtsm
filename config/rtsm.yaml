@@ -210,6 +210,10 @@ object:
   stab_k: 0.45                    # stability update factor
   miss_decay: 0.5                # stability decay on missed frames
 
+# -------------------- Pose --------------------
+pose:
+  demote_thresh_m: 0.30           # correction shift (m) above which confirmed objects are demoted to proto
+
 # -------------------- Storage --------------------
 vectors:
   enable: true

@@ -185,3 +185,85 @@ def unrotate_masks(masks: torch.Tensor, k: int) -> torch.Tensor:
     if k == 0:
         return masks
     return torch.rot90(masks, k=4 - k, dims=[1, 2]).contiguous()
+
+
+# ─────────────── Gravity-aligned rotation utilities ───────────────
+
+def snap_rotation_to_k(image_rotation_deg: float) -> int:
+    """Snap continuous image_rotation (degrees) to the nearest 90° step.
+
+    Ranges (each centered on the target angle, ±45° half-width):
+        [-45, 45)       → k=0  (0°, already aligned)
+        [45, 135)       → k=1  (+90°, portrait)
+        [-135, -45)     → k=3  (-90° / 270° CCW, portrait upside-down)
+        [135, 180] ∪ [-180, -135) → k=2  (±180°, landscape-left)
+
+    Args:
+        image_rotation_deg: Clockwise degrees to gravity-align the image.
+
+    Returns:
+        np.rot90 k value (0–3).
+    """
+    # Normalize to [-180, 180)
+    angle = image_rotation_deg % 360
+    if angle >= 180:
+        angle -= 360
+
+    if -45 <= angle < 45:
+        return 0
+    elif 45 <= angle < 135:
+        return 1
+    elif -135 <= angle < -45:
+        return 3
+    else:  # [135, 180] or [-180, -135)
+        return 2
+
+
+def resolve_rot90_k(
+    image_rotation: Optional[float],
+    device_orientation: Optional[str],
+) -> int:
+    """Determine rot90 k from available rotation info.
+
+    Priority: image_rotation (continuous degrees) > device_orientation (string) > 0.
+    """
+    if image_rotation is not None:
+        return snap_rotation_to_k(image_rotation)
+    return orientation_to_rot90_k(device_orientation)
+
+
+def rotate_depth(depth: NDArray[np.float32], k: int) -> NDArray[np.float32]:
+    """Rotate depth map by k*90° CCW. k=0 returns unchanged."""
+    if k == 0:
+        return depth
+    return np.rot90(depth, k=k).copy()
+
+
+def rotate_intrinsics(
+    width: int, height: int,
+    fx: float, fy: float, cx: float, cy: float,
+    k: int,
+) -> tuple[int, int, float, float, float, float]:
+    """Adjust pinhole intrinsics for a k*90° CCW rotation (np.rot90 convention).
+
+    After np.rot90(img, k), the pixel grid is reindexed.  The intrinsics
+    must be remapped so that back-projection remains consistent.
+
+    Args:
+        width, height: Original image dimensions.
+        fx, fy, cx, cy: Original pinhole intrinsics.
+        k: np.rot90 k value (0–3).
+
+    Returns:
+        (new_width, new_height, new_fx, new_fy, new_cx, new_cy)
+    """
+    if k == 0:
+        return width, height, fx, fy, cx, cy
+
+    W, H = width, height
+    if k == 1:  # 90° CCW: (x,y) → (y, W-1-x)  →  new image is (H, W)
+        return H, W, fy, fx, cy, W - 1 - cx
+    elif k == 2:  # 180°: (x,y) → (W-1-x, H-1-y)  →  same dims
+        return W, H, fx, fy, W - 1 - cx, H - 1 - cy
+    else:  # k == 3, 270° CCW: (x,y) → (H-1-y, x)  →  new image is (H, W)
+        return H, W, fy, fx, H - 1 - cy, cx
