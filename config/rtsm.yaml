@@ -14,9 +14,9 @@ camera:
   cy: 259.239777
 
 # -------------------- Models --------------------
-# Segmentation backend: fastsam (open-world) or yoloworld (task-focused)
+# Segmentation backend
 segmentation:
-  backend: fastsam                    # fastsam | yoloworld
+  backend: dual                       # fastsam | yoloworld | yoloe | dual
 
   fastsam:
     model_path: model_store/fastsam/FastSAM-x.pt
@@ -42,6 +42,22 @@ segmentation:
     #   - person
     #   - shelf
     #   - bin
+
+  yoloe:
+    model_path: yoloe-26s-seg.pt      # dev: yoloe-26s-seg.pt | demo: yoloe-26l-seg.pt
+    device: cuda
+    imgsz: 640
+    conf: 0.25
+    iou: 0.7
+    # Custom vocabulary (null = default indoor vocab; ignored for -pf models)
+    vocab: null
+
+  # Dual-confirmation settings (only used when backend: dual)
+  dual:
+    iou_confirm_threshold: 0.40       # IoU to consider FastSAM+YOLOE masks "confirmed"
+    priority_boost_dual: 0.3          # priority boost for dual-confirmed masks
+    priority_penalty_yoloe_only: -0.1 # penalty for YOLOE-only (no FastSAM confirmation)
+    prefer_mask: fastsam              # which mask to keep for dual-confirmed (fastsam has better boundaries)
 
 clip:
   model: ViT-B-32

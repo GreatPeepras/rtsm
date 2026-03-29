@@ -43,13 +43,19 @@ def get_segmenter(cfg: Dict[str, Any]) -> SegmentationAdapter:
 
     Config format:
         segmentation:
-          backend: fastsam | yoloworld
+          backend: fastsam | yoloworld | yoloe | dual
           fastsam:
             model_path: model_store/fastsam/FastSAM-x.pt
             ...
           yoloworld:
             model_path: yolov8x-worldv2.pt
             vocab: [...]
+            ...
+          yoloe:
+            model_path: yoloe-26s-seg.pt
+            ...
+          dual:
+            iou_confirm_threshold: 0.40
             ...
 
     Args:
@@ -67,10 +73,14 @@ def get_segmenter(cfg: Dict[str, Any]) -> SegmentationAdapter:
         return _create_fastsam(cfg, seg_cfg)
     elif backend == "yoloworld":
         return _create_yoloworld(cfg, seg_cfg)
+    elif backend == "yoloe":
+        return _create_yoloe(cfg, seg_cfg)
+    elif backend == "dual":
+        return _create_dual(cfg, seg_cfg)
     else:
         raise ValueError(
             f"Unknown segmentation backend: {backend}. "
-            f"Available: fastsam, yoloworld"
+            f"Available: fastsam, yoloworld, yoloe, dual"
         )
 
 
@@ -103,6 +113,40 @@ def _create_yoloworld(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> Segmentat
         iou=yolo_cfg.get("iou", 0.7),
         default_vocab=yolo_cfg.get("vocab", None),
         with_masks=yolo_cfg.get("with_masks", True),
+    )
+
+
+def _create_yoloe(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationAdapter:
+    """Create YOLOE segmenter from config."""
+    from rtsm.models.segmentation.yoloe_segmenter import YOLOESegmenter
+
+    yoloe_cfg = seg_cfg.get("yoloe", {})
+
+    return YOLOESegmenter(
+        model_path=yoloe_cfg.get("model_path", "yoloe-26s-seg.pt"),
+        device=yoloe_cfg.get("device", "cuda"),
+        imgsz=yoloe_cfg.get("imgsz", 640),
+        conf=yoloe_cfg.get("conf", 0.25),
+        iou=yoloe_cfg.get("iou", 0.7),
+        default_vocab=yoloe_cfg.get("vocab", None),
+    )
+
+
+def _create_dual(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationAdapter:
+    """Create dual-confirmation segmenter (FastSAM + YOLOE) from config."""
+    from rtsm.models.segmentation.dual_segmenter import DualConfirmationSegmenter
+
+    dual_cfg = seg_cfg.get("dual", {})
+
+    # Create child segmenters
+    fastsam = _create_fastsam(cfg, seg_cfg)
+    yoloe = _create_yoloe(cfg, seg_cfg)
+
+    return DualConfirmationSegmenter(
+        fastsam=fastsam,
+        yoloe=yoloe,
+        iou_confirm_threshold=dual_cfg.get("iou_confirm_threshold", 0.40),
+        prefer_mask=dual_cfg.get("prefer_mask", "fastsam"),
     )
 
 
