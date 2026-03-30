@@ -120,6 +120,10 @@ class FastSAMSegmenter(SegmentationAdapter):
             embeddings=None,
         )
 
+    def warmup(self) -> None:
+        """Eagerly load FastSAM model weights."""
+        self._load_model()
+
     def _empty_result(self, image_size: tuple) -> SegmentationResult:
         W, H = image_size
         return SegmentationResult(

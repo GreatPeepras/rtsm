@@ -224,7 +224,8 @@ class DualConfirmationSegmenter(SegmentationAdapter):
             box_list = []
             for b in merged_boxes:
                 if b is not None:
-                    box_list.append(b if isinstance(b, torch.Tensor) else torch.tensor(b))
+                    t = b if isinstance(b, torch.Tensor) else torch.tensor(b)
+                    box_list.append(t.cpu())
                 else:
                     box_list.append(torch.zeros(4))
             boxes_tensor = torch.stack(box_list, dim=0)
@@ -244,6 +245,11 @@ class DualConfirmationSegmenter(SegmentationAdapter):
             detection_labels=merged_labels,
             label_confidence=merged_conf,
         )
+
+    def warmup(self) -> None:
+        """Eagerly load both sub-models."""
+        self.fastsam.warmup()
+        self.yoloe.warmup()
 
     def _empty_result(self, image_size: tuple) -> SegmentationResult:
         W, H = image_size

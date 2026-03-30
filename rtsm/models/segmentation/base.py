@@ -96,6 +96,15 @@ class SegmentationAdapter(ABC):
         """
         pass
 
+    def warmup(self) -> None:
+        """Eagerly load model weights and download any missing assets.
+
+        Called at startup before the pipeline begins processing frames.
+        Default implementation is a no-op; subclasses with lazy loading
+        should override to trigger their ``_load_model()`` path.
+        """
+        pass
+
     @abstractmethod
     def close(self) -> None:
         """Release model resources (GPU memory, etc.)."""

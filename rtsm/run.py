@@ -46,7 +46,9 @@ def main():
 
     # Create segmenter from config (FastSAM, YOLO-World, etc.)
     segmenter = get_segmenter(cfg)
-    logger.info(f"Segmentation backend loaded: {segmenter.name}")
+    logger.info(f"Segmentation backend created: {segmenter.name}")
+    segmenter.warmup()
+    logger.info(f"Segmentation models loaded and ready: {segmenter.name}")
     clip = CLIPAdapter("ViT-B-32", "openai", "model_store/clip", device=cfg.get("device","cuda"))
     logger.info(f"CLIP model successfully loaded from model_store/clip")
     # Determine world-frame up axis from receiver type (ARKit=Y-up, D435i/ROS=Z-up)

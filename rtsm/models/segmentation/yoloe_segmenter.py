@@ -164,13 +164,19 @@ class YOLOESegmenter(SegmentationAdapter):
             else:
                 masks = torch.from_numpy(np.asarray(mask_data)).bool()
 
-        # Ensure tensors
-        if boxes is not None and not isinstance(boxes, torch.Tensor):
-            boxes = torch.tensor(boxes)
-        if scores is not None and not isinstance(scores, torch.Tensor):
-            scores = torch.tensor(scores)
-        if class_ids is not None and not isinstance(class_ids, torch.Tensor):
-            class_ids = torch.tensor(class_ids, dtype=torch.int64)
+        # Ensure CPU tensors (consistent with FastSAM output)
+        if boxes is not None:
+            if not isinstance(boxes, torch.Tensor):
+                boxes = torch.tensor(boxes)
+            boxes = boxes.cpu()
+        if scores is not None:
+            if not isinstance(scores, torch.Tensor):
+                scores = torch.tensor(scores)
+            scores = scores.cpu()
+        if class_ids is not None:
+            if not isinstance(class_ids, torch.Tensor):
+                class_ids = torch.tensor(class_ids, dtype=torch.int64)
+            class_ids = class_ids.cpu()
 
         return SegmentationResult(
             masks=masks,
@@ -181,6 +187,12 @@ class YOLOESegmenter(SegmentationAdapter):
             embeddings=None,
             vocab=vocab if not self._is_prompt_free else None,
         )
+
+    def warmup(self) -> None:
+        """Eagerly load YOLOE model and set up vocabulary (downloads MobileCLIP if needed)."""
+        self._load_model()
+        if not self._is_prompt_free and self.default_vocab:
+            self._set_vocab(self.default_vocab)
 
     def _empty_result(self, image_size: tuple) -> SegmentationResult:
         """Return empty result for no detections."""
