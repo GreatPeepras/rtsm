@@ -44,7 +44,7 @@ def main():
     cfg = yaml.safe_load(open("config/rtsm.yaml", "r"))
     logger.info("Configuration loaded from config/rtsm.yaml")
 
-    # Create segmenter from config (FastSAM, YOLO-World, etc.)
+    # Create segmenter from config
     segmenter = get_segmenter(cfg)
     logger.info(f"Segmentation backend created: {segmenter.name}")
     segmenter.warmup()

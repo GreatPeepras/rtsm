@@ -45,11 +45,13 @@ class YOLOESegmenter(SegmentationAdapter):
         conf: float = 0.25,
         iou: float = 0.7,
         default_vocab: Optional[List[str]] = None,
+        retina_masks: bool = True,
     ):
         self.device = device
         self.imgsz = imgsz
         self.conf = conf
         self.iou = iou
+        self.retina_masks = retina_masks
         self._model_path = model_path
         self._is_prompt_free = "-pf" in model_path.lower()
         self.default_vocab = None if self._is_prompt_free else (default_vocab or self._default_indoor_vocab())
@@ -132,6 +134,7 @@ class YOLOESegmenter(SegmentationAdapter):
             imgsz=self.imgsz,
             conf=self.conf,
             iou=self.iou,
+            retina_masks=self.retina_masks,
             verbose=False,
         )
 

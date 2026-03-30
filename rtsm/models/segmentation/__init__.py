@@ -43,13 +43,9 @@ def get_segmenter(cfg: Dict[str, Any]) -> SegmentationAdapter:
 
     Config format:
         segmentation:
-          backend: fastsam | yoloworld | yoloe | dual
+          backend: fastsam | yoloe | dual
           fastsam:
             model_path: model_store/fastsam/FastSAM-x.pt
-            ...
-          yoloworld:
-            model_path: yolov8x-worldv2.pt
-            vocab: [...]
             ...
           yoloe:
             model_path: yoloe-26s-seg.pt
@@ -71,8 +67,6 @@ def get_segmenter(cfg: Dict[str, Any]) -> SegmentationAdapter:
 
     if backend == "fastsam":
         return _create_fastsam(cfg, seg_cfg)
-    elif backend == "yoloworld":
-        return _create_yoloworld(cfg, seg_cfg)
     elif backend == "yoloe":
         return _create_yoloe(cfg, seg_cfg)
     elif backend == "dual":
@@ -80,7 +74,7 @@ def get_segmenter(cfg: Dict[str, Any]) -> SegmentationAdapter:
     else:
         raise ValueError(
             f"Unknown segmentation backend: {backend}. "
-            f"Available: fastsam, yoloworld, yoloe, dual"
+            f"Available: fastsam, yoloe, dual"
         )
 
 
@@ -96,23 +90,7 @@ def _create_fastsam(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> Segmentatio
         imgsz=fastsam_cfg.get("imgsz", 640),
         conf=fastsam_cfg.get("conf", 0.4),
         iou=fastsam_cfg.get("iou", 0.9),
-    )
-
-
-def _create_yoloworld(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationAdapter:
-    """Create YOLO-World segmenter from config."""
-    from rtsm.models.segmentation.yoloworld_segmenter import YOLOWorldSegmenter
-
-    yolo_cfg = seg_cfg.get("yoloworld", {})
-
-    return YOLOWorldSegmenter(
-        model_path=yolo_cfg.get("model_path", "yolov8x-worldv2.pt"),
-        device=yolo_cfg.get("device", "cuda"),
-        imgsz=yolo_cfg.get("imgsz", 640),
-        conf=yolo_cfg.get("conf", 0.25),
-        iou=yolo_cfg.get("iou", 0.7),
-        default_vocab=yolo_cfg.get("vocab", None),
-        with_masks=yolo_cfg.get("with_masks", True),
+        retina_masks=seg_cfg.get("retina_masks", True),
     )
 
 
@@ -129,6 +107,7 @@ def _create_yoloe(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationA
         conf=yoloe_cfg.get("conf", 0.25),
         iou=yoloe_cfg.get("iou", 0.7),
         default_vocab=yoloe_cfg.get("vocab", None),
+        retina_masks=seg_cfg.get("retina_masks", True),
     )
 
 

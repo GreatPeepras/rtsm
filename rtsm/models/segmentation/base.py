@@ -3,7 +3,6 @@ Abstract base class for segmentation/detection models.
 
 This abstraction allows RTSM to swap between different backends:
 - FastSAM (open-world segmentation)
-- YOLO-World (open-vocabulary detection)
 - YOLOE (open-vocabulary detection + segmentation in one pass)
 - DualConfirmation (FastSAM + YOLOE with IoU merge)
 """

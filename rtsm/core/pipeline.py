@@ -178,7 +178,7 @@ class Pipeline:
         elif backend == "yoloe":
             vocab = seg_cfg.get("yoloe", {}).get("vocab", None)
         else:
-            vocab = seg_cfg.get("yoloworld", {}).get("vocab", None)
+            vocab = None
 
         # Run segmentation
         seg_result = self.segmenter.segment(pil_img, vocab=vocab)

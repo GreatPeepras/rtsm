@@ -16,7 +16,8 @@ camera:
 # -------------------- Models --------------------
 # Segmentation backend
 segmentation:
-  backend: dual                       # fastsam | yoloworld | yoloe | dual
+  backend: dual                      # fastsam | yoloe | dual
+  retina_masks: true                   # return masks at original image resolution (shared by all backends)
 
   fastsam:
     model_path: model_store/fastsam/FastSAM-x.pt
@@ -24,24 +25,6 @@ segmentation:
     imgsz: 640
     conf: 0.4
     iou: 0.9
-
-  yoloworld:
-    model_path: yolov8x-worldv2.pt    # or local path
-    device: cuda
-    imgsz: 640
-    conf: 0.25
-    iou: 0.7
-    with_masks: true                  # generate masks (slower) or boxes only
-    # Custom vocabulary for task-specific detection (null = use default indoor vocab)
-    vocab: null
-    # Example warehouse vocab:
-    # vocab:
-    #   - pallet
-    #   - cardboard box
-    #   - forklift
-    #   - person
-    #   - shelf
-    #   - bin
 
   yoloe:
     model_path: yoloe-26s-seg.pt      # dev: yoloe-26s-seg.pt | demo: yoloe-26l-seg.pt
@@ -56,8 +39,8 @@ segmentation:
   dual:
     iou_confirm_threshold: 0.40       # IoU to consider FastSAM+YOLOE masks "confirmed"
     priority_boost_dual: 0.3          # priority boost for dual-confirmed masks
-    priority_penalty_yoloe_only: -0.1 # penalty for YOLOE-only (no FastSAM confirmation)
-    prefer_mask: fastsam              # which mask to keep for dual-confirmed (fastsam has better boundaries)
+    priority_penalty_yoloe_only: 0.0  # no penalty for YOLOE-only
+    prefer_mask: yoloe26              # which mask to keep for dual-confirmed
 
 clip:
   model: ViT-B-32
@@ -105,7 +88,7 @@ masks:
   max_border_fraction: 0.15
 
 filters:
-  min_area_px: 700                # lowered from 900 - catch smaller indoor objects
+  min_area_px: 500                # lowered from 700 - catch smaller indoor objects
   aspect_ratio: [0.2, 5.0]
   solidity_min: 0.3
   border_touch_max_pct: 0.15      # tightened: reject masks with >15% border contact
@@ -113,7 +96,7 @@ filters:
     z_min_m: 0.2
     z_max_m: 8.0
     valid_min_pct: 0.10
-    sigma_max_m: 0.25             # tightened: max depth spread (p90-p10) ±25cm to reject edge artifacts
+    sigma_max_m: 0.50             # loosened from 0.25 - allow reflective/multi-plane objects (TVs, glass)
   border:
     partial_min_pct: 0.30
     extreme_drop_pct: 0.90
@@ -136,25 +119,25 @@ planarity:
 staging:
   # Basic thresholds
   min_area_px: 120
-  centroid_min_valid: 0.35       # tightened: require 35% valid depth for centroid
-  depth_valid_min: 0.25          # tightened: skip masks with <25% valid depth
+  centroid_min_valid: 0.05       # loosened from 0.15 - allow centroid even with very sparse depth
+  depth_valid_min: 0.02          # loosened from 0.10 - allow near-zero depth on reflective surfaces (TVs, mirrors)
   depth_erode_px: 1              # reduced: 1px erosion to preserve more mask area for centroid
-  topk_preclip: 10
+  topk_preclip: 15
   crop_pad_px: 6
   clip_input: 224
 
   # Priority weights
   w_coverage: 1.0
-  w_border_fraction: -2.0
+  w_border_fraction: -1.0         # reduced from -2.0 - less penalty for large objects touching borders
   w_depth_valid: 1.0
   w_depth_spread: -0.5            # relaxed from -1.0 - less penalty for complex multi-plane objects
   w_bbox_area: 0.5
 
   # Soft caps (penalize oversized masks without hard dropping)
-  coverage_soft_cap: 0.50         # loosened from 0.30 - allow bigger masks before penalty
-  bbox_soft_cap: 0.50             # loosened from 0.30 - allow bigger bboxes before penalty
-  w_coverage_oversize: -1.0       # reduced from -2.0 - less penalty for oversized masks
-  w_bbox_oversize: -0.5           # reduced from -1.0 - less penalty for oversized bboxes
+  coverage_soft_cap: 0.70         # loosened from 0.50 - allow large objects (TVs, walls) before penalty
+  bbox_soft_cap: 0.70             # loosened from 0.50 - allow large bboxes before penalty
+  w_coverage_oversize: -0.5       # reduced from -1.0 - less penalty for oversized masks
+  w_bbox_oversize: -0.3           # reduced from -0.5 - less penalty for oversized bboxes
 
   # Structure scoring (planarity + extent bias)
   # structure_score = clamp(a*s_geom + b*s_sem + c*s_extent, 0, 1)
