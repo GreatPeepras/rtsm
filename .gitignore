@@ -103,6 +103,7 @@ model_store/
 *.pth
 *.onnx
 *.ckpt
+mobileclip2_b.ts
 
 # Demo frontend
 demo/node_modules/

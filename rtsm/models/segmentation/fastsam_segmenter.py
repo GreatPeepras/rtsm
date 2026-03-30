@@ -1,17 +1,16 @@
 """
 FastSAM segmentation backend.
 
-Wraps the existing FastSAM implementation to conform to SegmentationAdapter interface.
+Uses pip-installed ultralytics FastSAM (v8.4+). No bundled fork needed.
 """
 from __future__ import annotations
 from typing import List, Optional
 from PIL import Image
 import torch
+import numpy as np
 import logging
 
 from rtsm.models.segmentation.base import SegmentationAdapter, SegmentationResult
-from rtsm.models.fastsam.model import FastSAM
-from rtsm.models.fastsam.prompt import FastSAMPrompt
 
 logger = logging.getLogger(__name__)
 
@@ -31,21 +30,24 @@ class FastSAMSegmenter(SegmentationAdapter):
         imgsz: int = 640,
         conf: float = 0.4,
         iou: float = 0.9,
+        retina_masks: bool = True,
     ):
-        """
-        Args:
-            model_path: Path to FastSAM weights (e.g., FastSAM-x.pt)
-            device: "cuda" or "cpu"
-            imgsz: Input image size for inference
-            conf: Confidence threshold
-            iou: IoU threshold for NMS
-        """
-        self.model = FastSAM(model_path)
+        self._model = None
+        self._model_path = model_path
         self.device = device
         self.imgsz = imgsz
         self.conf = conf
         self.iou = iou
+        self.retina_masks = retina_masks
         logger.info(f"FastSAMSegmenter initialized: device={device}, imgsz={imgsz}")
+
+    def _load_model(self):
+        """Lazy load FastSAM from pip-installed ultralytics."""
+        if self._model is not None:
+            return
+        from ultralytics import FastSAM
+        self._model = FastSAM(self._model_path)
+        logger.info(f"FastSAM model loaded: {self._model_path}")
 
     def segment(
         self,
@@ -62,74 +64,75 @@ class FastSAMSegmenter(SegmentationAdapter):
         Returns:
             SegmentationResult with masks (no labels, no embeddings)
         """
-        # Run FastSAM inference
+        self._load_model()
+
         # retina_masks=True ensures masks are at the original image resolution,
         # which is required for correct centroid backprojection with per-frame
         # intrinsics (especially when RGB is 1920x1440 from ARKit).
-        everything_results = self.model(
+        results = self._model(
             image,
             device=self.device,
-            retina_masks=True,
+            retina_masks=self.retina_masks,
             imgsz=self.imgsz,
             conf=self.conf,
             iou=self.iou,
             verbose=False,
         )
 
-        # Process results to get masks
-        prompt_process = FastSAMPrompt(image, everything_results, device=self.device)
-        ann = prompt_process.everything_prompt()
+        if not results or len(results) == 0:
+            return self._empty_result(image.size)
 
-        # Convert to standard format [N, H, W] bool tensor
-        masks = self._convert_annotations(ann, image.size)
+        result = results[0]
 
-        # Extract bounding boxes from masks
-        boxes = self._masks_to_boxes(masks) if masks.numel() > 0 else None
+        # Extract masks directly from results (modern ultralytics, no FastSAMPrompt needed)
+        masks = None
+        if hasattr(result, "masks") and result.masks is not None:
+            mask_data = result.masks.data
+            if isinstance(mask_data, torch.Tensor):
+                masks = mask_data.bool().cpu()
+            else:
+                masks = torch.from_numpy(np.asarray(mask_data)).bool()
+
+        if masks is None or masks.numel() == 0:
+            return self._empty_result(image.size)
+
+        # Extract boxes if available, otherwise derive from masks
+        boxes = None
+        if hasattr(result, "boxes") and result.boxes is not None:
+            boxes = result.boxes.xyxy
+            if not isinstance(boxes, torch.Tensor):
+                boxes = torch.tensor(boxes)
+            boxes = boxes.cpu()
+        else:
+            boxes = self._masks_to_boxes(masks)
+
+        # Extract scores if available
+        scores = None
+        if hasattr(result, "boxes") and result.boxes is not None and result.boxes.conf is not None:
+            scores = result.boxes.conf
+            if not isinstance(scores, torch.Tensor):
+                scores = torch.tensor(scores)
+            scores = scores.cpu()
 
         return SegmentationResult(
             masks=masks,
             boxes=boxes,
-            scores=None,  # FastSAM doesn't provide per-mask scores after everything_prompt
-            labels=None,  # No classification
-            embeddings=None,  # Requires separate CLIP encoding
+            scores=scores,
+            labels=None,
+            embeddings=None,
         )
 
-    def _convert_annotations(
-        self, ann: any, image_size: tuple
-    ) -> torch.Tensor:
-        """Convert FastSAM output to [N, H, W] bool tensor."""
+    def warmup(self) -> None:
+        """Eagerly load FastSAM model weights."""
+        self._load_model()
+
+    def _empty_result(self, image_size: tuple) -> SegmentationResult:
         W, H = image_size
-
-        if ann is None:
-            return torch.empty(0, H, W, dtype=torch.bool)
-
-        # Handle different annotation formats from FastSAM
-        if isinstance(ann, torch.Tensor):
-            if ann.ndim == 3:
-                return ann.bool()
-            elif ann.ndim == 2:
-                return ann.unsqueeze(0).bool()
-
-        if hasattr(ann, 'shape'):
-            # numpy array
-            import numpy as np
-            if isinstance(ann, np.ndarray):
-                if ann.ndim == 3:
-                    return torch.from_numpy(ann).bool()
-                elif ann.ndim == 2:
-                    return torch.from_numpy(ann).unsqueeze(0).bool()
-
-        # List of masks
-        if isinstance(ann, (list, tuple)) and len(ann) > 0:
-            masks = []
-            for m in ann:
-                if isinstance(m, torch.Tensor):
-                    masks.append(m.bool())
-                else:
-                    masks.append(torch.from_numpy(m).bool())
-            return torch.stack(masks, dim=0)
-
-        return torch.empty(0, H, W, dtype=torch.bool)
+        return SegmentationResult(
+            masks=torch.empty(0, H, W, dtype=torch.bool),
+            boxes=torch.empty(0, 4),
+            scores=torch.empty(0),
+        )
 
     def _masks_to_boxes(self, masks: torch.Tensor) -> torch.Tensor:
         """Convert masks [N, H, W] to bounding boxes [N, 4] in xyxy format."""
@@ -138,27 +141,22 @@ class FastSAMSegmenter(SegmentationAdapter):
 
         N = masks.shape[0]
         boxes = []
-
         for i in range(N):
             mask = masks[i]
             if not mask.any():
                 boxes.append([0, 0, 0, 0])
                 continue
-
             rows = torch.where(mask.any(dim=1))[0]
             cols = torch.where(mask.any(dim=0))[0]
-
             y0, y1 = rows[0].item(), rows[-1].item() + 1
             x0, x1 = cols[0].item(), cols[-1].item() + 1
             boxes.append([x0, y0, x1, y1])
-
         return torch.tensor(boxes, dtype=torch.float32)
 
     def close(self) -> None:
-        """Release model resources."""
-        if hasattr(self.model, 'model'):
-            del self.model.model
-        del self.model
+        if self._model is not None:
+            del self._model
+            self._model = None
         torch.cuda.empty_cache()
 
     @property

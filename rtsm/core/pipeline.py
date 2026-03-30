@@ -170,12 +170,20 @@ class Pipeline:
         # 1) segmentation -> masks
         pil_img = Image.fromarray(snap.rgb) if isinstance(snap.rgb, np.ndarray) else snap.rgb
 
-        # Get segmentation vocab from config (for open-vocab models like YOLO-World)
+        # Get segmentation vocab from config (for open-vocab models)
         seg_cfg = self.cfg.get("segmentation", {})
-        vocab = seg_cfg.get("yoloworld", {}).get("vocab", None)
+        backend = seg_cfg.get("backend", "fastsam")
+        if backend == "dual":
+            vocab = seg_cfg.get("yoloe", {}).get("vocab", None)
+        elif backend == "yoloe":
+            vocab = seg_cfg.get("yoloe", {}).get("vocab", None)
+        else:
+            vocab = None
 
         # Run segmentation
         seg_result = self.segmenter.segment(pil_img, vocab=vocab)
+        # Store for downstream priority boost and label propagation
+        self._last_seg_result = seg_result
 
         # Extract masks - use prepare_ann for consistency with existing pipeline
         if seg_result.has_masks:
@@ -427,6 +435,20 @@ class Pipeline:
                 + (w_cov_over*oversize_cov) + (w_bbox_over*oversize_bbox)
                 - (w_struct * structure_score)
             )
+
+            # Dual-confirmation priority adjustment: boost dual-confirmed,
+            # penalize YOLOE-only (no FastSAM confirmation)
+            seg = getattr(self, '_last_seg_result', None)
+            if seg is not None and seg.confirmation_source is not None:
+                dual_cfg = self.cfg.get("segmentation", {}).get("dual", {})
+                src_idx = s.idx  # original mask index from segmentation output
+                if src_idx < len(seg.confirmation_source):
+                    src = seg.confirmation_source[src_idx]
+                    if src == "dual":
+                        score += float(dual_cfg.get("priority_boost_dual", 0.3))
+                    elif src == "yoloe_only":
+                        score += float(dual_cfg.get("priority_penalty_yoloe_only", -0.1))
+
             cands.append(Candidate(idx=i, mask=m, stats=s, priority=float(score)))
 
         # pick top-K by priority
@@ -538,6 +560,26 @@ class Pipeline:
                     label, tv, class_idx, topk = cls[row]
                     # Always store top-K labels with scores (frontend will pick best for display)
                     setattr(cands[i], 'label_topk', [(cid, float(sc)) for (cid, sc, _j) in topk])
+        # Merge YOLOE detection labels with CLIP vocab labels.
+        # For dual-confirmed masks, prepend the YOLOE label (higher specificity
+        # from detection head) ahead of CLIP's vocab-classifier labels.
+        seg = getattr(self, '_last_seg_result', None)
+        if seg is not None and seg.detection_labels is not None:
+            det_labels = seg.detection_labels
+            det_conf = seg.label_confidence
+            for i, c in enumerate(cands):
+                src_idx = c.stats.idx  # original mask index from segmentation output
+                if src_idx < len(det_labels) and det_labels[src_idx]:
+                    yoloe_label = det_labels[src_idx]
+                    yoloe_score = float(det_conf[src_idx]) if det_conf and src_idx < len(det_conf) else 0.5
+                    existing = getattr(c, 'label_topk', None) or []
+                    # Merge: YOLOE label first (if not already present), then CLIP labels
+                    merged = [(yoloe_label, yoloe_score)]
+                    for lbl, sc in existing:
+                        if lbl != yoloe_label:
+                            merged.append((lbl, sc))
+                    c.label_topk = merged[:5]
+
         # Single boundary cast: move whole batch to CPU numpy float32 for association/WM
         try:
             embs_np = embs.detach().to(device="cpu", dtype=torch.float32).numpy()

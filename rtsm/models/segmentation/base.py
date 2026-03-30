@@ -3,8 +3,8 @@ Abstract base class for segmentation/detection models.
 
 This abstraction allows RTSM to swap between different backends:
 - FastSAM (open-world segmentation)
-- YOLO-World (open-vocabulary detection)
-- Future: 3D-aware segmentation, Grounding DINO + SAM, etc.
+- YOLOE (open-vocabulary detection + segmentation in one pass)
+- DualConfirmation (FastSAM + YOLOE with IoU merge)
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
@@ -38,6 +38,11 @@ class SegmentationResult:
     # Metadata
     vocab: Optional[List[str]] = None           # vocabulary used for detection
 
+    # Dual-confirmation metadata (populated by DualConfirmationSegmenter)
+    confirmation_source: Optional[List[str]] = None   # [N] "dual" | "fastsam_only" | "yoloe_only"
+    detection_labels: Optional[List[str]] = None      # [N] YOLOE label per mask (None if fastsam_only)
+    label_confidence: Optional[List[float]] = None    # [N] YOLOE detection confidence per mask
+
     @property
     def count(self) -> int:
         """Number of detected instances."""
@@ -67,7 +72,8 @@ class SegmentationAdapter(ABC):
     Implementations:
     - FastSAMSegmenter: Open-world "segment everything"
     - YOLOWorldSegmenter: Open-vocabulary detection with optional masks
-    - Future: GroundingDINOSegmenter, SAM2Segmenter, etc.
+    - YOLOESegmenter: Open-vocabulary detection + segmentation
+    - DualConfirmationSegmenter: FastSAM + YOLOE with IoU merge
     """
 
     @abstractmethod
@@ -86,6 +92,15 @@ class SegmentationAdapter(ABC):
 
         Returns:
             SegmentationResult with detected instances
+        """
+        pass
+
+    def warmup(self) -> None:
+        """Eagerly load model weights and download any missing assets.
+
+        Called at startup before the pipeline begins processing frames.
+        Default implementation is a no-op; subclasses with lazy loading
+        should override to trigger their ``_load_model()`` path.
         """
         pass
 

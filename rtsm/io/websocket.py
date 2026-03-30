@@ -326,6 +326,8 @@ class WebSocketReceiver:
                     if "bytes" in msg and msg["bytes"]:
                         # Binary frame
                         frames_received += 1
+                        if frames_received <= 3 or frames_received % 100 == 0:
+                            logger.info(f"[websocket] binary frame #{frames_received}, {len(msg['bytes'])} bytes")
                         try:
                             pkt = self._parse_binary_message(msg["bytes"])
                             if pkt is not None:
@@ -491,7 +493,7 @@ class WebSocketReceiver:
         # 5. Tracking state filter
         tracking_state = header.get("tracking_state", "not_available")
         if self._require_tracking_normal and tracking_state != "normal":
-            logger.debug(
+            logger.info(
                 f"[websocket] dropping frame: tracking_state={tracking_state}"
             )
             return None
