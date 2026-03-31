@@ -48,7 +48,7 @@ def get_segmenter(cfg: Dict[str, Any]) -> SegmentationAdapter:
             model_path: model_store/fastsam/FastSAM-x.pt
             ...
           yoloe:
-            model_path: yoloe-26s-seg.pt
+            model_path: model_store/yolo/yoloe-26s-seg.pt
             ...
           dual:
             iou_confirm_threshold: 0.40
@@ -101,7 +101,7 @@ def _create_yoloe(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationA
     yoloe_cfg = seg_cfg.get("yoloe", {})
 
     return YOLOESegmenter(
-        model_path=yoloe_cfg.get("model_path", "yoloe-26s-seg.pt"),
+        model_path=yoloe_cfg.get("model_path", "model_store/yolo/yoloe-26s-seg.pt"),
         device=yoloe_cfg.get("device", "cuda"),
         imgsz=yoloe_cfg.get("imgsz", 640),
         conf=yoloe_cfg.get("conf", 0.25),

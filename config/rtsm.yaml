@@ -27,7 +27,7 @@ segmentation:
     iou: 0.9
 
   yoloe:
-    model_path: yoloe-26s-seg.pt      # dev: yoloe-26s-seg.pt | demo: yoloe-26l-seg.pt
+    model_path: model_store/yolo/yoloe-26s-seg.pt      # dev: 26s-seg | demo: 26l-seg
     device: cuda
     imgsz: 640
     conf: 0.25
@@ -45,7 +45,7 @@ segmentation:
 clip:
   model: ViT-B-32
   pretrained: openai
-  local_dir: models/clip
+  local_dir: model_store/clip
 
 # -------------------- I/O & Network --------------------
 io:

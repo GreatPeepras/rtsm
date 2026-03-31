@@ -13,7 +13,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="ViT-B-32", help="e.g., ViT-B-32 or ViT-B-16")
     ap.add_argument("--pretrained", default="openai", help="openai or laion2b_s34b_b79k etc.")
-    ap.add_argument("--outdir", default="models/clip")
+    ap.add_argument("--outdir", default="model_store/clip")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)

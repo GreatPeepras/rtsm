@@ -39,7 +39,7 @@ class YOLOESegmenter(SegmentationAdapter):
 
     def __init__(
         self,
-        model_path: str = "yoloe-26s-seg.pt",
+        model_path: str = "model_store/yolo/yoloe-26s-seg.pt",
         device: str = "cuda",
         imgsz: int = 640,
         conf: float = 0.25,
