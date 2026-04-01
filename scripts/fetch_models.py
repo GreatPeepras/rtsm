@@ -12,6 +12,7 @@ Directory layout:
       clip/ViT-B-32-openai/model.pt
       fastsam/FastSAM-x.pt
       yolo/yoloe-26s-seg.pt
+      yolo/yoloe-26s-seg-pf.pt
 """
 import argparse
 import os
@@ -62,21 +63,28 @@ def fetch_fastsam():
 
 
 def fetch_yolo():
-    """Fetch YOLOE-26s-seg into model_store/yolo/."""
+    """Fetch YOLOE-26s-seg and YOLOE-26s-seg-pf into model_store/yolo/."""
     out = os.path.join(MODEL_STORE, "yolo")
-    ckpt = os.path.join(out, "yoloe-26s-seg.pt")
-    if os.path.isfile(ckpt):
-        print(f"[yolo] Already present: {ckpt}")
-        return
-
     os.makedirs(out, exist_ok=True)
-    print("[yolo] Downloading yoloe-26s-seg via ultralytics ...")
+
     from ultralytics import YOLOE
-    model = YOLOE("yoloe-26s-seg.pt")
-    src = model.ckpt_path if hasattr(model, "ckpt_path") else "yoloe-26s-seg.pt"
-    if os.path.isfile(src) and os.path.abspath(src) != os.path.abspath(ckpt):
-        shutil.move(src, ckpt)
-    print(f"[yolo] Saved: {ckpt}")
+
+    variants = [
+        "yoloe-26s-seg.pt",       # prompted (text/visual vocab)
+        "yoloe-26s-seg-pf.pt",    # prompt-free (1200+ built-in LVIS categories)
+    ]
+    for variant in variants:
+        ckpt = os.path.join(out, variant)
+        if os.path.isfile(ckpt):
+            print(f"[yolo] Already present: {ckpt}")
+            continue
+
+        print(f"[yolo] Downloading {variant} via ultralytics ...")
+        model = YOLOE(variant)
+        src = model.ckpt_path if hasattr(model, "ckpt_path") else variant
+        if os.path.isfile(src) and os.path.abspath(src) != os.path.abspath(ckpt):
+            shutil.move(src, ckpt)
+        print(f"[yolo] Saved: {ckpt}")
 
 
 FETCHERS = {
