@@ -267,6 +267,11 @@ def run_segmentation_debug(
                     fs_img = cv2.imread(fastsam_path)
                     ye_img = cv2.imread(yoloe_path)
                     if fs_img is not None and ye_img is not None:
+                        h, w = fs_img.shape[:2]
+                        cv2.putText(fs_img, "FastSAM", (w - 130, 25),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                        cv2.putText(ye_img, "YOLOE", (w - 100, 25),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
                         combined = np.hstack([fs_img, ye_img])
                         cv2.imwrite(compare_path, combined, [cv2.IMWRITE_JPEG_QUALITY, quality])
                 skipped += 1
@@ -279,6 +284,7 @@ def run_segmentation_debug(
                 model = get_fastsam()
                 result = model.segment(pil_img)
                 overlay = render_overlay(bgr, result.masks, labels=None)
+                overlay = cv2.rotate(overlay, cv2.ROTATE_90_CLOCKWISE)
                 cv2.imwrite(fastsam_path, overlay, [cv2.IMWRITE_JPEG_QUALITY, quality])
 
             # YOLOE
@@ -286,6 +292,7 @@ def run_segmentation_debug(
                 model = get_yoloe()
                 result = model.segment(pil_img)
                 overlay = render_overlay(bgr, result.masks, labels=result.labels)
+                overlay = cv2.rotate(overlay, cv2.ROTATE_90_CLOCKWISE)
                 cv2.imwrite(yoloe_path, overlay, [cv2.IMWRITE_JPEG_QUALITY, quality])
 
             # Side-by-side compare
@@ -332,14 +339,11 @@ def _generate_html_viewer(output_dir: str, compare_dir: str):
 <style>
   body { background: #1a1a1a; color: #eee; font-family: monospace; margin: 0; padding: 20px; }
   .viewer { text-align: center; }
-  .img-container { position: relative; display: inline-block; }
-  img { max-width: 95vw; max-height: 80vh; border: 1px solid #444;
-        transition: transform 0.2s ease; }
+  img { max-width: 95vw; max-height: 85vh; border: 1px solid #444; }
   .controls { margin: 15px 0; }
   button { font-size: 18px; padding: 8px 24px; margin: 0 8px; cursor: pointer;
            background: #333; color: #eee; border: 1px solid #666; border-radius: 4px; }
   button:hover { background: #555; }
-  button.active { background: #555; border-color: #0af; }
   .info { font-size: 14px; color: #aaa; margin: 10px 0; }
   .nav-hint { font-size: 12px; color: #666; }
 </style>
@@ -351,28 +355,14 @@ def _generate_html_viewer(output_dir: str, compare_dir: str):
     <button onclick="prev()">&larr; Prev</button>
     <span id="counter">1 / """ + str(len(images)) + """</span>
     <button onclick="next()">Next &rarr;</button>
-    <span style="margin-left: 20px;">
-      <button onclick="rotate(-90)" title="Rotate left (Shift+Left)">&#8634;</button>
-      <button onclick="rotate(90)" title="Rotate right (Shift+Right)">&#8635;</button>
-      <button onclick="rotate(0)" title="Reset rotation (R)">Reset</button>
-    </span>
   </div>
-  <div class="img-container"><img id="img" src="" /></div>
+  <div><img id="img" src="" /></div>
   <div class="info" id="filename"></div>
-  <div class="nav-hint">Keyboard: &larr;/&rarr; navigate &bull; Shift+&larr;/Shift+&rarr; rotate &bull; R reset</div>
+  <div class="nav-hint">Keyboard: &larr; / &rarr; arrow keys</div>
 </div>
 <script>
 const images = """ + json.dumps(images) + """;
 let idx = 0;
-let angle = 0;
-function applyRotation() {
-  document.getElementById('img').style.transform = 'rotate(' + angle + 'deg)';
-}
-function rotate(deg) {
-  if (deg === 0) { angle = 0; }
-  else { angle = (angle + deg) % 360; }
-  applyRotation();
-}
 function show(i) {
   idx = Math.max(0, Math.min(images.length - 1, i));
   document.getElementById('img').src = 'compare/' + images[idx];
@@ -382,11 +372,8 @@ function show(i) {
 function prev() { show(idx - 1); }
 function next() { show(idx + 1); }
 document.addEventListener('keydown', e => {
-  if (e.shiftKey && e.key === 'ArrowLeft') { rotate(-90); e.preventDefault(); }
-  else if (e.shiftKey && e.key === 'ArrowRight') { rotate(90); e.preventDefault(); }
-  else if (e.key === 'ArrowLeft') prev();
+  if (e.key === 'ArrowLeft') prev();
   else if (e.key === 'ArrowRight') next();
-  else if (e.key === 'r' || e.key === 'R') rotate(0);
 });
 show(0);
 </script>
