@@ -217,6 +217,8 @@ class WebSocketReceiver:
         on_keyframe: Optional[callable] = None,
         on_pose_corrections: Optional[callable] = None,
         on_pose_corrections_batch: Optional[callable] = None,
+        on_raw_message: Optional[callable] = None,
+        on_handshake_done: Optional[callable] = None,
     ) -> None:
         self.ingest_q = ingest_queue
         self._host = host
@@ -229,6 +231,8 @@ class WebSocketReceiver:
         self._on_keyframe = on_keyframe
         self._on_pose_corrections = on_pose_corrections
         self._on_pose_corrections_batch = on_pose_corrections_batch
+        self._on_raw_message = on_raw_message
+        self._on_handshake_done = on_handshake_done
 
         # Per-session state (reset on each new client connection)
         self._frame_count: int = 0
@@ -310,6 +314,12 @@ class WebSocketReceiver:
             f"[websocket] Handshake OK: session={session_id}, device={device_name}"
         )
 
+        if self._on_handshake_done is not None:
+            try:
+                self._on_handshake_done(hello, ack)
+            except Exception as e:
+                logger.error(f"[websocket] on_handshake_done callback error: {e}")
+
         # Reset per-session state
         self._frame_count = 0
         self._last_nonkf_enq_mono = 0.0
@@ -328,6 +338,11 @@ class WebSocketReceiver:
                         frames_received += 1
                         if frames_received <= 3 or frames_received % 100 == 0:
                             logger.info(f"[websocket] binary frame #{frames_received}, {len(msg['bytes'])} bytes")
+                        if self._on_raw_message is not None:
+                            try:
+                                self._on_raw_message("binary", msg["bytes"])
+                            except Exception as e:
+                                logger.error(f"[websocket] on_raw_message callback error: {e}")
                         try:
                             pkt = self._parse_binary_message(msg["bytes"])
                             if pkt is not None:
@@ -355,6 +370,11 @@ class WebSocketReceiver:
                             logger.error(f"[websocket] frame parse error: {e}")
                     elif "text" in msg and msg["text"]:
                         # Text message (pose_corrections, etc.)
+                        if self._on_raw_message is not None:
+                            try:
+                                self._on_raw_message("text", msg["text"])
+                            except Exception as e:
+                                logger.error(f"[websocket] on_raw_message callback error: {e}")
                         try:
                             self._handle_text_message(msg["text"])
                         except Exception as e:

@@ -454,6 +454,36 @@ class Pipeline:
         # pick top-K by priority
         cands.sort(key=lambda c: c.priority, reverse=True)
 
+        # Scoring diagnostics: log all candidates ranked by priority
+        if cands:
+            logger.info(
+                f"[scoring] {len(cands)} candidates ranked "
+                f"(top={cands[0].priority:.3f}, bottom={cands[-1].priority:.3f})"
+            )
+            for rank, cd in enumerate(cands):
+                s = cd.stats
+                cov = s.coverage
+                edge = s.border_fraction
+                vld = s.depth_valid
+                spr = 0.0 if s.depth_spread is None else float(s.depth_spread)
+                bbox_n = min(1.0, (max(0, s.bbox[2]-s.bbox[0]) * max(0, s.bbox[3]-s.bbox[1])) / img_area)
+                oc = max(0.0, cov - cov_cap)
+                ob = max(0.0, bbox_n - bbox_cap)
+                # recompute structure for log
+                sg = 0.0
+                if s.planar_inlier_pct is not None and s.planar_rms_m is not None:
+                    if float(s.planar_inlier_pct) >= inlier_min:
+                        sg = _smoothstep(0.0, rms_smooth_hi, rms_inv_scale / (float(s.planar_rms_m) + 1e-6))
+                se = _smoothstep(extent_lo, extent_hi, cov)
+                ss = _clamp(a * sg + b * 0.0 + c * se)
+                logger.debug(
+                    f"  #{rank} mask={s.idx} score={cd.priority:.3f} | "
+                    f"cov={cov:.1%} edge={edge:.1%} depth_vld={vld:.1%} "
+                    f"spread={spr:.3f}m bbox={bbox_n:.1%} | "
+                    f"penalties: oversize_cov={w_cov_over*oc:+.3f} oversize_bbox={w_bbox_over*ob:+.3f} "
+                    f"struct={-w_struct*ss:+.3f} (geom={sg:.2f} extent={se:.2f})"
+                )
+
         # same-frame dedup: greedy suppression using mask/bbox IoU, centroid as fallback
         def _bbox_iou(a: Tuple[int,int,int,int], b: Tuple[int,int,int,int]) -> float:
             ax0, ay0, ax1, ay1 = a

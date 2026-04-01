@@ -91,6 +91,7 @@ def _create_fastsam(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> Segmentatio
         conf=fastsam_cfg.get("conf", 0.4),
         iou=fastsam_cfg.get("iou", 0.9),
         retina_masks=seg_cfg.get("retina_masks", True),
+        max_det=fastsam_cfg.get("max_det", 300),
     )
 
 
@@ -108,6 +109,7 @@ def _create_yoloe(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationA
         iou=yoloe_cfg.get("iou", 0.7),
         default_vocab=yoloe_cfg.get("vocab", None),
         retina_masks=seg_cfg.get("retina_masks", True),
+        max_det=yoloe_cfg.get("max_det", 300),
     )
 
 
