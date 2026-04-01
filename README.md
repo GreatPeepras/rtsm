@@ -54,39 +54,52 @@ RTSM is **SLAM-agnostic** and designed to sit above existing perception stacks.
 │                 RTSM — Real-Time Spatio-Semantic Memory                  │
 └──────────────────────────────────────────────────────────────────────────┘
 
-                            ┌──────────────────┐
-                            │   RGB-D Sensor   │
-                            │   + SLAM (Pose)  │
-                            └────────┬─────────┘
-                                     │ ZeroMQ
-                                     ▼
+  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+  │  Calabi Lens     │   │   D435i + SLAM   │   │  Recorded        │
+  │  (ARKit iOS)     │   │   (RTABMap)      │   │  Session         │
+  └────────┬─────────┘   └────────┬─────────┘   └────────┬─────────┘
+           │ WebSocket            │ ZeroMQ               │ --replay
+           ▼                      ▼                       ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  I/O Layer                                                               │
 │                                                                          │
-│  ┌─────────────┐     ┌─────────────┐     ┌──────────────┐                │
-│  │ ZMQ Bridge  │────>│ IngestQueue │────>│ FramePacket  │                │
-│  │  (sensors)  │     │  (buffer)   │     │ (RGB,D,Pose) │                │
-│  └─────────────┘     └─────────────┘     └──────┬───────┘                │
-│                                                 │                        │
-└─────────────────────────────────────────────────┼────────────────────────┘
-                                                  │
-                            ┌─────────────────────▼───────────────────────┐
-                            │              Ingest Gate                    │
-                            │   (keyframe priority, sweep-based skip)     │
-                            └─────────────────────┬───────────────────────┘
-                                                  │
-┌─────────────────────────────────────────────────▼────────────────────────┐
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │  WebSocket  │  │  ZMQ Bridge │  │   Replay     │  │  Recorder    │   │
+│  │  Receiver   │  │  (sensors)  │  │  Receiver    │  │  (--record)  │   │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘  └──────────────┘   │
+│         └────────────────┴────────────────┘                              │
+│                          │                                               │
+│                   ┌──────▼───────┐     ┌──────────────┐                  │
+│                   │ IngestQueue  │────>│ FramePacket  │                  │
+│                   │  (buffer)    │     │ (RGB,D,Pose) │                  │
+│                   └──────────────┘     └──────┬───────┘                  │
+│                                               │                          │
+└───────────────────────────────────────────────┼──────────────────────────┘
+                                                │
+                          ┌─────────────────────▼───────────────────────┐
+                          │              Ingest Gate                    │
+                          │   (keyframe priority, sweep-based skip)     │
+                          └─────────────────────┬───────────────────────┘
+                                                │
+┌───────────────────────────────────────────────▼──────────────────────────┐
 │  Perception Pipeline                                                     │
 │                                                                          │
-│  ┌────────────┐     ┌───────────────┐     ┌──────────────┐               │
-│  │  FastSAM   │────>│ Mask Staging  │────>│ Top-K Select │               │
-│  │ (segment)  │     │ (heuristics)  │     │  (priority)  │               │
-│  └────────────┘     └───────────────┘     └──────┬───────┘               │
-│                                                  │                       │
-│                     ┌───────────────┐     ┌──────▼───────┐               │
-│                     │ Vocab Classify│<────│ CLIP Encode  │               │
-│                     │ (label + conf)│     │(224x224 crop)│               │
-│                     └───────┬───────┘     └──────────────┘               │
+│  ┌────────────┐  ┌────────────┐                                          │
+│  │  FastSAM   │  │   YOLOE    │    Dual-Confirmation Segmentation        │
+│  │ (masks)    │  │ (masks +   │    IoU match -> "dual" | "fastsam_only"   │
+│  │            │  │  labels)   │    | "yoloe_only"                        │
+│  └─────┬──────┘  └─────┬──────┘                                         │
+│        └────────┬───────┘                                                │
+│                 ▼                                                        │
+│  ┌───────────────┐     ┌──────────────┐     ┌──────────────┐             │
+│  │ Mask Staging  │────>│ Top-K Select │────>│ CLIP Encode  │             │
+│  │ (heuristics)  │     │  (priority)  │     │(224x224 crop)│             │
+│  └───────────────┘     └──────────────┘     └──────┬───────┘             │
+│                                                    │                     │
+│                     ┌───────────────┐        ┌─────▼────────┐            │
+│                     │ Vocab Classify│<───────│  Embeddings  │            │
+│                     │ (label + conf)│        │  (512-D L2)  │            │
+│                     └───────┬───────┘        └──────────────┘            │
 │                             │                                            │
 └─────────────────────────────┼────────────────────────────────────────────┘
                               │
@@ -113,7 +126,7 @@ RTSM is **SLAM-agnostic** and designed to sit above existing perception stacks.
 │    - stability, hits, confirmed                                          │
 │    - image_crops (JPEG snapshots)                                        │
 │                                                                          │
-│  Proto -> Confirmed (hits >= 2, stability >= 0.5, views >= 2)            │
+│  Proto -> Confirmed (hits >= 2, stability >= 0.55, views >= 1)           │
 │                                                                          │
 └───────────────┬──────────────────────────────────────────────────────────┘
                 │
@@ -145,47 +158,83 @@ RTSM is **SLAM-agnostic** and designed to sit above existing perception stacks.
 ### Prerequisites
 
 - Python 3.12+
-- CUDA-capable GPU (tested on RTX 3080)
-- RGB-D camera (Intel RealSense D435i tested)
-- SLAM system providing poses (RTAB-Map, ORB-SLAM3)
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- CUDA-capable GPU (tested on RTX 3080, RTX 5090)
+- **One of:**
+  - iPhone with [Calabi Lens](https://github.com/calabi-inc) app (ARKit, no external SLAM needed)
+  - RGB-D camera (Intel RealSense D435i) + SLAM system (RTAB-Map)
+  - A recorded session (for replay — no hardware needed)
 
-> **Tested on:** WSL2 Ubuntu 22.04 with RTAB-Map.
-> Note: WSL2 has USB passthrough limitations — you may need [usbipd-win](https://github.com/dorssel/usbipd-win) for camera access.
+> **Tested on:** WSL2 Ubuntu 22.04 with RTAB-Map, and macOS/Windows with Calabi Lens.
 
 ### Installation
 
 ```bash
 git clone https://github.com/calabi-inc/rtsm.git
 cd rtsm
-# Install dependencies
-pip install -r requirements.txt
-
-# Install RTSM in editable mode
-pip install -e .
+uv sync                  # install all dependencies
 ```
 
 ### Download Models
 
 ```bash
-# FastSAM weights
-mkdir -p model_store/fastsam
-# Download FastSAM-x.pt to model_store/fastsam/
-
-# CLIP weights (auto-downloaded on first run)
-python scripts/fetch_clip.py
+# Fetch all models (FastSAM, YOLOE prompt-free, CLIP)
+uv run python scripts/fetch_models.py
 ```
+
+This downloads:
+- `model_store/fastsam/FastSAM-x.pt` — open-world segmentation
+- `model_store/yolo/yoloe-26s-seg-pf.pt` — prompt-free detection (1200+ LVIS categories)
+- `model_store/yolo/yoloe-26s-seg.pt` — prompted detection (custom vocab)
+- `model_store/clip/` — CLIP ViT-B-32 embeddings
 
 ### Run
 
 ```bash
-# Start RTSM (expects RGB-D + pose stream via ZeroMQ)
-python -m rtsm.run
+# Live — Calabi Lens (ARKit over WebSocket)
+uv run rtsm-run
+
+# Live — D435i + RTAB-Map (ZeroMQ)
+# Set io.receiver: zeromq in config/rtsm.yaml first
+uv run rtsm-run
+
+# Replay a recorded session (no device needed)
+uv run rtsm-run --replay recordings/session1
 ```
 
 RTSM will start:
 - **Perception pipeline** — processing frames
 - **REST API** — `http://localhost:8000`
 - **Visualization WebSocket** — `ws://localhost:8081`
+
+### Record & Replay
+
+Record a session for offline testing and reproducible iteration:
+
+```bash
+# Record only (no GPU needed, no pipeline)
+uv run rtsm-run --record recordings/my_session --record-only
+
+# Record while running pipeline
+uv run rtsm-run --record recordings/my_session
+
+# Replay at original recording rate
+uv run rtsm-run --replay recordings/my_session
+```
+
+Recordings are self-contained directories with raw WebSocket data. Replay feeds the exact same bytes through the full decode + pipeline path, preserving all time-dependent behavior (TTL caches, throttles).
+
+### A/B Segmentation Debug
+
+Compare FastSAM vs YOLOE segmentation on a recorded session:
+
+```bash
+# Generate side-by-side overlays (cached — skips existing frames)
+python scripts/debug_segmentation.py --recording recordings/session1
+
+# Open the viewer
+# → debug/session1/compare.html (arrow keys to navigate)
+```
 
 ### API Examples
 
@@ -217,13 +266,21 @@ See [`config/rtsm.yaml`](config/rtsm.yaml) for full configuration options:
 
 ```
 rtsm/
-├── core/           # Pipeline, association, data models
-├── models/         # FastSAM, CLIP adapters
-├── stores/         # Working memory, proximity index, vector stores
-├── io/             # ZeroMQ ingestion, frame buffering
-├── api/            # REST API server
-├── visualization/  # WebSocket server, 3D demo
-└── utils/          # Helpers, transforms
+├── core/           # Pipeline, association, ingest gate, data models
+├── models/         # FastSAM, YOLOE, CLIP, dual-confirmation segmenter
+├── stores/         # Working memory, proximity index, sweep cache, vector stores
+├── io/             # WebSocket + ZeroMQ receivers, recorder, replayer
+├── api/            # REST API server (FastAPI)
+├── visualization/  # WebSocket server, TSDF fusion, 3D demo
+└── utils/          # Mask staging, transforms, helpers
+config/
+├── rtsm.yaml       # Main configuration (models, thresholds, I/O)
+└── clip/vocab.yaml  # CLIP vocabulary
+scripts/
+├── fetch_models.py          # Download all models (FastSAM, YOLOE, CLIP)
+└── debug_segmentation.py    # A/B segmentation viewer (FastSAM vs YOLOE)
+recordings/                  # Recorded sessions for replay testing (git-lfs)
+tests/                       # Unit + integration tests
 ```
 
 ---
@@ -244,9 +301,15 @@ rtsm/
 
 ## Roadmap
 
-- [ ] More adapters (YOLO-World, ORB-SLAM3)
-- [ ] Direct plugin for Isaac Sim
-- [ ] More communication protocols (ROS 2, MQTT, Kafka)
+- [x] Dual-confirmation segmentation (FastSAM + YOLOE)
+- [x] YOLOE prompt-free (1200+ LVIS categories)
+- [x] WebSocket receiver for Calabi Lens (ARKit iOS)
+- [x] Record/replay system for offline testing
+- [x] A/B segmentation debug tooling
+- [ ] Real-time analytics dashboard
+- [ ] Evaluation framework (ArUco ground truth)
+- [ ] Agent architecture (MCP interface)
+- [ ] More communication protocols (ROS 2, gRPC)
 - [ ] LLM integration for high-level queries (agentic mode)
 - [ ] Dockerization
 
@@ -258,6 +321,9 @@ RTSM builds on excellent open-source work:
 
 - **FastSAM** — Zhao et al., *Fast Segment Anything*, 2023.
   [arXiv:2306.12156](https://arxiv.org/abs/2306.12156) · [GitHub](https://github.com/CASIA-IVA-Lab/FastSAM)
+
+- **YOLOE** — THU-MIG, *YOLOE: Real-Time Seeing Anything*, ICCV 2025.
+  [GitHub](https://github.com/THU-MIG/yoloe) · [Ultralytics](https://docs.ultralytics.com/models/yoloe/)
 
 - **CLIP** — Radford et al., *Learning Transferable Visual Models From Natural Language Supervision*, 2021.
   [arXiv:2103.00020](https://arxiv.org/abs/2103.00020) · [GitHub](https://github.com/openai/CLIP)

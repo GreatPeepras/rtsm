@@ -19,6 +19,7 @@ from rtsm.utils.net import print_server_addresses, get_local_ipv4_addresses
 from rtsm.stores.sweep_policy import SweepPolicy
 from rtsm.api.server import create_app, start_server, ResetComponents
 
+import argparse
 import yaml
 import threading
 import logging
@@ -37,12 +38,60 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    parser = argparse.ArgumentParser(description="RTSM - Real-Time Spatio-Semantic Memory")
+    parser.add_argument("--replay", type=str, default=None, metavar="DIR",
+                        help="Replay a recorded session from DIR at original rate")
+    parser.add_argument("--record", type=str, default=None, metavar="DIR",
+                        help="Record raw WebSocket session to DIR")
+    parser.add_argument("--record-only", action="store_true",
+                        help="Record without running pipeline (no GPU needed)")
+    args = parser.parse_args()
+
     print("=" * 60)
     print("  RTSM - Real-Time Spatio-Semantic Memory")
     print("=" * 60)
 
     cfg = yaml.safe_load(open("config/rtsm.yaml", "r"))
     logger.info("Configuration loaded from config/rtsm.yaml")
+
+    # ── Record-only mode: skip all heavy init, just record raw WebSocket ──
+    if args.record and args.record_only:
+        from rtsm.io.recorder import SessionRecorder
+        recorder = SessionRecorder(output_dir=args.record, config_snapshot=cfg)
+
+        io_cfg = cfg.get("io", {})
+        ws_cfg = io_cfg.get("websocket", {})
+        vis_cfg = cfg.get("visualization", {})
+        ingest_q = IngestQueue(maxsize=512)
+
+        ws_receiver = WebSocketReceiver(
+            ingest_queue=ingest_q,
+            host=str(ws_cfg.get("host", "0.0.0.0")),
+            port=int(ws_cfg.get("port", 8765)),
+            require_tracking_normal=bool(ws_cfg.get("require_tracking_normal", True)),
+            keyframe_every_n=int(ws_cfg.get("keyframe_every_n", 30)),
+            nonkf_min_interval_s=float(ws_cfg.get("nonkf_min_interval_s", 0.5)),
+            confidence_threshold=int(ws_cfg.get("confidence_threshold", 1)),
+            apply_camera_flip=bool(vis_cfg.get("apply_camera_flip", False)),
+            on_raw_message=recorder.on_message,
+            on_handshake_done=recorder.on_handshake,
+        )
+        ws_receiver.start()
+        ws_port = int(ws_cfg.get("port", 8765))
+        local_ips = get_local_ipv4_addresses()
+        display_host = local_ips[0] if local_ips else "0.0.0.0"
+        print_server_addresses(ws_port)
+        logger.info(f"Record-only mode: ws://{display_host}:{ws_port}/stream -> {args.record}")
+        print(f"  Recording to: {args.record}")
+        print("  Press Ctrl+C to stop recording")
+
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            recorder.close()
+        return
 
     # Create segmenter from config
     segmenter = get_segmenter(cfg)
@@ -117,14 +166,38 @@ def main():
     local_ips = get_local_ipv4_addresses()
     display_host = local_ips[0] if local_ips else "0.0.0.0"
 
-    # ---------------- Receiver (ZMQ or WebSocket) ----------------
+    # ---------------- Receiver (Replay, WebSocket, or ZMQ) ----------------
     units_cfg = cfg.get("units", {})
+    ws_cfg = io_cfg.get("websocket", {})
+    recorder = None
 
     # Will be set to FrameWindow or None depending on receiver
     frame_window_for_reset = None
 
-    if receiver_type == "websocket":
-        ws_cfg = io_cfg.get("websocket", {})
+    if args.replay:
+        # Replay mode: feed recorded session through the pipeline
+        from rtsm.io.replayer import ReplayReceiver
+        replay_receiver = ReplayReceiver(
+            recording_dir=args.replay,
+            ingest_queue=ingest_q,
+            require_tracking_normal=bool(ws_cfg.get("require_tracking_normal", True)),
+            keyframe_every_n=int(ws_cfg.get("keyframe_every_n", 30)),
+            nonkf_min_interval_s=float(ws_cfg.get("nonkf_min_interval_s", 0.5)),
+            confidence_threshold=int(ws_cfg.get("confidence_threshold", 1)),
+            apply_camera_flip=bool(vis_cfg.get("apply_camera_flip", False)),
+            on_keyframe=vis_server.handle_frame_packet if vis_server else None,
+            on_pose_corrections=vis_server.handle_kf_pose_update if vis_server else None,
+            on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
+        )
+        replay_receiver.start()
+        logger.info(f"Replay receiver started from {args.replay}")
+
+    elif receiver_type == "websocket":
+        # Optional: attach recorder if --record is set
+        if args.record:
+            from rtsm.io.recorder import SessionRecorder
+            recorder = SessionRecorder(output_dir=args.record, config_snapshot=cfg)
+
         ws_receiver = WebSocketReceiver(
             ingest_queue=ingest_q,
             host=str(ws_cfg.get("host", "0.0.0.0")),
@@ -137,11 +210,15 @@ def main():
             on_keyframe=vis_server.handle_frame_packet if vis_server else None,
             on_pose_corrections=vis_server.handle_kf_pose_update if vis_server else None,
             on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
+            on_raw_message=recorder.on_message if recorder else None,
+            on_handshake_done=recorder.on_handshake if recorder else None,
         )
         ws_receiver.start()
         ws_port = int(ws_cfg.get("port", 8765))
         print_server_addresses(ws_port)
         logger.info(f"WebSocket receiver started on ws://{display_host}:{ws_port}/stream")
+        if recorder:
+            logger.info(f"Recording to {args.record}")
 
     elif receiver_type == "zeromq":
         sub = ZeroMQSubscriber(
@@ -208,9 +285,13 @@ def main():
 
     print("=" * 60)
     print("  RTSM is running! Waiting for data...")
-    if receiver_type == "websocket":
+    if args.replay:
+        print(f"  Receiver: Replay ({args.replay})")
+    elif receiver_type == "websocket":
         ws_port = int(io_cfg.get("websocket", {}).get("port", 8765))
         print(f"  Receiver: WebSocket (ws://{display_host}:{ws_port}/stream)")
+        if recorder:
+            print(f"  Recording: {args.record}")
     else:
         print(f"  Receiver: ZeroMQ")
         print(f"  Camera:  {io_cfg.get('camera_endpoint', 'tcp://127.0.0.1:5555')}")
@@ -222,4 +303,10 @@ def main():
     print("  Press Ctrl+C to stop")
     print("=" * 60)
 
-    pipe.run_forever()
+    try:
+        pipe.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if recorder is not None:
+            recorder.close()

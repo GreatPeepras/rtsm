@@ -14,9 +14,12 @@ This module provides utilities to:
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, Any
+import logging
 import numpy as np
 import torch
 import cv2
+
+logger = logging.getLogger(__name__)
 
 # ---------- depth coordinate mapping ----------
 
@@ -264,10 +267,17 @@ def run_heuristics(
     plan_stride = int(cfg.get("planarity", {}).get("sample_stride", 3))
     plan_rms_thr = float(cfg.get("planarity", {}).get("rms_residual_max_m", 0.02))
 
+    # Rejection counters for diagnostics
+    _rej_area = 0
+    _rej_depth_valid = 0
+    _rej_depth_spread = 0
+
     for i in range(N):
         m = ann_bool[i]
         area = int(m.sum().item())
         if area < area_min:
+            _rej_area += 1
+            logger.debug(f"  mask {i}: REJECT area={area} < {area_min}")
             continue
 
         bbox = _compute_mask_bbox(m)
@@ -283,8 +293,18 @@ def run_heuristics(
         # Hard rejection: skip masks with poor depth quality
         if depth_m is not None:
             if depth_valid < depth_valid_min:
+                _rej_depth_valid += 1
+                logger.debug(
+                    f"  mask {i}: REJECT depth_valid={depth_valid:.3f} < {depth_valid_min} "
+                    f"(area={area}, coverage={coverage:.1%})"
+                )
                 continue
             if depth_spread is not None and depth_spread > depth_spread_max:
+                _rej_depth_spread += 1
+                logger.debug(
+                    f"  mask {i}: REJECT depth_spread={depth_spread:.3f}m > {depth_spread_max}m "
+                    f"(area={area}, coverage={coverage:.1%})"
+                )
                 continue
 
         # centroids (use eroded mask for 3D centroid)
@@ -327,4 +347,11 @@ def run_heuristics(
         kept.append(m)
         infos.append(stats)
 
+    rejected_total = N - len(kept)
+    if rejected_total > 0:
+        logger.info(
+            f"[heuristics] {N} masks -> {len(kept)} kept, "
+            f"{rejected_total} rejected (area={_rej_area}, "
+            f"depth_valid={_rej_depth_valid}, depth_spread={_rej_depth_spread})"
+        )
     return kept, infos

@@ -23,16 +23,18 @@ segmentation:
     model_path: model_store/fastsam/FastSAM-x.pt
     device: cuda
     imgsz: 640
-    conf: 0.4
-    iou: 0.9
+    conf: 0.6                                           # raised from 0.4 - drop weak mask fragments (0.5 still oversegmented far views)
+    iou: 0.7                                            # lowered from 0.9 - merge overlapping masks more aggressively
+    max_det: 100                                        # indoor rooms rarely have 300 objects
 
   yoloe:
-    model_path: model_store/yolo/yoloe-26s-seg.pt      # dev: 26s-seg | demo: 26l-seg
+    model_path: model_store/yolo/yoloe-26s-seg-pf.pt   # prompt-free: 1200+ LVIS categories, no vocab needed
     device: cuda
     imgsz: 640
-    conf: 0.25
-    iou: 0.7
-    # Custom vocabulary (null = default indoor vocab; ignored for -pf models)
+    conf: 0.25                                          # permissive so YOLOE confirms more FastSAM masks
+    iou: 0.5                                            # stricter NMS for cluttered indoor scenes
+    max_det: 100                                        # cap detections per frame
+    # vocab is ignored for -pf models (1200+ built-in categories)
     vocab: null
 
   # Dual-confirmation settings (only used when backend: dual)

@@ -31,6 +31,7 @@ class FastSAMSegmenter(SegmentationAdapter):
         conf: float = 0.4,
         iou: float = 0.9,
         retina_masks: bool = True,
+        max_det: int = 300,
     ):
         self._model = None
         self._model_path = model_path
@@ -39,6 +40,7 @@ class FastSAMSegmenter(SegmentationAdapter):
         self.conf = conf
         self.iou = iou
         self.retina_masks = retina_masks
+        self.max_det = max_det
         logger.info(f"FastSAMSegmenter initialized: device={device}, imgsz={imgsz}")
 
     def _load_model(self):
@@ -76,6 +78,7 @@ class FastSAMSegmenter(SegmentationAdapter):
             imgsz=self.imgsz,
             conf=self.conf,
             iou=self.iou,
+            max_det=self.max_det,
             verbose=False,
         )
 
