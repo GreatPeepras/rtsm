@@ -61,6 +61,8 @@ Use bracket prefixes:
 
 ### Pull Request Process
 
+The `main` branch is protected. All changes must go through a pull request and receive at least one review approval before merging.
+
 1. Ensure your code passes tests and linting
 2. Update documentation if needed
 3. Keep PRs focused — one feature or fix per PR
