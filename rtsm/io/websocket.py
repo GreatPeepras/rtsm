@@ -18,7 +18,7 @@ import struct
 import time
 import threading
 import logging
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import cv2
@@ -219,6 +219,7 @@ class WebSocketReceiver:
         on_pose_corrections_batch: Optional[callable] = None,
         on_raw_message: Optional[callable] = None,
         on_handshake_done: Optional[callable] = None,
+        latency_analytics: Optional[Any] = None,
     ) -> None:
         self.ingest_q = ingest_queue
         self._host = host
@@ -233,6 +234,7 @@ class WebSocketReceiver:
         self._on_pose_corrections_batch = on_pose_corrections_batch
         self._on_raw_message = on_raw_message
         self._on_handshake_done = on_handshake_done
+        self._latency_analytics = latency_analytics
 
         # Per-session state (reset on each new client connection)
         self._frame_count: int = 0
@@ -346,6 +348,8 @@ class WebSocketReceiver:
                         try:
                             pkt = self._parse_binary_message(msg["bytes"])
                             if pkt is not None:
+                                if self._latency_analytics:
+                                    self._latency_analytics.sample_queue_depth(self.ingest_q.qsize())
                                 ok = self.ingest_q.put(pkt, block=False)
                                 if ok:
                                     frames_enqueued += 1
@@ -363,6 +367,8 @@ class WebSocketReceiver:
                                         f"-> queue={self.ingest_q.qsize()}"
                                     )
                                 else:
+                                    if self._latency_analytics:
+                                        self._latency_analytics.record_queue_drop()
                                     logger.warning(
                                         "[websocket] ingest queue full; dropping frame"
                                     )
@@ -455,6 +461,9 @@ class WebSocketReceiver:
 
     def _parse_binary_message(self, data: bytes) -> Optional[FramePacket]:
         """Parse a single binary WebSocket message into a FramePacket."""
+        if self._latency_analytics:
+            self._latency_analytics.record_frame_received()
+
         offset = 0
         n = len(data)
 
@@ -513,6 +522,8 @@ class WebSocketReceiver:
         # 5. Tracking state filter
         tracking_state = header.get("tracking_state", "not_available")
         if self._require_tracking_normal and tracking_state != "normal":
+            if self._latency_analytics:
+                self._latency_analytics.record_tracking_drop()
             logger.info(
                 f"[websocket] dropping frame: tracking_state={tracking_state}"
             )
@@ -530,6 +541,8 @@ class WebSocketReceiver:
         if not is_keyframe:
             now_mono = time.monotonic()
             if (now_mono - self._last_nonkf_enq_mono) < self._nonkf_min_interval_s:
+                if self._latency_analytics:
+                    self._latency_analytics.record_throttle_skip()
                 return None
 
         # 7. Decode RGB

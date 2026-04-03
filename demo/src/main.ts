@@ -13,6 +13,8 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js'
+import uPlot from 'uplot'
+import 'uplot/dist/uPlot.min.css'
 
 // ============================================================================
 // SCENE SETUP
@@ -370,6 +372,8 @@ function connectWebSocket() {
           updateObjectMarkers()
           updateObjectList()
           updateHud()
+        } else if (msg.type === 'runtime_analytics') {
+          handleAnalyticsMessage(msg)
         }
       } catch {
         // Ignore parse errors
@@ -1438,6 +1442,551 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(window.innerWidth, window.innerHeight)
+})
+
+// ============================================================================
+// RUNTIME ANALYTICS DASHBOARD
+// ============================================================================
+
+let analyticsVisible = false
+let latencyHistory: any[] = []
+let segHistory: any[] = []
+let latestAggregate: { latency?: any; segmentation?: any } = {}
+let runtimeConfig: any = null
+let throughputChart: uPlot | null = null
+let latencyChart: uPlot | null = null
+let segChart: uPlot | null = null
+let configCollapsed = false
+
+const configToggle = document.getElementById('analytics-config-toggle')
+
+function pruneByTime(arr: any[], maxAge: number) {
+  const cutoff = Date.now() / 1000 - maxAge
+  while (arr.length > 0 && arr[0].wall_ts < cutoff) arr.shift()
+}
+
+function handleAnalyticsMessage(msg: any) {
+  if (msg.mode === 'full') {
+    latencyHistory = msg.latency?.hourly ?? []
+    segHistory = msg.segmentation?.hourly ?? []
+    if (msg.config) {
+      runtimeConfig = msg.config
+      if (analyticsVisible) {
+        renderConfigPanel()
+        adaptSegmentationSection()
+      }
+    }
+  } else if (msg.mode === 'append') {
+    if (msg.latency?.bucket) {
+      latencyHistory.push(msg.latency.bucket)
+      pruneByTime(latencyHistory, 3600)
+    }
+    if (msg.segmentation?.bucket) {
+      segHistory.push(msg.segmentation.bucket)
+      pruneByTime(segHistory, 3600)
+    }
+  }
+  latestAggregate = {
+    latency: msg.latency?.aggregate,
+    segmentation: msg.segmentation?.aggregate,
+  }
+  if (analyticsVisible) updateAnalyticsPanel()
+}
+
+// ---- Tab switching (event delegation for reliability) ----
+
+function switchTab(tab: string) {
+  document.querySelectorAll('#tab-bar .tab-btn').forEach(t =>
+    t.classList.toggle('active', (t as HTMLElement).dataset.tab === tab)
+  )
+  const v3d = document.getElementById('view-3d')
+  const vAn = document.getElementById('view-analytics')
+
+  if (tab === '3d') {
+    if (v3d) v3d.style.display = 'block'
+    if (vAn) vAn.style.display = 'none'
+    analyticsVisible = false
+  } else {
+    if (v3d) v3d.style.display = 'none'
+    if (vAn) vAn.style.display = 'block'
+    analyticsVisible = true
+    initChartsIfNeeded()
+    if (runtimeConfig) {
+      renderConfigPanel()
+      adaptSegmentationSection()
+    }
+    updateAnalyticsPanel()
+  }
+}
+
+document.getElementById('tab-bar')?.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest('.tab-btn') as HTMLElement | null
+  if (btn?.dataset.tab) switchTab(btn.dataset.tab)
+})
+
+configToggle?.addEventListener('click', () => {
+  configCollapsed = !configCollapsed
+  const el = document.getElementById('analytics-config')
+  if (el) el.style.display = configCollapsed ? 'none' : ''
+  if (configToggle) configToggle.textContent = configCollapsed ? 'Config \u25b8' : 'Config \u25be'
+})
+
+// ---- Config panel ----
+
+function renderConfigPanel() {
+  const el = document.getElementById('analytics-config')
+  if (!el || !runtimeConfig) return
+  const seg = runtimeConfig.segmentation || {}
+  const rx = runtimeConfig.receiver || {}
+  const pl = runtimeConfig.pipeline || {}
+  const fsam = seg.fastsam || {}
+  const yoloe = seg.yoloe || {}
+
+  const item = (k: string, v: any, hl?: boolean) =>
+    `<span class="config-item"><span class="config-key">${k}:</span> <span class="${hl ? 'config-highlight' : 'config-val'}">${v}</span></span>`
+
+  let items = [
+    item('backend', seg.backend, true),
+    item('device', pl.device ?? '?'),
+    item('retina', seg.retina_masks ?? '?'),
+  ]
+
+  if (seg.backend === 'dual') {
+    items.push(
+      item('fastsam', `${fsam.imgsz}px conf=${fsam.conf} iou=${fsam.iou}`),
+      item('yoloe', `${yoloe.imgsz}px conf=${yoloe.conf} iou=${yoloe.iou}`),
+      item('dual-iou', seg.dual?.iou_confirm_threshold),
+      item('prefer', seg.dual?.prefer_mask),
+    )
+  } else {
+    const a = seg[seg.backend] || {}
+    items.push(item('imgsz', `${a.imgsz}px`), item('conf', a.conf), item('max-det', a.max_det))
+  }
+
+  items.push(
+    item('kf-every', `${rx.keyframe_every_n}f`),
+    item('throttle', `${rx.nonkf_min_interval_s}s`),
+    item('queue', rx.queue_maxsize),
+    item('top-k', pl.topk_preclip),
+  )
+
+  el.innerHTML = `<div class="config-grid">${items.join('')}</div>`
+}
+
+// ---- Adaptive segmentation section ----
+
+function adaptSegmentationSection() {
+  const label = document.querySelector('#analytics-seg-section .chart-section-label')
+  if (!label || !runtimeConfig) return
+  const backend = runtimeConfig.segmentation?.backend
+  if (backend === 'dual') {
+    label.textContent = 'Segmentation (Dual Confirmation)'
+  } else {
+    label.textContent = `Segmentation (${backend} only)`
+  }
+}
+
+// ---- Stats rendering ----
+
+function updateAnalyticsPanel() {
+  updateKPIs()
+  updateLatencyBreakdown()
+  updateChartDetails()
+  updateCharts()
+}
+
+// ---- KPI scorecard row ----
+
+function setKPI(id: string, value: string, cls?: string) {
+  const card = document.getElementById(id)
+  if (!card) return
+  const valEl = card.querySelector('.kpi-value')
+  if (valEl) {
+    valEl.textContent = value
+    valEl.className = 'kpi-value' + (cls ? ' ' + cls : '')
+  }
+}
+
+function setKPISub(id: string, text: string) {
+  const card = document.getElementById(id)
+  if (!card) return
+  const subEl = card.querySelector('.kpi-sub')
+  if (subEl) subEl.textContent = text
+}
+
+function updateKPIs() {
+  const la = latestAggregate.latency
+  const sa = latestAggregate.segmentation
+  const lastB = latencyHistory.length > 0 ? latencyHistory[latencyHistory.length - 1] : null
+
+  if (la) {
+    setKPI('kpi-input-hz', `${la.input_hz ?? 0}`)
+    setKPI('kpi-proc-hz', `${la.processing_hz ?? 0}`)
+    setKPISub('kpi-proc-hz', `Hz (${((la.effective_ratio ?? 0) * 100).toFixed(0)}% ratio)`)
+
+    const totalMs = la.t_total?.mean ? (la.t_total.mean * 1000).toFixed(0) : '—'
+    const p95Ms = la.t_total?.p95 ? (la.t_total.p95 * 1000).toFixed(0) : '?'
+    const ltCls = Number(totalMs) > 500 ? 'yellow' : Number(totalMs) > 1000 ? 'red' : ''
+    setKPI('kpi-latency', totalMs, ltCls)
+    setKPISub('kpi-latency', `ms mean (p95: ${p95Ms}ms)`)
+
+    const qMax = lastB?.queue_depth_max ?? 0
+    const qDrops = lastB?.queue_drops ?? 0
+    const qCls = qDrops > 0 ? 'red' : qMax > 400 ? 'red' : qMax > 256 ? 'yellow' : 'green'
+    setKPI('kpi-queue', `${qMax}`, qCls)
+    setKPISub('kpi-queue', qDrops > 0 ? `/ 512 cap  (${qDrops} drops!)` : '/ 512 cap')
+    const qCard = document.getElementById('kpi-queue')
+    if (qCard) qCard.classList.toggle('congestion', qDrops > 0)
+
+    const surv = ((la.mask_survival_rate ?? 0) * 100).toFixed(0)
+    setKPI('kpi-masks', `${la.mean_masks_in ?? 0}`)
+    setKPISub('kpi-masks', `\u2192 ${la.mean_candidates ?? 0} selected (${surv}%)`)
+  }
+
+  if (sa) {
+    const backend = sa.backend ?? runtimeConfig?.segmentation?.backend ?? '?'
+    if (backend === 'dual') {
+      setKPI('kpi-dual', `${((sa.dual_rate ?? 0) * 100).toFixed(0)}%`, 'green')
+      setKPISub('kpi-dual', `dual | ${((sa.fastsam_only_rate ?? 0) * 100).toFixed(0)}% fsam | ${((sa.yoloe_only_rate ?? 0) * 100).toFixed(0)}% yoloe`)
+    } else {
+      setKPI('kpi-dual', `${sa.mean_total ?? 0}`)
+      setKPISub('kpi-dual', `masks/frame (${backend})`)
+    }
+  }
+
+  // Objects — use latest non-empty bucket's WM snapshot (always reflects current state)
+  // Association — sum across all buckets for session totals
+  if (latencyHistory.length > 0) {
+    // Find latest bucket with WM data (wm_total > 0 or any frames)
+    let wmBucket = lastB
+    for (let i = latencyHistory.length - 1; i >= 0; i--) {
+      if ((latencyHistory[i].wm_total ?? 0) > 0 || (latencyHistory[i].frames_in_bucket ?? 0) > 0) {
+        wmBucket = latencyHistory[i]
+        break
+      }
+    }
+
+    const confirmed = wmBucket?.wm_confirmed ?? 0
+    const total = wmBucket?.wm_total ?? 0
+    const proto = wmBucket?.wm_proto ?? 0
+    const objCls = confirmed > 0 ? 'green' : total > 0 ? 'yellow' : ''
+    setKPI('kpi-objects', `${confirmed}`, objCls)
+    setKPISub('kpi-objects', `confirmed / ${total} total (${proto} proto)`)
+
+    // Sum association across all buckets for session totals
+    let totalMatched = 0, totalCreated = 0
+    for (const b of latencyHistory) {
+      totalMatched += b.assoc_matched ?? 0
+      totalCreated += b.assoc_created ?? 0
+    }
+    const matchRate = (totalMatched + totalCreated) > 0
+      ? ((totalMatched / (totalMatched + totalCreated)) * 100).toFixed(0) : '—'
+    setKPI('kpi-assoc', `${totalMatched}`, totalMatched > 0 ? 'green' : '')
+    setKPISub('kpi-assoc', `matched / ${totalCreated} new (${matchRate}% match rate)`)
+  }
+}
+
+// ---- Latency breakdown (inline colored dots above chart) ----
+
+function updateLatencyBreakdown() {
+  const el = document.getElementById('analytics-latency-breakdown')
+  if (!el) return
+  const a = latestAggregate.latency
+  if (!a) { el.innerHTML = ''; return }
+
+  const totalMean = a.t_total?.mean ?? 0
+  const stages = [
+    { name: 'Seg', stats: a.t_segmentation, color: '#ff6b6b' },
+    { name: 'Heur', stats: a.t_heuristics, color: '#ffd93d' },
+    { name: 'Score', stats: a.t_scoring, color: '#aaaaaa' },
+    { name: 'CLIP', stats: a.t_clip, color: '#6bcb77' },
+    { name: 'Assoc', stats: a.t_association, color: '#4d96ff' },
+  ]
+
+  el.innerHTML = '<div class="latency-breakdown">' + stages.map(s => {
+    const mean = s.stats?.mean ?? 0
+    const ms = (mean * 1000).toFixed(0)
+    const pct = totalMean > 0 ? ((mean / totalMean) * 100).toFixed(0) : '0'
+    return `<div class="latency-item">
+      <span class="latency-dot" style="background:${s.color}"></span>
+      <span class="latency-name">${s.name}</span>
+      <span class="latency-val">${ms}ms</span>
+      <span class="latency-pct">(${pct}%)</span>
+    </div>`
+  }).join('') + '</div>'
+}
+
+// ---- Chart section detail text (inline next to label) ----
+
+function updateChartDetails() {
+  const la = latestAggregate.latency
+  const sa = latestAggregate.segmentation
+  const lastB = latencyHistory.length > 0 ? latencyHistory[latencyHistory.length - 1] : null
+
+  const tpDetail = document.getElementById('analytics-throughput-detail')
+  if (tpDetail && la) {
+    const throttle = lastB?.throttle_skips ?? 0
+    const gate = lastB?.gate_rejections ?? 0
+    tpDetail.textContent = `throttle: ${throttle}/s | gate: ${gate}/s`
+  }
+
+  const ltDetail = document.getElementById('analytics-latency-detail')
+  if (ltDetail && la) {
+    const p95 = la.t_total?.p95 ? (la.t_total.p95 * 1000).toFixed(0) : '?'
+    const max = la.t_total?.max ? (la.t_total.max * 1000).toFixed(0) : '?'
+    ltDetail.textContent = `p95: ${p95}ms | max: ${max}ms`
+  }
+
+  const segDetail = document.getElementById('analytics-seg-detail')
+  if (segDetail && sa) {
+    const backend = sa.backend ?? runtimeConfig?.segmentation?.backend ?? '?'
+    if (backend === 'dual') {
+      segDetail.textContent = `raw: FastSAM ${sa.mean_fastsam_raw ?? 0} | YOLOE ${sa.mean_yoloe_raw ?? 0} | survival: ${((sa.staged_survival_rate ?? 0) * 100).toFixed(0)}%`
+    } else {
+      segDetail.textContent = `${sa.mean_total ?? 0} masks/frame | survival: ${((sa.staged_survival_rate ?? 0) * 100).toFixed(0)}%`
+    }
+  }
+}
+
+// ---- uPlot charts ----
+
+const DARK_AXES: uPlot.Axis = { stroke: '#555', grid: { stroke: '#222' } }
+const DARK_AXES_Y: uPlot.Axis = { stroke: '#555', grid: { stroke: '#222' }, size: 45 }
+
+function chartWidth(containerId: string): number {
+  const el = document.getElementById(containerId)
+  return el ? Math.max(300, el.clientWidth) : 600
+}
+
+function initChartsIfNeeded() {
+  if (!throughputChart) {
+    const el = document.getElementById('analytics-throughput-chart')
+    if (el) {
+      throughputChart = new uPlot({
+        width: chartWidth('analytics-throughput-chart'), height: 150,
+        series: [
+          {},
+          { label: 'Input Hz', stroke: '#888', width: 1 },
+          { label: 'Proc Hz', stroke: '#1e90ff', width: 2 },
+          { label: 'Q Max', stroke: '#ffffff40', fill: '#ffffff10', width: 1 },
+        ],
+        axes: [DARK_AXES, DARK_AXES_Y],
+        cursor: { show: true },
+        legend: { show: false },
+      }, [[], [], [], []], el)
+    }
+  }
+  if (!latencyChart) {
+    const el = document.getElementById('analytics-latency-chart')
+    if (el) {
+      latencyChart = new uPlot({
+        width: chartWidth('analytics-latency-chart'), height: 150,
+        series: [
+          {},
+          { label: 'Seg', stroke: '#ff6b6b', fill: '#ff6b6b40', width: 1 },
+          { label: 'Heur', stroke: '#ffd93d', fill: '#ffd93d40', width: 1 },
+          { label: 'Score', stroke: '#aaa', fill: '#aaaaaa30', width: 1 },
+          { label: 'CLIP', stroke: '#6bcb77', fill: '#6bcb7740', width: 1 },
+          { label: 'Assoc', stroke: '#4d96ff', fill: '#4d96ff40', width: 1 },
+        ],
+        axes: [DARK_AXES, DARK_AXES_Y],
+        cursor: { show: true },
+        legend: { show: false },
+      }, [[], [], [], [], [], []], el)
+    }
+  }
+  if (!segChart) {
+    const el = document.getElementById('analytics-seg-chart')
+    if (el) {
+      const isDual = runtimeConfig?.segmentation?.backend === 'dual'
+      if (isDual) {
+        segChart = new uPlot({
+          width: chartWidth('analytics-seg-chart'), height: 120,
+          series: [
+            {},
+            { label: 'Dual', stroke: '#00ff88', fill: '#00ff8840', width: 1 },
+            { label: 'FastSAM', stroke: '#1e90ff', fill: '#1e90ff40', width: 1 },
+            { label: 'YOLOE', stroke: '#ffaa00', fill: '#ffaa0040', width: 1 },
+          ],
+          axes: [DARK_AXES, DARK_AXES_Y],
+          cursor: { show: true },
+          legend: { show: false },
+        }, [[], [], [], []], el)
+      } else {
+        segChart = new uPlot({
+          width: chartWidth('analytics-seg-chart'), height: 120,
+          series: [
+            {},
+            { label: 'Masks', stroke: '#1e90ff', fill: '#1e90ff40', width: 2 },
+          ],
+          axes: [DARK_AXES, DARK_AXES_Y],
+          cursor: { show: true },
+          legend: { show: false },
+        }, [[], []], el)
+      }
+    }
+  }
+}
+
+// Auto-resize charts when viewport changes
+const resizeObserver = new ResizeObserver(() => {
+  if (!analyticsVisible) return
+  if (throughputChart) throughputChart.setSize({ width: chartWidth('analytics-throughput-chart'), height: 150 })
+  if (latencyChart) latencyChart.setSize({ width: chartWidth('analytics-latency-chart'), height: 150 })
+  if (segChart) segChart.setSize({ width: chartWidth('analytics-seg-chart'), height: 120 })
+})
+const analyticsContent = document.getElementById('analytics-content')
+if (analyticsContent) resizeObserver.observe(analyticsContent)
+
+// ---- Chart data stacking helper ----
+
+function stackSeries(arrays: number[][]): number[][] {
+  if (arrays.length === 0) return []
+  const stacked: number[][] = [arrays[0].slice()]
+  for (let i = 1; i < arrays.length; i++) {
+    stacked.push(stacked[i - 1].map((v, j) => v + (arrays[i][j] ?? 0)))
+  }
+  return stacked
+}
+
+function updateCharts() {
+  // Throughput chart (lines, no stacking)
+  if (throughputChart && latencyHistory.length > 0) {
+    throughputChart.setData([
+      latencyHistory.map(b => b.wall_ts),
+      latencyHistory.map(b => b.input_hz ?? 0),
+      latencyHistory.map(b => b.processing_hz ?? 0),
+      latencyHistory.map(b => b.queue_depth_max ?? 0),
+    ])
+  }
+
+  // Latency chart (stacked area)
+  if (latencyChart && latencyHistory.length > 0) {
+    const ts = latencyHistory.map(b => b.wall_ts)
+    const raw = [
+      latencyHistory.map(b => b.t_seg_ms ?? 0),
+      latencyHistory.map(b => b.t_heur_ms ?? 0),
+      latencyHistory.map(b => b.t_scoring_ms ?? 0),
+      latencyHistory.map(b => b.t_clip_ms ?? 0),
+      latencyHistory.map(b => b.t_assoc_ms ?? 0),
+    ]
+    const stacked = stackSeries(raw)
+    latencyChart.setData([ts, ...stacked])
+  }
+
+  // Segmentation chart
+  if (segChart && segHistory.length > 0) {
+    const ts = segHistory.map(b => b.wall_ts)
+    const isDual = runtimeConfig?.segmentation?.backend === 'dual'
+    if (isDual) {
+      const raw = [
+        segHistory.map(b => b.dual_rate ?? 0),
+        segHistory.map(b => b.fastsam_only_rate ?? 0),
+        segHistory.map(b => b.yoloe_only_rate ?? 0),
+      ]
+      const stacked = stackSeries(raw)
+      segChart.setData([ts, ...stacked])
+    } else {
+      segChart.setData([ts, segHistory.map(b => b.mean_total ?? 0)])
+    }
+  }
+}
+
+// ---- Copy button ----
+
+function buildAnalyticsSummary(): string {
+  const now = new Date().toISOString().replace('T', ' ').substring(0, 19)
+  const la = latestAggregate.latency
+  const sa = latestAggregate.segmentation
+  const cfg = runtimeConfig
+
+  const backend = cfg?.segmentation?.backend ?? 'unknown'
+  const device = cfg?.pipeline?.device ?? '?'
+
+  const fmtT = (s: any) => s ? `${(s.mean * 1000).toFixed(0)}ms / ${(s.p95 * 1000).toFixed(0)}ms` : '?'
+
+  const lines = [
+    `RTSM Analytics Snapshot (${now})`,
+    `Backend: ${backend} | Device: ${device}`,
+    '---',
+  ]
+
+  if (la) {
+    const lastB = latencyHistory.length > 0 ? latencyHistory[latencyHistory.length - 1] : null
+    lines.push(
+      `Throughput: ${la.input_hz ?? 0} Hz in -> ${la.processing_hz ?? 0} Hz proc (${((la.effective_ratio ?? 0) * 100).toFixed(0)}%)`,
+      `Queue: ${lastB?.queue_depth_mean ?? 0} avg / ${lastB?.queue_depth_max ?? 0} max / 512 cap | Drops: ${lastB?.queue_drops ?? 0}`,
+      '---',
+      'Latency (mean / p95):',
+      `  Total: ${fmtT(la.t_total)}`,
+      `  Seg: ${fmtT(la.t_segmentation)} | Heur: ${fmtT(la.t_heuristics)}`,
+      `  Score: ${fmtT(la.t_scoring)} | CLIP: ${fmtT(la.t_clip)} | Assoc: ${fmtT(la.t_association)}`,
+    )
+  }
+
+  if (sa) {
+    lines.push('---')
+    if (backend === 'dual') {
+      lines.push(
+        `Segmentation: Dual ${((sa.dual_rate ?? 0) * 100).toFixed(0)}% | FastSAM-only ${((sa.fastsam_only_rate ?? 0) * 100).toFixed(0)}% | YOLOE-only ${((sa.yoloe_only_rate ?? 0) * 100).toFixed(0)}%`,
+        `Raw: FastSAM ${sa.mean_fastsam_raw ?? 0} avg | YOLOE ${sa.mean_yoloe_raw ?? 0} avg | Survival: ${((sa.staged_survival_rate ?? 0) * 100).toFixed(0)}%`,
+      )
+    } else {
+      lines.push(
+        `Segmentation (${backend}): ${sa.mean_total ?? 0} masks/frame | Survival: ${((sa.staged_survival_rate ?? 0) * 100).toFixed(0)}%`,
+      )
+    }
+  }
+
+  // Objects / association — session totals from Tier 2 history
+  if (latencyHistory.length > 0) {
+    // Find latest WM snapshot
+    let wm = { confirmed: 0, total: 0, proto: 0 }
+    for (let i = latencyHistory.length - 1; i >= 0; i--) {
+      if ((latencyHistory[i].wm_total ?? 0) > 0) {
+        wm = { confirmed: latencyHistory[i].wm_confirmed ?? 0, total: latencyHistory[i].wm_total ?? 0, proto: latencyHistory[i].wm_proto ?? 0 }
+        break
+      }
+    }
+    let totalMatched = 0, totalCreated = 0
+    for (const b of latencyHistory) {
+      totalMatched += b.assoc_matched ?? 0
+      totalCreated += b.assoc_created ?? 0
+    }
+    lines.push(
+      '---',
+      `Objects: ${wm.confirmed} confirmed / ${wm.total} total (${wm.proto} proto)`,
+      `Association: ${totalMatched} matched / ${totalCreated} created`,
+    )
+  }
+
+  return lines.join('\n')
+}
+
+document.getElementById('analytics-copy')?.addEventListener('click', async () => {
+  const btn = document.getElementById('analytics-copy')
+  const text = buildAnalyticsSummary()
+  try {
+    await navigator.clipboard.writeText(text)
+    if (btn) {
+      btn.textContent = 'Copied!'
+      btn.classList.add('copied')
+      setTimeout(() => { btn.textContent = 'Copy Data'; btn.classList.remove('copied') }, 1500)
+    }
+  } catch {
+    // Fallback for non-HTTPS
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    if (btn) {
+      btn.textContent = 'Copied!'
+      btn.classList.add('copied')
+      setTimeout(() => { btn.textContent = 'Copy Data'; btn.classList.remove('copied') }, 1500)
+    }
+  }
 })
 
 // Initialize

@@ -43,6 +43,10 @@ class SegmentationResult:
     detection_labels: Optional[List[str]] = None      # [N] YOLOE label per mask (None if fastsam_only)
     label_confidence: Optional[List[float]] = None    # [N] YOLOE detection confidence per mask
 
+    # Pre-merge raw model output counts (populated by DualConfirmationSegmenter)
+    fastsam_raw_count: Optional[int] = None
+    yoloe_raw_count: Optional[int] = None
+
     @property
     def count(self) -> int:
         """Number of detected instances."""

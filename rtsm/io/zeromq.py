@@ -46,6 +46,7 @@ class ZeroMQSubscriber:
         # Optional visualization callbacks
         on_kf_packet: Optional[Callable[..., Any]] = None,
         on_kf_pose_update: Optional[Callable[..., Any]] = None,
+        latency_analytics: Optional[Any] = None,
     ) -> None:
         """
         Initialize dual-socket ZMQ subscriber.
@@ -66,6 +67,9 @@ class ZeroMQSubscriber:
         # Unit normalization
         self._depth_scale = float(depth_m_per_unit)
         self._pose_scale = float(pose_m_per_unit)
+
+        # Analytics
+        self._latency_analytics = latency_analytics
 
         # Visualization callbacks
         self._on_kf_packet = on_kf_packet
@@ -141,6 +145,9 @@ class ZeroMQSubscriber:
             "encoding": {"rgb": "jpeg", "depth": "png_u16"}
         }
         """
+        if self._latency_analytics:
+            self._latency_analytics.record_frame_received()
+
         if len(parts) != 4:
             logger.warning(f"[zeromq] camera.rgbd: expected 4 parts, got {len(parts)}")
             return
@@ -497,6 +504,8 @@ class ZeroMQSubscriber:
         )
 
         # Enqueue
+        if self._latency_analytics:
+            self._latency_analytics.sample_queue_depth(self.ingest_q.qsize())
         ok = self.ingest_q.put(fp, block=False)
         if ok:
             self._last_enq_ts_ns = ts_ns
@@ -505,6 +514,8 @@ class ZeroMQSubscriber:
             frame_type = "KF" if is_keyframe else "frame"
             logger.debug(f"[zmq] enqueued {frame_type} -> queue={self.ingest_q.qsize()}")
         else:
+            if self._latency_analytics:
+                self._latency_analytics.record_queue_drop()
             frame_type = "keyframe" if is_keyframe else "non-KF"
             logger.warning(f"[zeromq] ingest queue full; dropping {frame_type}")
 

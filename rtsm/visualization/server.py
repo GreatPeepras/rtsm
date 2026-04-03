@@ -132,6 +132,8 @@ class VisualizationServer:
         working_memory: Any,  # WorkingMemory instance
         host: str = "0.0.0.0",
         port: int = 8081,
+        seg_analytics: Any = None,
+        latency_analytics: Any = None,
     ):
         """
         Initialize visualization server.
@@ -147,10 +149,19 @@ class VisualizationServer:
         self.host = host
         self.port = port
 
+        # Analytics buffers (optional)
+        self._seg_analytics = seg_analytics
+        self._latency_analytics = latency_analytics
+
         # Visualization config
         vis_cfg = cfg.get("visualization", {})
         self._push_interval_ms = vis_cfg.get("objects", {}).get("push_interval_ms", 200)
         self._include_proto = vis_cfg.get("objects", {}).get("include_proto", True)
+
+        # Analytics push config
+        analytics_vis_cfg = vis_cfg.get("analytics", {})
+        self._analytics_push_s = float(analytics_vis_cfg.get("push_interval_ms", 1000)) / 1000.0
+        self._analytics_full_sync_interval = int(analytics_vis_cfg.get("full_sync_interval_s", 30))
 
         # Depth config for visualization
         depth_cfg = vis_cfg.get("depth", {})
@@ -211,6 +222,7 @@ class VisualizationServer:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
         self._objects_task: Optional[asyncio.Task] = None
+        self._analytics_task: Optional[asyncio.Task] = None
 
     def _create_app(self) -> FastAPI:
         """Create FastAPI application with WebSocket endpoint."""
@@ -221,6 +233,8 @@ class VisualizationServer:
             self._running = True
             # Start periodic WM objects push
             self._objects_task = asyncio.create_task(self._push_objects_loop())
+            if self._seg_analytics or self._latency_analytics:
+                self._analytics_task = asyncio.create_task(self._push_analytics_loop())
             logger.info(f"[visualization] Server started on port {self.port}")
             yield
             # Shutdown
@@ -229,6 +243,12 @@ class VisualizationServer:
                 self._objects_task.cancel()
                 try:
                     await self._objects_task
+                except asyncio.CancelledError:
+                    pass
+            if self._analytics_task:
+                self._analytics_task.cancel()
+                try:
+                    await self._analytics_task
                 except asyncio.CancelledError:
                     pass
 
@@ -352,6 +372,111 @@ class VisualizationServer:
         except Exception as e:
             logger.error(f"[visualization] Error getting WM objects: {e}")
             return []
+
+    # ---- Runtime analytics push ----
+
+    def _extract_analytics_config(self) -> dict:
+        """Extract runtime config relevant to analytics dashboard."""
+        seg = self.cfg.get("segmentation", {})
+        io_cfg = self.cfg.get("io", {})
+        ws = io_cfg.get("websocket", {})
+        return {
+            "segmentation": {
+                "backend": seg.get("backend", "fastsam"),
+                "retina_masks": seg.get("retina_masks", True),
+                "fastsam": {k: seg.get("fastsam", {}).get(k) for k in ("model_path", "imgsz", "conf", "iou", "max_det")},
+                "yoloe": {k: seg.get("yoloe", {}).get(k) for k in ("model_path", "imgsz", "conf", "iou", "max_det")},
+                "dual": seg.get("dual", {}),
+            },
+            "receiver": {
+                "type": io_cfg.get("receiver", "websocket"),
+                "keyframe_every_n": ws.get("keyframe_every_n", 30),
+                "nonkf_min_interval_s": ws.get("nonkf_min_interval_s", 0.5),
+                "confidence_threshold": ws.get("confidence_threshold", 2),
+                "queue_maxsize": 512,  # matches IngestQueue(maxsize=512) in run.py
+            },
+            "pipeline": {
+                "topk_preclip": self.cfg.get("staging", {}).get("topk_preclip", 15),
+                "device": seg.get(seg.get("backend", "fastsam"), {}).get("device", "cuda"),
+            },
+            "sweep_policy": {
+                "ttl_s": self.cfg.get("sweep_policy", {}).get("ttl_s", 2.0),
+                "min_baseline_m": self.cfg.get("sweep_policy", {}).get("min_baseline_m", 0.08),
+            },
+        }
+
+    async def _push_analytics_loop(self) -> None:
+        """Periodically roll up Tier 1 → Tier 2 and push analytics to clients."""
+        import dataclasses
+
+        ticks_since_full = 0
+
+        while self._running:
+            try:
+                await asyncio.sleep(self._analytics_push_s)
+
+                if self.broadcaster.client_count == 0:
+                    continue  # skip rollup when nobody is listening
+
+                # Snapshot WM state before rollup (for object health metrics)
+                if self._latency_analytics and self.wm:
+                    try:
+                        wm_stats = self.wm.stats()
+                        total = int(wm_stats.get('objects', 0))
+                        confirmed = int(wm_stats.get('confirmed', 0))
+                        self._latency_analytics.snapshot_wm(
+                            total=total, confirmed=confirmed, proto=total - confirmed
+                        )
+                    except Exception:
+                        pass
+
+                # Roll up Tier 1 → Tier 2
+                lat_bucket = self._latency_analytics.roll_up_second() if self._latency_analytics else None
+                seg_bucket = self._seg_analytics.roll_up_second() if self._seg_analytics else None
+
+                ticks_since_full += 1
+                is_full = ticks_since_full >= self._analytics_full_sync_interval
+                if is_full:
+                    ticks_since_full = 0
+
+                backend = self.cfg.get("segmentation", {}).get("backend", "fastsam")
+                msg: dict = {"type": "runtime_analytics"}
+
+                if is_full:
+                    msg["mode"] = "full"
+                    msg["config"] = self._extract_analytics_config()
+                    if self._latency_analytics:
+                        msg["latency"] = {
+                            "aggregate": self._latency_analytics.aggregate(),
+                            "hourly": self._latency_analytics.hourly_history(),
+                        }
+                    if self._seg_analytics:
+                        msg["segmentation"] = {
+                            "backend": backend,
+                            "aggregate": self._seg_analytics.aggregate(),
+                            "hourly": self._seg_analytics.hourly_history(),
+                        }
+                else:
+                    msg["mode"] = "append"
+                    if self._latency_analytics:
+                        msg["latency"] = {
+                            "aggregate": self._latency_analytics.aggregate(),
+                            "bucket": dataclasses.asdict(lat_bucket) if lat_bucket else None,
+                        }
+                    if self._seg_analytics:
+                        msg["segmentation"] = {
+                            "backend": backend,
+                            "aggregate": self._seg_analytics.aggregate(),
+                            "bucket": dataclasses.asdict(seg_bucket) if seg_bucket else None,
+                        }
+
+                await self.broadcaster._broadcast_json(msg)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.debug("[visualization] analytics push error", exc_info=True)
+                await asyncio.sleep(self._analytics_push_s)
 
     def handle_kf_packet(
         self,

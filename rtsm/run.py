@@ -98,6 +98,18 @@ def main():
     logger.info(f"Segmentation backend created: {segmenter.name}")
     segmenter.warmup()
     logger.info(f"Segmentation models loaded and ready: {segmenter.name}")
+
+    # ── Runtime analytics buffers (optional) ──
+    from rtsm.analytics import SegAnalyticsBuffer, PipelineLatencyBuffer
+    analytics_cfg = cfg.get("analytics", {})
+    seg_analytics = None
+    latency_analytics = None
+    if analytics_cfg.get("enable", True):
+        retention_s = float(analytics_cfg.get("retention_s", 3600))
+        buffer_frames = int(analytics_cfg.get("buffer_frames", 300))
+        seg_analytics = SegAnalyticsBuffer(max_frames=buffer_frames, retention_s=retention_s)
+        latency_analytics = PipelineLatencyBuffer(max_frames=buffer_frames, retention_s=retention_s)
+        logger.info(f"Runtime analytics initialized (retention={retention_s}s, buffer={buffer_frames} frames)")
     clip = CLIPAdapter("ViT-B-32", "openai", "model_store/clip", device=cfg.get("device","cuda"))
     logger.info(f"CLIP model successfully loaded from model_store/clip")
     # Determine world-frame up axis from receiver type (ARKit=Y-up, D435i/ROS=Z-up)
@@ -159,6 +171,8 @@ def main():
             working_memory=wm,
             host=vis_cfg.get("host", "0.0.0.0"),
             port=int(vis_cfg.get("port", 8081)),
+            seg_analytics=seg_analytics,
+            latency_analytics=latency_analytics,
         )
         logger.info("Visualization server initialized")
 
@@ -188,6 +202,7 @@ def main():
             on_keyframe=vis_server.handle_frame_packet if vis_server else None,
             on_pose_corrections=vis_server.handle_kf_pose_update if vis_server else None,
             on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
+            latency_analytics=latency_analytics,
         )
         replay_receiver.start()
         logger.info(f"Replay receiver started from {args.replay}")
@@ -212,6 +227,7 @@ def main():
             on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
             on_raw_message=recorder.on_message if recorder else None,
             on_handshake_done=recorder.on_handshake if recorder else None,
+            latency_analytics=latency_analytics,
         )
         ws_receiver.start()
         ws_port = int(ws_cfg.get("port", 8765))
@@ -229,6 +245,7 @@ def main():
             pose_m_per_unit=float(units_cfg.get("pose_m_per_unit", 1.0)),
             on_kf_packet=vis_server.handle_kf_packet if vis_server else None,
             on_kf_pose_update=vis_server.handle_kf_pose_update if vis_server else None,
+            latency_analytics=latency_analytics,
         )
         t = threading.Thread(target=sub.run_forever, daemon=True)
         t.start()
@@ -257,7 +274,10 @@ def main():
         vocab_clf=vocab_clf,
         vectors=vectors,
         ingest_q=ingest_q,
-        sweep_cache=sweep_cache )
+        sweep_cache=sweep_cache,
+        seg_analytics=seg_analytics,
+        latency_analytics=latency_analytics,
+    )
 
     # ---------------- Start FastAPI control-plane ----------------
     api_cfg = cfg.get("api", {})
@@ -279,6 +299,8 @@ def main():
             "ingest_q": ingest_q.qsize(),
         },
         reset_components=reset_components,
+        seg_analytics=seg_analytics,
+        latency_analytics=latency_analytics,
     )
     start_server(app, host=host, port=port)
     logger.info(f"FastAPI server started on http://{display_host}:{port}")
