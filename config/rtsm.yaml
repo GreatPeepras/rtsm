@@ -17,7 +17,7 @@ camera:
 # Segmentation backend
 segmentation:
   backend: dual                      # fastsam | yoloe | dual
-  retina_masks: true                   # false = 640x640 masks (fast), true = original resolution (precise but slow)
+  retina_masks: false                  # false = 640x640 masks (fast), true = original resolution (precise but slow)
 
   fastsam:
     model_path: model_store/fastsam/FastSAM-x.pt

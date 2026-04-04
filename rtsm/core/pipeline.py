@@ -243,6 +243,16 @@ class Pipeline:
                     f"{rgb_w_frame}x{rgb_h_frame}), scaled intrinsics to mask space"
                 )
 
+        # Compute mask→RGB scale factors for downstream coordinate conversion.
+        # MaskStats (bbox, centroid_px) are in mask space; crop extraction and
+        # association reprojection need RGB-space coordinates.
+        mask_to_rgb_sx = 1.0
+        mask_to_rgb_sy = 1.0
+        if mask_hw is not None:
+            rgb_h_frame, rgb_w_frame = snap.rgb.shape[:2]
+            mask_to_rgb_sx = rgb_w_frame / mask_hw[1]  # width
+            mask_to_rgb_sy = rgb_h_frame / mask_hw[0]  # height
+
         t_heur_start = time.perf_counter()
         kept_masks, stats = run_heuristics(
             ann_bool,
@@ -251,6 +261,15 @@ class Pipeline:
         )
         t_heur_end = time.perf_counter()
         logger.debug(f"staging: kept {len(kept_masks)}/{n_masks} masks after heuristics")
+
+        # Scale centroid_px from mask space to RGB space for downstream consumers
+        # (association reprojection gate, dedup centroid distance).
+        # MaskStats are ephemeral per-frame, safe to mutate.
+        if mask_to_rgb_sx != 1.0 or mask_to_rgb_sy != 1.0:
+            for s in stats:
+                cpx = getattr(s, 'centroid_px', None)
+                if cpx is not None:
+                    s.centroid_px = (cpx[0] * mask_to_rgb_sx, cpx[1] * mask_to_rgb_sy)
 
         # 3) compute priorities (soft-features) and pick top-K
         #    Use mask resolution for frame_hw when masks differ from RGB
@@ -261,7 +280,7 @@ class Pipeline:
 
         # 4) pre-CLIP crop only top-K, then batch encode
         t_clip_start = time.perf_counter()
-        self._make_crops_inplace(cands, snap.rgb)
+        self._make_crops_inplace(cands, snap.rgb, mask_to_rgb_sx, mask_to_rgb_sy)
         self._clip_batch_inplace(cands)
         t_clip_end = time.perf_counter()
 
@@ -675,13 +694,20 @@ class Pipeline:
 
         return kept[:topK]
 
-    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray):
+    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray,
+                            mask_to_rgb_sx: float = 1.0, mask_to_rgb_sy: float = 1.0):
         pad = int(self.cfg.get("staging",{}).get("crop_pad_px", 6))
         size = int(self.cfg.get("staging",{}).get("clip_input", 224))
         H, W, _ = rgb.shape
 
         for c in cands:
-            x0, y0, x1, y1 = c.stats.bbox  # x1/y1 are exclusive (as we computed earlier)
+            x0, y0, x1, y1 = c.stats.bbox  # in mask space
+
+            # Scale bbox from mask space to RGB space (no-op when retina_masks=true)
+            x0 = int(x0 * mask_to_rgb_sx)
+            y0 = int(y0 * mask_to_rgb_sy)
+            x1 = int(x1 * mask_to_rgb_sx)
+            y1 = int(y1 * mask_to_rgb_sy)
 
             # pad & clamp to the *image* bounds
             x0 = max(0, x0 - pad);  y0 = max(0, y0 - pad)
