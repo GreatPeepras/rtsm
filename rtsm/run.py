@@ -2,15 +2,26 @@ from __future__ import annotations
 import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 
-from rtsm.core.pipeline import Pipeline
+# ── GPU-dependent imports (require rtsm[gpu]) ──
+_GPU_AVAILABLE = True
+_GPU_IMPORT_ERROR = None
+try:
+    from rtsm.core.pipeline import Pipeline
+    from rtsm.models.clip.adapter import CLIPAdapter
+    from rtsm.models.clip.vocab_classifier import ClipVocabClassifier
+except ImportError as e:
+    _GPU_AVAILABLE = False
+    _GPU_IMPORT_ERROR = str(e)
+    Pipeline = None  # type: ignore[assignment,misc]
+    CLIPAdapter = None  # type: ignore[assignment,misc]
+    ClipVocabClassifier = None  # type: ignore[assignment,misc]
+
+# ── Core imports (always available) ──
 from rtsm.models.segmentation import get_segmenter
-from rtsm.models.clip.adapter import CLIPAdapter
 from rtsm.stores.working_memory import WorkingMemory
 from rtsm.stores.proximity_index import ProximityIndex, GridSpec
 from rtsm.core.association import Associator
-from rtsm.stores.vectors.faiss_client import FaissClient
 from rtsm.core.ingest_gate import IngestGate
-from rtsm.models.clip.vocab_classifier import ClipVocabClassifier
 from rtsm.stores.sweep_cache import SweepCache
 from rtsm.io.ingest_queue import IngestQueue
 from rtsm.io.zeromq import ZeroMQSubscriber
@@ -50,6 +61,13 @@ def main():
     print("=" * 60)
     print("  RTSM - Real-Time Spatio-Semantic Memory")
     print("=" * 60)
+
+    # ── Check GPU dependencies unless in record-only mode ──
+    if not (args.record and args.record_only) and not _GPU_AVAILABLE:
+        print(f"\nERROR: GPU dependencies not installed: {_GPU_IMPORT_ERROR}")
+        print("Install with:  pip install \"rtsm[gpu]\"  or  pip install \"rtsm[all]\"")
+        print("For CUDA support, add:  --extra-index-url https://download.pytorch.org/whl/cu128")
+        return
 
     cfg = yaml.safe_load(open("config/rtsm.yaml", "r"))
     logger.info("Configuration loaded from config/rtsm.yaml")
@@ -139,9 +157,10 @@ def main():
     vectors = None
     if bool(vec_cfg.get("enable", True)):
         if backend == "milvus":
-            from rtsm.stores.vectors.milvus_client import MilvusClient  # lazy import
+            from rtsm.stores.vectors.milvus_client import MilvusClient
             vectors = MilvusClient(cfg)
         else:
+            from rtsm.stores.vectors.faiss_client import FaissClient
             vectors = FaissClient(cfg)
             logger.info(f"Faiss vectors successfully initialized")
 

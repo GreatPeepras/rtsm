@@ -6,10 +6,12 @@ Provides conversions between rotation representations (Euler angles, quaternions
 
 from __future__ import annotations
 import math
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 import numpy as np
-import torch
 from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    import torch
 
 
 def euler_to_quat_xyzw(roll: float, pitch: float, yaw: float) -> NDArray[np.float32]:
@@ -182,6 +184,8 @@ def unrotate_masks(masks: torch.Tensor, k: int) -> torch.Tensor:
 
     Applies (4-k)*90° CCW = k*90° CW to bring masks back to sensor space.
     """
+    import torch
+
     if k == 0:
         return masks
     return torch.rot90(masks, k=4 - k, dims=[1, 2]).contiguous()

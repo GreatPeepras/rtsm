@@ -13,11 +13,13 @@ This module provides utilities to:
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, TYPE_CHECKING
 import logging
 import numpy as np
-import torch
 import cv2
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,8 @@ def _depth_coords(
 
 def _erode_mask(mask: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
     """Erode mask by kernel_size to remove edge pixels before depth sampling."""
+    import torch
+
     m_np = mask.numpy().astype(np.uint8)
     kernel = np.ones((kernel_size, kernel_size), np.uint8)
     eroded = cv2.erode(m_np, kernel, iterations=1)
@@ -241,6 +245,8 @@ def run_heuristics(
         kept_masks: list of torch.bool views (aligned to image grid)
         stats:      list of MaskStats (same order)
     """
+    import torch
+
     assert ann_bool.dtype is torch.bool and ann_bool.device.type == "cpu" and ann_bool.ndim == 3
     kept: List[torch.Tensor] = []
     infos: List[MaskStats] = []

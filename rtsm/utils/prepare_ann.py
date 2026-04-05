@@ -1,5 +1,8 @@
-import torch
-from typing import Union, List
+from __future__ import annotations
+from typing import Union, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
 
 def prepare_ann(ann: Union[torch.Tensor, List], thr: float = 0.5) -> torch.Tensor:
     """
@@ -8,6 +11,8 @@ def prepare_ann(ann: Union[torch.Tensor, List], thr: float = 0.5) -> torch.Tenso
     - Accepts empty list (returns empty [0,H,W] tensor).
     - Thresholds once if needed; no work if already bool.
     """
+    import torch
+
     # Handle empty list case (no detections)
     if isinstance(ann, list):
         if len(ann) == 0:

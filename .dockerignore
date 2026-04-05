@@ -1,0 +1,12 @@
+.venv
+.git
+model_store
+__pycache__
+*.pyc
+*.egg-info
+.mypy_cache
+.pytest_cache
+node_modules
+d435i
+demo
+docs

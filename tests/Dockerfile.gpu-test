@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+# System libs for opencv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libxcb1 && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+# Install with GPU extras + CUDA 12.8 index
+RUN pip install --no-cache-dir -e ".[all]" \
+    --extra-index-url https://download.pytorch.org/whl/cu128 \
+    2>&1 | tail -5
+
+# model_store, config, recordings are mounted at runtime via -v flags
+# Run: docker run --gpus all \
+#   -v ./model_store:/app/model_store \
+#   -v ./config:/app/config \
+#   -v ./recordings:/app/recordings \
+#   rtsm-gpu-test
+CMD ["python", "-u", "-m", "rtsm.run", "--replay", "recordings/session1"]
