@@ -17,7 +17,7 @@ camera:
 # Segmentation backend
 segmentation:
   backend: dual                      # fastsam | yoloe | dual
-  retina_masks: true                   # return masks at original image resolution (shared by all backends)
+  retina_masks: false                  # false = 640x640 masks (fast), true = original resolution (precise but slow)
 
   fastsam:
     model_path: model_store/fastsam/FastSAM-x.pt
@@ -153,6 +153,15 @@ staging:
   struct_extent_lo: 0.10
   struct_extent_hi: 0.35
 
+  # Same-frame dedup (suppress duplicate masks before CLIP batch)
+  # Lightweight mode (default): centroid proximity + area similarity + bbox IoU
+  # Set dedup_use_mask: true to re-enable pixel-wise mask IoU (expensive at retina resolution)
+  dedup_use_mask: false              # false = lightweight (centroid+area+bbox), true = pixel mask IoU
+  dedup_centroid_px: 50.0            # max centroid distance (px) to consider as candidate duplicate
+  dedup_area_ratio_min: 0.4          # min area ratio (smaller/larger) to consider as same object
+  dedup_bbox_iou_thr: 0.50           # min bbox IoU to confirm duplicate
+  dedup_iou_thr: 0.80                # mask IoU threshold (only used when dedup_use_mask: true)
+
 # -------------------- Spatial Memory --------------------
 sweep_cache:
   # Spatial grid & membership
@@ -232,7 +241,7 @@ vectors:
 visualization:
   enable: true                    # Enable embedded visualization server
   host: 0.0.0.0
-  port: 8081                      # WebSocket port for frontend
+  port: 8083                      # WebSocket port for frontend
   apply_camera_flip: true           # Flip ARKit camera (Y-up, Z-back) to OpenCV (Y-down, Z-forward)
 
   # Depth filtering for visualization pipeline
@@ -257,6 +266,11 @@ visualization:
     push_interval_ms: 200         # How often to push WM objects to clients
     include_proto: true           # Include proto (unconfirmed) objects
 
+  # Runtime analytics dashboard push settings
+  analytics:
+    push_interval_ms: 1000        # Tier 2 rollup + push cadence (ms)
+    full_sync_interval_s: 30      # Re-send full Tier 2 history every N seconds
+
 # -------------------- SLAM (on-device, via Calabi Lens) --------------------
 # RTAB-Map runs on the iPhone. These settings control how RTSM handles
 # SLAM-corrected poses received from the client.
@@ -273,6 +287,17 @@ slam:
   # arrive. Each object is corrected using the delta from the spatially
   # nearest corrected camera position.
   correct_working_memory: true
+
+# -------------------- API --------------------
+api:
+  host: "0.0.0.0"
+  port: 8002
+
+# -------------------- Analytics --------------------
+analytics:
+  enable: true                      # Enable runtime analytics buffers
+  retention_s: 3600                 # Tier 2 wall-clock retention (seconds)
+  buffer_frames: 300                # Tier 1 per-frame ring buffer size
 
 # -------------------- Runtime --------------------
 logging:

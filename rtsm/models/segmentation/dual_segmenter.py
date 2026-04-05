@@ -244,6 +244,8 @@ class DualConfirmationSegmenter(SegmentationAdapter):
             confirmation_source=merged_source,
             detection_labels=merged_labels,
             label_confidence=merged_conf,
+            fastsam_raw_count=Nf,
+            yoloe_raw_count=Ny,
         )
 
     def warmup(self) -> None:

@@ -43,6 +43,7 @@ class ReplayReceiver:
         on_keyframe: Optional[callable] = None,
         on_pose_corrections: Optional[callable] = None,
         on_pose_corrections_batch: Optional[callable] = None,
+        latency_analytics=None,
     ) -> None:
         self._recording_dir = os.path.abspath(recording_dir)
         self._ingest_q = ingest_queue
@@ -62,6 +63,7 @@ class ReplayReceiver:
 
         # Create a WebSocketReceiver as a decoder-only instance (never started).
         # We reuse _parse_binary_message and _handle_text_message directly.
+        self._latency_analytics = latency_analytics
         self._decoder = WebSocketReceiver(
             ingest_queue=IngestQueue(1),  # dummy, never used
             require_tracking_normal=require_tracking_normal,
@@ -72,6 +74,7 @@ class ReplayReceiver:
             on_keyframe=None,  # we handle callbacks ourselves
             on_pose_corrections=on_pose_corrections,
             on_pose_corrections_batch=on_pose_corrections_batch,
+            latency_analytics=latency_analytics,  # passed to decoder for frame_received/tracking/throttle hooks
         )
 
         self._thread: Optional[threading.Thread] = None
@@ -154,6 +157,8 @@ class ReplayReceiver:
 
                     pkt = self._decoder._parse_binary_message(raw)
                     if pkt is not None:
+                        if self._latency_analytics:
+                            self._latency_analytics.sample_queue_depth(self._ingest_q.qsize())
                         ok = self._ingest_q.put(pkt, block=False)
                         if ok:
                             frames_enqueued += 1
@@ -166,6 +171,8 @@ class ReplayReceiver:
                                 except Exception as e:
                                     logger.error(f"[replay] on_keyframe callback error: {e}")
                         else:
+                            if self._latency_analytics:
+                                self._latency_analytics.record_queue_drop()
                             logger.warning("[replay] ingest queue full; dropping frame")
 
                 elif kind == "text":

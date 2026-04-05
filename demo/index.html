@@ -5,12 +5,42 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RTSM Demo — Real-Time Spatio-Semantic Memory</title>
     <style>
-      html, body, #app { margin: 0; padding: 0; width: 100%; height: 100%; background: #111; color: #eee; overflow: hidden; }
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #111; color: #eee; overflow: hidden; }
+      #app { width: 100%; height: 100%; }
+
+      /* Tab bar */
+      #tab-bar {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        height: 32px;
+        display: flex;
+        align-items: stretch;
+        background: #1a1a1a;
+        border-bottom: 1px solid #333;
+        z-index: 50;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+      }
+      .tab-btn {
+        padding: 0 20px;
+        border: none;
+        background: transparent;
+        color: #888;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .tab-btn:hover { color: #ccc; }
+      .tab-btn.active { color: #fff; border-bottom-color: #1e90ff; }
+
+      /* View containers */
+      #view-3d { display: block; }
+      #view-analytics { display: none; position: fixed; top: 32px; left: 0; right: 0; bottom: 0; overflow-y: auto; overflow-x: hidden; background: #111; }
 
       #hud {
         position: fixed;
         left: 10px;
-        top: 10px;
+        top: 42px;
         color: #fff;
         font-family: system-ui, -apple-system, Arial, sans-serif;
         font-size: 12px;
@@ -24,7 +54,7 @@
 
       #ui {
         position: fixed;
-        top: 10px;
+        top: 42px;
         right: 10px;
         display: flex;
         flex-direction: column;
@@ -361,9 +391,121 @@
         margin-top: 8px;
         text-align: center;
       }
+      /* ======== Analytics Dashboard (Looker-style) ======== */
+      #analytics-panel {
+        width: 100%;
+        padding: 16px 20px;
+        box-sizing: border-box;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+      }
+
+      #analytics-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      #analytics-title { font-weight: bold; font-size: 15px; color: #fff; flex: 1; }
+      #analytics-copy {
+        padding: 4px 12px; border: 1px solid #444; border-radius: 4px;
+        background: #2a2a2a; color: #ccc; cursor: pointer; font-size: 11px;
+      }
+      #analytics-copy:hover { background: #3a3a3a; }
+      #analytics-copy.copied { background: #28a745; color: #fff; border-color: #28a745; }
+
+      /* KPI scorecards row */
+      .kpi-row {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 14px;
+        flex-wrap: wrap;
+        box-sizing: border-box;
+        max-width: 100%;
+      }
+      .kpi-card {
+        flex: 1 1 120px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid #2a2a2a;
+        border-radius: 6px;
+        padding: 10px 14px;
+        min-width: 120px;
+      }
+      .kpi-label {
+        font-size: 10px; color: #888; text-transform: uppercase;
+        letter-spacing: 0.5px; margin-bottom: 4px;
+      }
+      .kpi-value {
+        font-size: 20px; font-weight: bold; color: #fff;
+        font-family: 'Consolas', 'Monaco', monospace;
+      }
+      .kpi-sub { font-size: 10px; color: #666; margin-top: 2px; }
+      .kpi-value.green { color: #00ff88; }
+      .kpi-value.yellow { color: #ffc107; }
+      .kpi-value.red { color: #ff4444; }
+
+      /* Config (collapsible) */
+      #analytics-config-toggle {
+        font-size: 10px; color: #666; text-transform: uppercase;
+        letter-spacing: 0.5px; cursor: pointer; margin-bottom: 8px;
+      }
+      .config-grid {
+        display: flex; flex-wrap: wrap; gap: 4px 16px;
+        font-size: 10px; font-family: 'Consolas', 'Monaco', monospace;
+        margin-bottom: 14px; padding: 8px 10px;
+        background: rgba(255,255,255,0.02); border-radius: 4px;
+      }
+      .config-item { white-space: nowrap; }
+      .config-key { color: #666; }
+      .config-val { color: #aaa; }
+      .config-highlight { color: #1e90ff; font-weight: bold; }
+
+      /* Chart sections */
+      .chart-section {
+        margin-bottom: 14px;
+      }
+      .chart-section-header {
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 6px;
+      }
+      .chart-section-label {
+        font-size: 10px; color: #888; text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .chart-section-detail {
+        font-size: 10px; color: #555;
+        font-family: 'Consolas', 'Monaco', monospace;
+      }
+      .chart-container {
+        width: 100%;
+        max-width: 100%;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+
+      /* Latency breakdown (inline bar) */
+      .latency-breakdown {
+        display: flex; gap: 12px; flex-wrap: wrap;
+        font-size: 10px; font-family: 'Consolas', 'Monaco', monospace;
+        margin-bottom: 6px;
+      }
+      .latency-item { display: flex; align-items: center; gap: 4px; }
+      .latency-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+      .latency-name { color: #888; }
+      .latency-val { color: #ccc; }
+      .latency-pct { color: #555; }
+
+      /* Congestion accent on KPI */
+      .kpi-card.congestion { border-color: #ff4444; }
     </style>
   </head>
   <body>
+    <div id="tab-bar">
+      <button class="tab-btn active" data-tab="3d">3D View</button>
+      <button class="tab-btn" data-tab="analytics">Analytics</button>
+    </div>
+
+    <div id="view-3d">
     <div id="app"></div>
 
     <div id="hud">Loading...</div>
@@ -451,6 +593,93 @@
         <div id="gallery-info"></div>
       </div>
     </div>
+    </div><!-- /view-3d -->
+
+    <div id="view-analytics">
+      <div id="analytics-panel">
+        <div id="analytics-header">
+          <span id="analytics-title">Runtime Analytics</span>
+          <button id="analytics-copy">Copy Data</button>
+        </div>
+        <div id="analytics-content">
+          <!-- Config bar (collapsible inline) -->
+          <div id="analytics-config-toggle">Config &#9662;</div>
+          <div id="analytics-config"></div>
+
+          <!-- KPI scorecards -->
+          <div class="kpi-row" id="analytics-kpi-row">
+            <div class="kpi-card" id="kpi-input-hz">
+              <div class="kpi-label">Input</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">Hz (raw camera)</div>
+            </div>
+            <div class="kpi-card" id="kpi-proc-hz">
+              <div class="kpi-label">Processing</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">Hz (pipeline)</div>
+            </div>
+            <div class="kpi-card" id="kpi-latency">
+              <div class="kpi-label">Latency</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">ms (mean)</div>
+            </div>
+            <div class="kpi-card" id="kpi-queue">
+              <div class="kpi-label">Queue</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">/ 512 cap</div>
+            </div>
+            <div class="kpi-card" id="kpi-masks">
+              <div class="kpi-label">Masks</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">survival</div>
+            </div>
+            <div class="kpi-card" id="kpi-dual">
+              <div class="kpi-label">Dual Confirmed</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">rate</div>
+            </div>
+            <div class="kpi-card" id="kpi-objects">
+              <div class="kpi-label">Objects</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">confirmed / total</div>
+            </div>
+            <div class="kpi-card" id="kpi-assoc">
+              <div class="kpi-label">Association</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">matched / created</div>
+            </div>
+          </div>
+
+          <!-- Throughput chart (full width) -->
+          <div class="chart-section">
+            <div class="chart-section-header">
+              <span class="chart-section-label">Throughput</span>
+              <span class="chart-section-detail" id="analytics-throughput-detail"></span>
+            </div>
+            <div class="chart-container" id="analytics-throughput-chart"></div>
+          </div>
+
+          <!-- Latency chart (full width) -->
+          <div class="chart-section">
+            <div class="chart-section-header">
+              <span class="chart-section-label">Latency</span>
+              <span class="chart-section-detail" id="analytics-latency-detail"></span>
+            </div>
+            <div id="analytics-latency-breakdown"></div>
+            <div class="chart-container" id="analytics-latency-chart"></div>
+          </div>
+
+          <!-- Segmentation chart (full width) -->
+          <div class="chart-section" id="analytics-seg-section">
+            <div class="chart-section-header">
+              <span class="chart-section-label">Segmentation</span>
+              <span class="chart-section-detail" id="analytics-seg-detail"></span>
+            </div>
+            <div class="chart-container" id="analytics-seg-chart"></div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /view-analytics -->
 
     <script type="module" src="/src/main.ts"></script>
   </body>

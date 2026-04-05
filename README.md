@@ -247,6 +247,9 @@ curl "http://localhost:8000/search/semantic?query=red%20mug&top_k=5"
 
 # Get system stats
 curl http://localhost:8000/stats/detailed
+
+# Runtime analytics (latency, throughput, dual confirmation rates)
+curl http://localhost:8000/stats/analytics
 ```
 
 ---
@@ -270,6 +273,7 @@ rtsm/
 ├── models/         # FastSAM, YOLOE, CLIP, dual-confirmation segmenter
 ├── stores/         # Working memory, proximity index, sweep cache, vector stores
 ├── io/             # WebSocket + ZeroMQ receivers, recorder, replayer
+├── analytics/      # Runtime analytics (latency, segmentation, congestion buffers)
 ├── api/            # REST API server (FastAPI)
 ├── visualization/  # WebSocket server, TSDF fusion, 3D demo
 └── utils/          # Mask staging, transforms, helpers
@@ -287,15 +291,28 @@ tests/                       # Unit + integration tests
 
 ## Performance
 
-*Benchmarks on RTX 5090 (your mileage may vary):*
+*Measured via built-in runtime analytics dashboard on RTX 5090, ARKit input (your mileage may vary):*
 
-| Stage | Metric |
-|-------|--------|
-| Input throttling | 30 Hz raw → 5–7 Hz processed (keyframe gating) |
-| Mask filtering | Heuristic filter rejects 10–15% area masks as insignificant |
-| Proto-object yield | >90% of static object masks successfully accumulate via associator |
-| Frame latency | <30 ms end-to-end (FastSAM + CLIP stack) |
-| LTM upsert rate | 5 s default interval |
+### Latency (dual confirmation, 640px inference)
+
+| Stage | Mean | p95 |
+|-------|------|-----|
+| Segmentation (FastSAM + YOLOE) | 117ms | 116ms |
+| Mask heuristics | 135ms | 196ms |
+| CLIP encode (top-15) | 75ms | 92ms |
+| Association | 5ms | 8ms |
+| **Total pipeline** | **362ms** | **612ms** |
+
+### Throughput
+
+| Metric | Value |
+|--------|-------|
+| Input rate (raw camera) | 5–30 Hz (device dependent) |
+| Processing rate | ~2.8 Hz (dual), ~3.5 Hz (single model) |
+| Keyframe gating | Sweep-policy based, passes ~20% of frames |
+| Dual confirmation rate | ~23% dual-confirmed, 61% FastSAM-only, 16% YOLOE-only |
+| Object match rate | ~47% (matched vs newly created per session) |
+| LTM upsert interval | 3 s (configurable) |
 
 ---
 
@@ -306,7 +323,7 @@ tests/                       # Unit + integration tests
 - [x] WebSocket receiver for Calabi Lens (ARKit iOS)
 - [x] Record/replay system for offline testing
 - [x] A/B segmentation debug tooling
-- [ ] Real-time analytics dashboard
+- [x] Real-time analytics dashboard (Looker-style, per-stage latency, dual confirmation rates, congestion detection)
 - [ ] Evaluation framework (ArUco ground truth)
 - [ ] Agent architecture (MCP interface)
 - [ ] More communication protocols (ROS 2, gRPC)

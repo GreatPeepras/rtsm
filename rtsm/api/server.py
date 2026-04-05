@@ -28,6 +28,8 @@ def create_app(
     extra_stats_provider: Optional[Callable[[], Dict[str, Any]]] = None,
     registry: Optional[CollectorRegistry] = None,
     reset_components: Optional[ResetComponents] = None,
+    seg_analytics: Optional[Any] = None,
+    latency_analytics: Optional[Any] = None,
 ) -> FastAPI:
     """
     Build a FastAPI app exposing:
@@ -363,6 +365,20 @@ def create_app(
             except Exception as e:
                 result["cleared"]["visualization"] = {"error": str(e)}
 
+        # Clear analytics buffers
+        if seg_analytics:
+            try:
+                seg_analytics.clear()
+                result["cleared"]["seg_analytics"] = True
+            except Exception as e:
+                result["cleared"]["seg_analytics"] = {"error": str(e)}
+        if latency_analytics:
+            try:
+                latency_analytics.clear()
+                result["cleared"]["latency_analytics"] = True
+            except Exception as e:
+                result["cleared"]["latency_analytics"] = {"error": str(e)}
+
         return result
 
     # ---- Detailed stats endpoint ----
@@ -455,6 +471,25 @@ def create_app(
             })
 
         return {"query": query, "results": results}
+
+    # ---- Analytics endpoint ----
+    @app.get("/stats/analytics")
+    def stats_analytics() -> Dict[str, Any]:
+        """Get runtime analytics (segmentation breakdown + latency/throughput)."""
+        if not seg_analytics and not latency_analytics:
+            raise HTTPException(status_code=503, detail="Analytics not enabled")
+        result: Dict[str, Any] = {}
+        if latency_analytics:
+            result["latency"] = {
+                "aggregate": latency_analytics.aggregate(),
+                "hourly": latency_analytics.hourly_history(),
+            }
+        if seg_analytics:
+            result["segmentation"] = {
+                "aggregate": seg_analytics.aggregate(),
+                "hourly": seg_analytics.hourly_history(),
+            }
+        return result
 
     return app
 

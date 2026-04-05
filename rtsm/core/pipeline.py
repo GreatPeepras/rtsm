@@ -54,6 +54,8 @@ class Pipeline:
         vectors: Optional[Any] = None,
         ingest_q: Optional[IngestQueue] = None,
         sweep_cache: Optional[SweepCache] = None,
+        seg_analytics: Optional[Any] = None,
+        latency_analytics: Optional[Any] = None,
     ):
         self.cfg = cfg
         self.segmenter = segmenter
@@ -68,6 +70,8 @@ class Pipeline:
         self._last_flush_ts = 0.0
         self.ingest_q = ingest_q
         self.sweep_cache = sweep_cache or SweepCache()
+        self._seg_analytics = seg_analytics
+        self._latency_analytics = latency_analytics
 
         # Periodic summary logger
         log_cfg = cfg.get("logging", {})
@@ -165,7 +169,14 @@ class Pipeline:
             logger.warning(f"ingest gate error; proceeding: {e}")
             accept = True
         if not accept:
+            if self._latency_analytics:
+                try:
+                    self._latency_analytics.record_gate_rejection()
+                except Exception:
+                    pass
             return
+
+        t_step_start = time.perf_counter()
 
         # 1) segmentation -> masks
         pil_img = Image.fromarray(snap.rgb) if isinstance(snap.rgb, np.ndarray) else snap.rgb
@@ -181,7 +192,9 @@ class Pipeline:
             vocab = None
 
         # Run segmentation
+        t_seg_start = time.perf_counter()
         seg_result = self.segmenter.segment(pil_img, vocab=vocab)
+        t_seg_end = time.perf_counter()
         # Store for downstream priority boost and label propagation
         self._last_seg_result = seg_result
 
@@ -230,23 +243,49 @@ class Pipeline:
                     f"{rgb_w_frame}x{rgb_h_frame}), scaled intrinsics to mask space"
                 )
 
+        # Compute mask→RGB scale factors for downstream coordinate conversion.
+        # MaskStats (bbox, centroid_px) are in mask space; crop extraction and
+        # association reprojection need RGB-space coordinates.
+        mask_to_rgb_sx = 1.0
+        mask_to_rgb_sy = 1.0
+        if mask_hw is not None:
+            rgb_h_frame, rgb_w_frame = snap.rgb.shape[:2]
+            mask_to_rgb_sx = rgb_w_frame / mask_hw[1]  # width
+            mask_to_rgb_sy = rgb_h_frame / mask_hw[0]  # height
+
+        t_heur_start = time.perf_counter()
         kept_masks, stats = run_heuristics(
             ann_bool,
             snap.depth_m,
             cfg=heur_cfg,
         )
+        t_heur_end = time.perf_counter()
         logger.debug(f"staging: kept {len(kept_masks)}/{n_masks} masks after heuristics")
+
+        # Scale centroid_px from mask space to RGB space for downstream consumers
+        # (association reprojection gate, dedup centroid distance).
+        # MaskStats are ephemeral per-frame, safe to mutate.
+        if mask_to_rgb_sx != 1.0 or mask_to_rgb_sy != 1.0:
+            for s in stats:
+                cpx = getattr(s, 'centroid_px', None)
+                if cpx is not None:
+                    s.centroid_px = (cpx[0] * mask_to_rgb_sx, cpx[1] * mask_to_rgb_sy)
 
         # 3) compute priorities (soft-features) and pick top-K
         #    Use mask resolution for frame_hw when masks differ from RGB
         select_hw = mask_hw if mask_hw else snap.rgb.shape[:2]
+        t_score_start = time.perf_counter()
         cands = self._score_and_select(kept_masks, stats, frame_hw=select_hw)
+        t_score_end = time.perf_counter()
 
         # 4) pre-CLIP crop only top-K, then batch encode
-        self._make_crops_inplace(cands, snap.rgb)
+        t_clip_start = time.perf_counter()
+        self._make_crops_inplace(cands, snap.rgb, mask_to_rgb_sx, mask_to_rgb_sy)
         self._clip_batch_inplace(cands)
+        t_clip_end = time.perf_counter()
 
         # 5) associate and update memory/index (if components provided)
+        t_assoc_start = time.perf_counter()
         m, c = 0, 0
         is_kf = bool(pkt.is_keyframe) if pkt is not None else False
         # Build frame_id for WM pose correction tracking (matches vis server mesh_id)
@@ -262,6 +301,74 @@ class Pipeline:
                     logger.debug(f"assoc: matched={m} created={c}")
             except Exception:
                 pass
+
+        t_assoc_end = time.perf_counter()
+
+        # ---- Analytics collection (never kills pipeline) ----
+        try:
+            if self._latency_analytics:
+                from rtsm.analytics.latency_analytics import FrameTimingStats
+                self._latency_analytics.append(FrameTimingStats(
+                    timestamp=t_step_start,
+                    frame_seq=int(pkt.time.seq or 0) if pkt else 0,
+                    is_keyframe=is_kf,
+                    t_segmentation=t_seg_end - t_seg_start,
+                    t_heuristics=t_heur_end - t_heur_start,
+                    t_scoring=t_score_end - t_score_start,
+                    t_clip=t_clip_end - t_clip_start,
+                    t_association=t_assoc_end - t_assoc_start,
+                    t_total=t_assoc_end - t_step_start,
+                    queue_depth=self.ingest_q.qsize() if self.ingest_q else 0,
+                    n_masks_in=n_masks,
+                    n_masks_staged=len(kept_masks),
+                    n_candidates=len(cands),
+                    assoc_matched=m,
+                    assoc_created=c,
+                ))
+            if self._seg_analytics:
+                from rtsm.analytics.seg_analytics import SegFrameStats
+                seg_cfg = self.cfg.get("segmentation", {})
+                backend = seg_cfg.get("backend", "fastsam")
+                cs = seg_result.confirmation_source
+                if cs is not None:
+                    seg_entry = SegFrameStats(
+                        timestamp=t_step_start,
+                        frame_seq=int(pkt.time.seq or 0) if pkt else 0,
+                        backend=backend,
+                        n_dual=sum(1 for s in cs if s == "dual"),
+                        n_fastsam_only=sum(1 for s in cs if s == "fastsam_only"),
+                        n_yoloe_only=sum(1 for s in cs if s == "yoloe_only"),
+                        n_total=len(cs),
+                        n_fastsam_raw=seg_result.fastsam_raw_count or 0,
+                        n_yoloe_raw=seg_result.yoloe_raw_count or 0,
+                    )
+                else:
+                    n = seg_result.count
+                    seg_entry = SegFrameStats(
+                        timestamp=t_step_start,
+                        frame_seq=int(pkt.time.seq or 0) if pkt else 0,
+                        backend=backend,
+                        n_fastsam_only=n if backend == "fastsam" else 0,
+                        n_yoloe_only=n if backend == "yoloe" else 0,
+                        n_total=n,
+                    )
+                # Fill staged/selected counts by confirmation source
+                if cs is not None:
+                    for s in stats:
+                        if s.idx < len(cs):
+                            src = cs[s.idx]
+                            if src == "dual": seg_entry.staged_dual += 1
+                            elif src == "fastsam_only": seg_entry.staged_fastsam_only += 1
+                            elif src == "yoloe_only": seg_entry.staged_yoloe_only += 1
+                    for cd in cands:
+                        if cd.stats.idx < len(cs):
+                            src = cs[cd.stats.idx]
+                            if src == "dual": seg_entry.selected_dual += 1
+                            elif src == "fastsam_only": seg_entry.selected_fastsam_only += 1
+                            elif src == "yoloe_only": seg_entry.selected_yoloe_only += 1
+                self._seg_analytics.append(seg_entry)
+        except Exception:
+            logger.debug("analytics collection error", exc_info=True)
 
         # Update periodic logger with this frame's stats
         self._periodic_logger.tick(matched=m, created=c, masks=len(kept_masks))
@@ -484,7 +591,31 @@ class Pipeline:
                     f"struct={-w_struct*ss:+.3f} (geom={sg:.2f} extent={se:.2f})"
                 )
 
-        # same-frame dedup: greedy suppression using mask/bbox IoU, centroid as fallback
+        # ----------------------------------------------------------------
+        # same-frame dedup: greedy suppression to ensure top-K are distinct objects
+        #
+        # Purpose: prevent duplicate masks of the same object (e.g., FastSAM and
+        # YOLOE both segment the same chair) from consuming the CLIP budget.
+        # Association handles duplicates gracefully (both match the same WM object),
+        # so this is purely a top-K budget optimization — we want K distinct objects
+        # in the CLIP batch, not 3 copies of the chair.
+        # ----------------------------------------------------------------
+
+        def _centroid_dist_px(sa: MaskStats, sb: MaskStats) -> float:
+            ca = getattr(sa, 'centroid_px', None)
+            cb = getattr(sb, 'centroid_px', None)
+            if ca is None or cb is None:
+                return 1e9
+            dx = float(ca[0]) - float(cb[0])
+            dy = float(ca[1]) - float(cb[1])
+            return float((dx*dx + dy*dy) ** 0.5)
+
+        def _area_ratio(sa: MaskStats, sb: MaskStats) -> float:
+            """Ratio of smaller to larger area (1.0 = identical size, 0.0 = vastly different)."""
+            a = max(1, getattr(sa, 'area_px', 0))
+            b = max(1, getattr(sb, 'area_px', 0))
+            return min(a, b) / max(a, b)
+
         def _bbox_iou(a: Tuple[int,int,int,int], b: Tuple[int,int,int,int]) -> float:
             ax0, ay0, ax1, ay1 = a
             bx0, by0, bx1, by1 = b
@@ -497,54 +628,86 @@ class Pipeline:
             union = max(1, area_a + area_b - inter)
             return float(inter) / float(union)
 
+        # TODO: performance test — compare mask IoU dedup vs lightweight dedup.
+        #
+        # Original approach: pixel-wise mask IoU on full-resolution boolean tensors.
+        # Precise but O(N² × H × W) — with retina_masks=true at 1920x1440 and ~30
+        # candidates, this takes ~1s per frame (1.2B boolean ops). The precision
+        # is overkill for dedup since association already handles duplicate matches
+        # gracefully (both masks update the same WM object). Dedup only needs to
+        # ensure the top-K CLIP batch contains distinct objects.
+        #
+        # When to re-enable: if the lightweight dedup below produces measurably
+        # worse object tracking (e.g., CLIP batch wastes slots on duplicates that
+        # should have been suppressed), switch back by setting:
+        #   staging.dedup_use_mask: true
+        # in rtsm.yaml. Consider also downsampling masks to 64x64 before IoU
+        # as a middle ground (~700x cheaper than full-resolution).
         def _mask_iou(ma: torch.Tensor, mb: torch.Tensor) -> float:
+            """Pixel-wise mask IoU — expensive at high resolution. See TODO above."""
             ia = (ma & mb).sum().item()
             ua = (ma | mb).sum().item()
             if ua <= 0:
                 return 0.0
             return float(ia) / float(ua)
 
-        def _centroid_dist_px(sa: MaskStats, sb: MaskStats) -> float:
-            ca = getattr(sa, 'centroid_px', None)
-            cb = getattr(sb, 'centroid_px', None)
-            if ca is None or cb is None:
-                return 1e9
-            dx = float(ca[0]) - float(cb[0])
-            dy = float(ca[1]) - float(cb[1])
-            return float((dx*dx + dy*dy) ** 0.5)
+        # Lightweight dedup: centroid proximity + area similarity + bbox IoU.
+        # All features from MaskStats (pure float math, zero tensor ops).
+        # Runs in microseconds regardless of mask resolution.
+        def _is_duplicate_lightweight(sa: MaskStats, sb: MaskStats) -> bool:
+            # Quick reject: if centroids are far apart, definitely different objects
+            dist = _centroid_dist_px(sa, sb)
+            if dist > dedup_centroid_thr:
+                return False
+            # Area check: if sizes differ a lot, different objects at same location
+            if _area_ratio(sa, sb) < dedup_area_ratio_min:
+                return False
+            # Confirm with bbox IoU (cheap integer math)
+            return _bbox_iou(sa.bbox, sb.bbox) >= dedup_bbox_iou_thr
 
+        # Config — lightweight thresholds (intentionally permissive to start)
+        dedup_centroid_thr = float(self.cfg.get("staging",{}).get("dedup_centroid_px", 50.0))
+        dedup_area_ratio_min = float(self.cfg.get("staging",{}).get("dedup_area_ratio_min", 0.4))
+        dedup_bbox_iou_thr = float(self.cfg.get("staging",{}).get("dedup_bbox_iou_thr", 0.50))
+
+        # Legacy config for mask IoU path
         iou_thr = float(self.cfg.get("staging",{}).get("dedup_iou_thr", 0.80))
-        use_mask_iou = bool(self.cfg.get("staging",{}).get("dedup_use_mask", True))
-        cen_thr_px = float(self.cfg.get("staging",{}).get("dedup_centroid_px", 12.0))
+        use_mask_iou = bool(self.cfg.get("staging",{}).get("dedup_use_mask", False))  # off by default now
 
         kept: List[Candidate] = []
         for c in cands:
             suppress = False
             for k in kept:
-                # primary: IoU
                 if use_mask_iou:
+                    # Legacy path: pixel-wise mask IoU (expensive, see TODO above)
                     iou = _mask_iou(c.mask, k.mask)
+                    if iou >= iou_thr:
+                        suppress = True
+                        break
                 else:
-                    iou = _bbox_iou(c.stats.bbox, k.stats.bbox)
-                if iou >= iou_thr:
-                    suppress = True
-                    break
-                # fallback: centroid distance
-                if _centroid_dist_px(c.stats, k.stats) <= cen_thr_px:
-                    suppress = True
-                    break
+                    # Lightweight path: centroid + area + bbox (default)
+                    if _is_duplicate_lightweight(c.stats, k.stats):
+                        suppress = True
+                        break
             if not suppress:
                 kept.append(c)
 
         return kept[:topK]
 
-    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray):
+    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray,
+                            mask_to_rgb_sx: float = 1.0, mask_to_rgb_sy: float = 1.0):
         pad = int(self.cfg.get("staging",{}).get("crop_pad_px", 6))
         size = int(self.cfg.get("staging",{}).get("clip_input", 224))
         H, W, _ = rgb.shape
 
         for c in cands:
-            x0, y0, x1, y1 = c.stats.bbox  # x1/y1 are exclusive (as we computed earlier)
+            x0, y0, x1, y1 = c.stats.bbox  # in mask space
+
+            # Scale bbox from mask space to RGB space (no-op when retina_masks=true)
+            x0 = int(x0 * mask_to_rgb_sx)
+            y0 = int(y0 * mask_to_rgb_sy)
+            x1 = int(x1 * mask_to_rgb_sx)
+            y1 = int(y1 * mask_to_rgb_sy)
 
             # pad & clamp to the *image* bounds
             x0 = max(0, x0 - pad);  y0 = max(0, y0 - pad)
