@@ -1,0 +1,42 @@
+FROM python:3.12-slim
+
+# System libs needed by opencv (pulled by ultralytics in GPU stage)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libxcb1 && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+# ── Stage 1: Core-only install ──
+RUN pip install --no-cache-dir -e . 2>&1 | tee /tmp/core-install.log
+
+# Core imports must succeed without torch
+RUN python -c "from rtsm.models.segmentation import get_segmenter, SegmentationResult" \
+ && python -c "from rtsm.api.server import create_app" \
+ && python -c "from rtsm.io.websocket import WebSocketReceiver" \
+ && python -c "from rtsm.io.zeromq import ZeroMQSubscriber" \
+ && echo 'PASS: Core imports succeeded without torch'
+
+# torch must NOT be installed
+RUN python -c "import torch" 2>/dev/null \
+ && echo 'FAIL: torch leaked into core install' && exit 1 \
+ || echo 'PASS: torch not in core install'
+
+# CLI should give helpful error (not a crash)
+RUN rtsm 2>&1 | grep -q "pip install" \
+ && echo 'PASS: CLI shows install hint' \
+ || (echo 'FAIL: CLI did not show install hint'; rtsm 2>&1; exit 1)
+
+# ── Stage 2: GPU install (CPU-only torch for test) ──
+RUN pip install --no-cache-dir -e ".[gpu]" 2>&1 | tee /tmp/gpu-install.log
+
+RUN python -c "import torch; print(f'PASS: torch {torch.__version__}')" \
+ && python -c "from rtsm.core.pipeline import Pipeline; print('PASS: Pipeline import')" \
+ && python -c "from rtsm.run import main; print('PASS: run.main import')"
+
+# ── Stage 3: Full install ──
+RUN pip install --no-cache-dir -e ".[all]" 2>&1 | tee /tmp/all-install.log
+
+RUN python -c "import matplotlib; import torch; print('PASS: Full install imports')"
+
+CMD ["echo", "All dependency tests passed"]

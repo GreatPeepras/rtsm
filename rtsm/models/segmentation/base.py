@@ -9,10 +9,12 @@ This abstraction allows RTSM to swap between different backends:
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from PIL import Image
-import torch
 import numpy as np
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass
@@ -142,6 +144,8 @@ class SegmentationAdapter(ABC):
         Returns:
             Boolean mask tensor [N, H, W]
         """
+        import torch
+
         result = self.segment(image, vocab=None)
         if result.masks is not None:
             return result.masks

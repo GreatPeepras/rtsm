@@ -158,7 +158,7 @@ RTSM is **SLAM-agnostic** and designed to sit above existing perception stacks.
 ### Prerequisites
 
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- pip (or [uv](https://docs.astral.sh/uv/))
 - CUDA-capable GPU (tested on RTX 3080, RTX 5090)
 - **One of:**
   - iPhone with [Calabi Lens](https://github.com/calabi-inc) app (ARKit, no external SLAM needed)
@@ -172,14 +172,24 @@ RTSM is **SLAM-agnostic** and designed to sit above existing perception stacks.
 ```bash
 git clone https://github.com/calabi-inc/rtsm.git
 cd rtsm
-uv sync                  # install all dependencies
+
+# Core only (API server, I/O transports — no GPU needed)
+pip install .
+
+# With GPU (full pipeline — segmentation, CLIP, vector search)
+pip install ".[gpu]" --extra-index-url https://download.pytorch.org/whl/cu128
+
+# Everything (GPU + visualization)
+pip install ".[all]" --extra-index-url https://download.pytorch.org/whl/cu128
 ```
+
+> **CUDA version:** Use `cu128` for most GPUs (RTX 3080–5090). For Blackwell-only features use `cu130`. See [PyTorch install](https://pytorch.org/get-started/locally/) for other options.
 
 ### Download Models
 
 ```bash
 # Fetch all models (FastSAM, YOLOE prompt-free, CLIP)
-uv run python scripts/fetch_models.py
+python scripts/fetch_models.py
 ```
 
 This downloads:
@@ -192,14 +202,14 @@ This downloads:
 
 ```bash
 # Live — Calabi Lens (ARKit over WebSocket)
-uv run rtsm-run
+python -m rtsm.run
 
 # Live — D435i + RTAB-Map (ZeroMQ)
 # Set io.receiver: zeromq in config/rtsm.yaml first
-uv run rtsm-run
+python -m rtsm.run
 
 # Replay a recorded session (no device needed)
-uv run rtsm-run --replay recordings/session1
+python -m rtsm.run --replay recordings/session1
 ```
 
 RTSM will start:
@@ -212,14 +222,14 @@ RTSM will start:
 Record a session for offline testing and reproducible iteration:
 
 ```bash
-# Record only (no GPU needed, no pipeline)
-uv run rtsm-run --record recordings/my_session --record-only
+# Record only (no GPU needed, no pipeline — works with core-only install)
+python -m rtsm.run --record recordings/my_session --record-only
 
 # Record while running pipeline
-uv run rtsm-run --record recordings/my_session
+python -m rtsm.run --record recordings/my_session
 
 # Replay at original recording rate
-uv run rtsm-run --replay recordings/my_session
+python -m rtsm.run --replay recordings/my_session
 ```
 
 Recordings are self-contained directories with raw WebSocket data. Replay feeds the exact same bytes through the full decode + pipeline path, preserving all time-dependent behavior (TTL caches, throttles).
