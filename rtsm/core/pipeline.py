@@ -188,6 +188,8 @@ class Pipeline:
             vocab = seg_cfg.get("yoloe", {}).get("vocab", None)
         elif backend == "yoloe":
             vocab = seg_cfg.get("yoloe", {}).get("vocab", None)
+        elif backend == "grounded_sam2":
+            vocab = seg_cfg.get("grounded_sam2", {}).get("vocab", None)
         else:
             vocab = None
 
@@ -348,8 +350,8 @@ class Pipeline:
                         timestamp=t_step_start,
                         frame_seq=int(pkt.time.seq or 0) if pkt else 0,
                         backend=backend,
-                        n_fastsam_only=n if backend == "fastsam" else 0,
-                        n_yoloe_only=n if backend == "yoloe" else 0,
+                        n_fastsam_only=n if backend in ("fastsam", "sam2") else 0,
+                        n_yoloe_only=n if backend in ("yoloe", "grounded_sam2") else 0,
                         n_total=n,
                     )
                 # Fill staged/selected counts by confirmation source

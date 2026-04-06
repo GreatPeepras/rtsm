@@ -71,10 +71,14 @@ def get_segmenter(cfg: Dict[str, Any]) -> SegmentationAdapter:
         return _create_yoloe(cfg, seg_cfg)
     elif backend == "dual":
         return _create_dual(cfg, seg_cfg)
+    elif backend == "sam2":
+        return _create_sam2(cfg, seg_cfg)
+    elif backend == "grounded_sam2":
+        return _create_grounded_sam2(cfg, seg_cfg)
     else:
         raise ValueError(
             f"Unknown segmentation backend: {backend}. "
-            f"Available: fastsam, yoloe, dual"
+            f"Available: grounded_sam2, sam2, fastsam, yoloe, dual"
         )
 
 
@@ -128,6 +132,41 @@ def _create_dual(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationAd
         yoloe=yoloe,
         iou_confirm_threshold=dual_cfg.get("iou_confirm_threshold", 0.40),
         prefer_mask=dual_cfg.get("prefer_mask", "fastsam"),
+    )
+
+
+def _create_sam2(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationAdapter:
+    """Create SAM2 automatic mask segmenter from config."""
+    from rtsm.models.segmentation.sam2_segmenter import SAM2Segmenter
+
+    sam2_cfg = seg_cfg.get("sam2", {})
+
+    return SAM2Segmenter(
+        model_id=sam2_cfg.get("model_id", "facebook/sam2.1-hiera-small"),
+        device=sam2_cfg.get("device", "cuda"),
+        points_per_side=sam2_cfg.get("points_per_side", 32),
+        points_per_batch=sam2_cfg.get("points_per_batch", 64),
+        pred_iou_thresh=sam2_cfg.get("pred_iou_thresh", 0.7),
+        stability_score_thresh=sam2_cfg.get("stability_score_thresh", 0.92),
+        box_nms_thresh=sam2_cfg.get("box_nms_thresh", 0.7),
+        min_mask_region_area=sam2_cfg.get("min_mask_region_area", 100),
+    )
+
+
+def _create_grounded_sam2(cfg: Dict[str, Any], seg_cfg: Dict[str, Any]) -> SegmentationAdapter:
+    """Create Grounded SAM2 segmenter (GDINO + SAM2) from config."""
+    from rtsm.models.segmentation.grounded_sam2_segmenter import GroundedSAM2Segmenter
+
+    gs_cfg = seg_cfg.get("grounded_sam2", {})
+
+    return GroundedSAM2Segmenter(
+        gdino_model_id=gs_cfg.get("gdino_model_id", "IDEA-Research/grounding-dino-tiny"),
+        sam2_model_id=gs_cfg.get("sam2_model_id")
+            or seg_cfg.get("sam2", {}).get("model_id", "facebook/sam2.1-hiera-small"),
+        device=gs_cfg.get("device", "cuda"),
+        box_threshold=gs_cfg.get("box_threshold", 0.25),
+        text_threshold=gs_cfg.get("text_threshold", 0.2),
+        default_vocab=gs_cfg.get("vocab", None),
     )
 
 
