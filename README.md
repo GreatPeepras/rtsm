@@ -84,12 +84,12 @@ RTSM is **SLAM-agnostic** and designed to sit above existing perception stacks.
 ┌───────────────────────────────────────────────▼──────────────────────────┐
 │  Perception Pipeline                                                     │
 │                                                                          │
-│  ┌────────────┐  ┌────────────┐                                          │
-│  │  FastSAM   │  │   YOLOE    │    Dual-Confirmation Segmentation        │
-│  │ (masks)    │  │ (masks +   │    IoU match -> "dual" | "fastsam_only"   │
-│  │            │  │  labels)   │    | "yoloe_only"                        │
-│  └─────┬──────┘  └─────┬──────┘                                         │
-│        └────────┬───────┘                                                │
+│  ┌────────────────┐  ┌────────────────┐                                   │
+│  │ Grounding DINO │  │     SAM2       │    Default: grounded_sam2          │
+│  │ (detection +   │─>│ (box-prompted  │    GDINO detects → SAM2 segments   │
+│  │  labels)       │  │  masks)        │    (Apache 2.0, no AGPL)           │
+│  └────────────────┘  └───────┬────────┘                                   │
+│                              │                                            │
 │                 ▼                                                        │
 │  ┌───────────────┐     ┌──────────────┐     ┌──────────────┐             │
 │  │ Mask Staging  │────>│ Top-K Select │────>│ CLIP Encode  │             │
@@ -392,6 +392,12 @@ tests/                       # Unit + integration tests
 ## Acknowledgments
 
 RTSM builds on excellent open-source work:
+
+- **SAM 2** — Ravi et al., *SAM 2: Segment Anything in Images and Videos*, 2024.
+  [arXiv:2408.00714](https://arxiv.org/abs/2408.00714) · [GitHub](https://github.com/facebookresearch/sam2)
+
+- **Grounding DINO** — Liu et al., *Grounding DINO: Marrying DINO with Grounded Pre-Training for Open-Set Object Detection*, 2023.
+  [arXiv:2303.05499](https://arxiv.org/abs/2303.05499) · [GitHub](https://github.com/IDEA-Research/GroundingDINO)
 
 - **FastSAM** — Zhao et al., *Fast Segment Anything*, 2023.
   [arXiv:2306.12156](https://arxiv.org/abs/2306.12156) · [GitHub](https://github.com/CASIA-IVA-Lab/FastSAM)
