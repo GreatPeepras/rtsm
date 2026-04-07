@@ -16,7 +16,13 @@ camera:
 # -------------------- Models --------------------
 # Segmentation backend
 segmentation:
-  backend: dual                      # fastsam | yoloe | dual
+  # Atomic backend choices:
+  #   grounded_sam2  - GDINO detect + SAM2 segment (Apache 2.0) [DEFAULT]
+  #   sam2           - SAM2 auto-mask, class-agnostic (Apache 2.0)
+  #   fastsam        - class-agnostic (requires ultralytics, AGPL)
+  #   yoloe          - open-vocab (requires ultralytics, AGPL)
+  #   dual           - FastSAM + YOLOE IoU merge (requires ultralytics, AGPL)
+  backend: grounded_sam2
   retina_masks: false                  # false = 640x640 masks (fast), true = original resolution (precise but slow)
 
   fastsam:
@@ -36,6 +42,24 @@ segmentation:
     max_det: 100                                        # cap detections per frame
     # vocab is ignored for -pf models (1200+ built-in categories)
     vocab: null
+
+  sam2:
+    model_id: facebook/sam2.1-hiera-small    # tiny | small | base_plus | large
+    device: cuda
+    points_per_side: 32                      # grid density for auto-mask (32 = default, 64 = denser)
+    points_per_batch: 64                     # points processed per batch
+    pred_iou_thresh: 0.7                     # minimum predicted IoU to keep a mask
+    stability_score_thresh: 0.92             # minimum stability score
+    box_nms_thresh: 0.7                      # NMS threshold for overlapping masks
+    min_mask_region_area: 100                # minimum mask area in pixels
+
+  grounded_sam2:
+    gdino_model_id: IDEA-Research/grounding-dino-tiny
+    sam2_model_id: null              # null = use sam2.model_id above
+    device: cuda
+    box_threshold: 0.25              # GDINO detection confidence threshold
+    text_threshold: 0.2              # GDINO text matching threshold
+    vocab: null                      # null = use default 30-class indoor vocab
 
   # Dual-confirmation settings (only used when backend: dual)
   dual:
@@ -292,6 +316,13 @@ slam:
 api:
   host: "0.0.0.0"
   port: 8002
+
+# -------------------- MCP (Model Context Protocol) --------------------
+# Embedded MCP server exposes RTSM spatial memory as tools for AI agents.
+# Mounts on the existing API server at /mcp/ (SSE transport).
+# Standalone bridge (rtsm-mcp) is also available for stdio transport.
+mcp:
+  enable: true                      # Enable embedded MCP server on the API port
 
 # -------------------- Analytics --------------------
 analytics:

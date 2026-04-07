@@ -10,13 +10,27 @@ RTSM builds a persistent, searchable memory of objects in 3D space from RGB-D ca
 
 ---
 
+## Why RTSM
+
+Vision models can detect objects. SLAM systems can map geometry. Language models can reason abstractly. But none of them **remember where things are**.
+
+RTSM is the missing layer between perception and reasoning:
+
+- SLAM provides geometry and poses
+- Vision models provide object masks and semantics
+- **RTSM fuses them into a persistent, queryable world state**
+
+This makes spatial state inspectable, queryable, and reusable across robots, agents, and applications — regardless of which segmentation model or SLAM system you use.
+
+---
+
 ## Features
 
-- **Real-time segmentation** — FastSAM extracts object instances from each frame
-- **Semantic embeddings** — CLIP encodes visual features for natural language queries
-- **Persistent memory** — Objects are tracked across views, fused, and promoted to long-term memory
-- **Spatial indexing** — Fast proximity queries via 3D grid + vector search (FAISS)
-- **Queryable** — REST API and semantic search: find objects by description
+- **Model-agnostic** — Swappable segmentation backends (CNN or transformer, permissive or AGPL)
+- **Real-time** — 210 ms mean pipeline latency (dual backend, RTX 5090)
+- **Persistent memory** — Objects tracked across views with stable IDs, promoted from proto to confirmed
+- **Semantic search** — Find objects by natural language via CLIP embeddings + FAISS
+- **Queryable API** — REST endpoints for objects, search, stats, and analytics
 
 ```json
 // "Where is the red backpack?"
@@ -33,21 +47,25 @@ RTSM builds a persistent, searchable memory of objects in 3D space from RGB-D ca
 - :material-rocket-launch: **[Quick Start](getting-started/quick-start.md)** — Your first query in 5 minutes
 - :material-cog: **[Configuration](getting-started/configuration.md)** — Tune for your setup
 - :material-api: **[REST API](api/rest-api.md)** — API reference
+- :material-chart-bar: **[Benchmarks](benchmarks.md)** — Performance data
 
 </div>
 
 ---
 
-## Performance
+## Performance at a Glance
 
-*Benchmarks on RTX 5090:*
+*Measured on RTX 5090, iPhone ARKit recording (162 frames, 458s indoor scene). [Full benchmarks](benchmarks.md).*
 
-| Stage | Metric |
-|-------|--------|
-| Input throttling | 30 Hz raw → 5–7 Hz processed |
-| Proto-object yield | >90% of static masks accumulate |
-| Frame latency | <30 ms (FastSAM + CLIP) |
-| LTM upsert rate | 5 s default interval |
+| Metric | dual (FastSAM + YOLOE) | grounded_sam2 (GDINO + SAM2) |
+|--------|------------------------|------------------------------|
+| Mean latency | 210 ms | 510 ms |
+| P95 latency | 509 ms | 721 ms |
+| Masks/frame | 28.8 | 13.4 |
+| Objects confirmed | 60 | 35 |
+| License | AGPL-3.0 | Apache-2.0 |
+
+RTSM's 10-stage pipeline is backend-agnostic — swap between CNN and transformer segmenters with a single config change, same memory layer, same API.
 
 ---
 

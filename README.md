@@ -84,12 +84,12 @@ RTSM is **SLAM-agnostic** and designed to sit above existing perception stacks.
 ┌───────────────────────────────────────────────▼──────────────────────────┐
 │  Perception Pipeline                                                     │
 │                                                                          │
-│  ┌────────────┐  ┌────────────┐                                          │
-│  │  FastSAM   │  │   YOLOE    │    Dual-Confirmation Segmentation        │
-│  │ (masks)    │  │ (masks +   │    IoU match -> "dual" | "fastsam_only"   │
-│  │            │  │  labels)   │    | "yoloe_only"                        │
-│  └─────┬──────┘  └─────┬──────┘                                         │
-│        └────────┬───────┘                                                │
+│  ┌────────────────┐  ┌────────────────┐                                   │
+│  │ Grounding DINO │  │     SAM2       │    Default: grounded_sam2          │
+│  │ (detection +   │─>│ (box-prompted  │    GDINO detects → SAM2 segments   │
+│  │  labels)       │  │  masks)        │    (Apache 2.0, no AGPL)           │
+│  └────────────────┘  └───────┬────────┘                                   │
+│                              │                                            │
 │                 ▼                                                        │
 │  ┌───────────────┐     ┌──────────────┐     ┌──────────────┐             │
 │  │ Mask Staging  │────>│ Top-K Select │────>│ CLIP Encode  │             │
@@ -176,27 +176,35 @@ cd rtsm
 # Core only (API server, I/O transports — no GPU needed)
 pip install .
 
-# With GPU (full pipeline — segmentation, CLIP, vector search)
+# With GPU — permissive license (SAM2 + Grounding DINO, Apache 2.0)
 pip install ".[gpu]" --extra-index-url https://download.pytorch.org/whl/cu128
+
+# With GPU — ultralytics backends (FastSAM + YOLOE, AGPL-3.0)
+pip install ".[gpu-ultralytics]" --extra-index-url https://download.pytorch.org/whl/cu128
 
 # Everything (GPU + visualization)
 pip install ".[all]" --extra-index-url https://download.pytorch.org/whl/cu128
 ```
 
+> **License note:** `rtsm[gpu]` uses only Apache 2.0 / MIT dependencies. `rtsm[gpu-ultralytics]` adds the `ultralytics` package (AGPL-3.0) for FastSAM and YOLOE backends.
+>
 > **CUDA version:** Use `cu128` for most GPUs (RTX 3080–5090). For Blackwell-only features use `cu130`. See [PyTorch install](https://pytorch.org/get-started/locally/) for other options.
 
 ### Download Models
 
 ```bash
-# Fetch all models (FastSAM, YOLOE prompt-free, CLIP)
+# Fetch default models (SAM2, Grounding DINO, CLIP)
 python scripts/fetch_models.py
-```
 
-This downloads:
-- `model_store/fastsam/FastSAM-x.pt` — open-world segmentation
-- `model_store/yolo/yoloe-26s-seg-pf.pt` — prompt-free detection (1200+ LVIS categories)
-- `model_store/yolo/yoloe-26s-seg.pt` — prompted detection (custom vocab)
-- `model_store/clip/` — CLIP ViT-B-32 embeddings
+# Or fetch individually
+python scripts/fetch_models.py --only sam2
+python scripts/fetch_models.py --only gdino
+python scripts/fetch_models.py --only clip
+
+# Ultralytics models (only if you installed rtsm[gpu-ultralytics])
+python scripts/fetch_models.py --only fastsam
+python scripts/fetch_models.py --only yolo
+```
 
 ### Run
 
@@ -275,12 +283,38 @@ See [`config/rtsm.yaml`](config/rtsm.yaml) for full configuration options:
 
 ---
 
+## Segmentation Backends
+
+RTSM supports multiple segmentation backends via `segmentation.backend` in `config/rtsm.yaml`:
+
+| Backend | License | Description | Seg time* | Pipeline total* | Labels |
+|---------|---------|-------------|-----------|-----------------|--------|
+| `grounded_sam2` | Apache 2.0 | Grounding DINO detect + SAM2 segment | 222 ms | 510 ms | Open-vocab (text-prompted) |
+| `sam2` | Apache 2.0 | SAM2 auto-mask (segment everything) | ~860 ms | ~1000 ms | None (class-agnostic) |
+| `fastsam` | AGPL-3.0 | FastSAM (segment everything) | ~50 ms | ~200 ms | None (class-agnostic) |
+| `yoloe` | AGPL-3.0 | YOLOE detection + segmentation | ~60 ms | ~210 ms | Open-vocab / 1200+ built-in |
+| `dual` | AGPL-3.0 | FastSAM + YOLOE with IoU merge | 116 ms | 210 ms | Dual-confirmed labels |
+
+*Mean on RTX 5090, 640x480 input. `dual` and `grounded_sam2` measured via replay benchmark; others estimated.*
+
+**Default:** `grounded_sam2` — permissive license, open-vocabulary, no AGPL dependency.
+
+To switch backends, edit `config/rtsm.yaml`:
+```yaml
+segmentation:
+  backend: grounded_sam2    # or: sam2, fastsam, yoloe, dual
+```
+
+> `fastsam`, `yoloe`, and `dual` require `pip install "rtsm[gpu-ultralytics]"`.
+
+---
+
 ## Project Structure
 
 ```
 rtsm/
 ├── core/           # Pipeline, association, ingest gate, data models
-├── models/         # FastSAM, YOLOE, CLIP, dual-confirmation segmenter
+├── models/         # SAM2, Grounding DINO, FastSAM, YOLOE, CLIP adapters
 ├── stores/         # Working memory, proximity index, sweep cache, vector stores
 ├── io/             # WebSocket + ZeroMQ receivers, recorder, replayer
 ├── analytics/      # Runtime analytics (latency, segmentation, congestion buffers)
@@ -291,8 +325,10 @@ config/
 ├── rtsm.yaml       # Main configuration (models, thresholds, I/O)
 └── clip/vocab.yaml  # CLIP vocabulary
 scripts/
-├── fetch_models.py          # Download all models (FastSAM, YOLOE, CLIP)
-└── debug_segmentation.py    # A/B segmentation viewer (FastSAM vs YOLOE)
+├── fetch_models.py          # Download all models (SAM2, GDINO, CLIP, FastSAM, YOLOE)
+├── debug_segmentation.py    # A/B segmentation viewer (FastSAM vs YOLOE)
+└── benchmark_backends.py    # Backend comparison benchmark (generates reports/)
+reports/                     # Benchmark results and comparison reports
 recordings/                  # Recorded sessions for replay testing (git-lfs)
 tests/                       # Unit + integration tests
 ```
@@ -301,41 +337,35 @@ tests/                       # Unit + integration tests
 
 ## Performance
 
-*Measured via built-in runtime analytics dashboard on RTX 5090, ARKit input (your mileage may vary):*
+Benchmarked on RTX 5090 (32 GB), iPhone ARKit recording (162 frames, 458s indoor scene), 640x480 RGB input. Both backends run the same replay session through the identical 10-stage pipeline.
 
-### Latency (dual confirmation, 640px inference)
+### Backend Comparison
 
-| Stage | Mean | p95 |
-|-------|------|-----|
-| Segmentation (FastSAM + YOLOE) | 117ms | 116ms |
-| Mask heuristics | 135ms | 196ms |
-| CLIP encode (top-15) | 75ms | 92ms |
-| Association | 5ms | 8ms |
-| **Total pipeline** | **362ms** | **612ms** |
+| Metric | dual (FastSAM + YOLOE) | grounded_sam2 (GDINO + SAM2) |
+|--------|------------------------|------------------------------|
+| **Mean latency** | **210 ms** | **510 ms** |
+| P50 latency | 170 ms | 502 ms |
+| P95 latency | 509 ms | 721 ms |
+| Masks/frame | 28.8 | 13.4 |
+| Objects confirmed | 60 | 35 |
+| Confirmation rate | 52.2% | 45.5% |
+| License | AGPL-3.0 | Apache-2.0 |
 
-### Throughput
-
-| Metric | Value |
-|--------|-------|
-| Input rate (raw camera) | 5–30 Hz (device dependent) |
-| Processing rate | ~2.8 Hz (dual), ~3.5 Hz (single model) |
-| Keyframe gating | Sweep-policy based, passes ~20% of frames |
-| Dual confirmation rate | ~23% dual-confirmed, 61% FastSAM-only, 16% YOLOE-only |
-| Object match rate | ~47% (matched vs newly created per session) |
-| LTM upsert interval | 3 s (configurable) |
+> Per-stage breakdown, dual confirmation analysis, and full methodology: **[Benchmarks](https://calabi-inc.github.io/rtsm/benchmarks/)** | [`reports/backend_comparison.md`](reports/backend_comparison.md)
 
 ---
 
 ## Roadmap
 
 - [x] Dual-confirmation segmentation (FastSAM + YOLOE)
+- [x] AGPL-clean default (SAM2 + Grounding DINO, Apache 2.0)
 - [x] YOLOE prompt-free (1200+ LVIS categories)
 - [x] WebSocket receiver for Calabi Lens (ARKit iOS)
 - [x] Record/replay system for offline testing
 - [x] A/B segmentation debug tooling
 - [x] Real-time analytics dashboard (Looker-style, per-stage latency, dual confirmation rates, congestion detection)
-- [ ] Evaluation framework (ArUco ground truth)
-- [ ] Agent architecture (MCP interface)
+- [ ] Evaluation framework (ArUco ground truth, precision/recall metrics)
+- [x] Agent architecture (MCP interface)
 - [ ] More communication protocols (ROS 2, gRPC)
 - [ ] LLM integration for high-level queries (agentic mode)
 - [ ] Dockerization
@@ -345,6 +375,12 @@ tests/                       # Unit + integration tests
 ## Acknowledgments
 
 RTSM builds on excellent open-source work:
+
+- **SAM 2** — Ravi et al., *SAM 2: Segment Anything in Images and Videos*, 2024.
+  [arXiv:2408.00714](https://arxiv.org/abs/2408.00714) · [GitHub](https://github.com/facebookresearch/sam2)
+
+- **Grounding DINO** — Liu et al., *Grounding DINO: Marrying DINO with Grounded Pre-Training for Open-Set Object Detection*, 2023.
+  [arXiv:2303.05499](https://arxiv.org/abs/2303.05499) · [GitHub](https://github.com/IDEA-Research/GroundingDINO)
 
 - **FastSAM** — Zhao et al., *Fast Segment Anything*, 2023.
   [arXiv:2306.12156](https://arxiv.org/abs/2306.12156) · [GitHub](https://github.com/CASIA-IVA-Lab/FastSAM)

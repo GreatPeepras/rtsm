@@ -87,10 +87,49 @@ def fetch_yolo():
         print(f"[yolo] Saved: {ckpt}")
 
 
+def fetch_sam2():
+    """Pre-download SAM2 weights via HuggingFace Hub into local cache."""
+    model_id = "facebook/sam2.1-hiera-small"
+    out = os.path.join(MODEL_STORE, "sam2")
+    marker = os.path.join(out, ".downloaded")
+    if os.path.isfile(marker):
+        print(f"[sam2] Already cached: {model_id}")
+        return
+
+    os.makedirs(out, exist_ok=True)
+    print(f"[sam2] Downloading {model_id} via HuggingFace Hub ...")
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    SAM2ImagePredictor.from_pretrained(model_id, device="cpu")
+    with open(marker, "w") as f:
+        f.write(model_id + "\n")
+    print(f"[sam2] Cached: {model_id}")
+
+
+def fetch_gdino():
+    """Pre-download Grounding DINO via HuggingFace Hub."""
+    model_id = "IDEA-Research/grounding-dino-tiny"
+    out = os.path.join(MODEL_STORE, "gdino")
+    marker = os.path.join(out, ".downloaded")
+    if os.path.isfile(marker):
+        print(f"[gdino] Already cached: {model_id}")
+        return
+
+    os.makedirs(out, exist_ok=True)
+    print(f"[gdino] Downloading {model_id} via HuggingFace Hub ...")
+    from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+    AutoProcessor.from_pretrained(model_id)
+    AutoModelForZeroShotObjectDetection.from_pretrained(model_id)
+    with open(marker, "w") as f:
+        f.write(model_id + "\n")
+    print(f"[gdino] Cached: {model_id}")
+
+
 FETCHERS = {
     "clip": fetch_clip,
     "fastsam": fetch_fastsam,
     "yolo": fetch_yolo,
+    "sam2": fetch_sam2,
+    "gdino": fetch_gdino,
 }
 
 

@@ -30,6 +30,7 @@ def create_app(
     reset_components: Optional[ResetComponents] = None,
     seg_analytics: Optional[Any] = None,
     latency_analytics: Optional[Any] = None,
+    mcp_enabled: bool = False,
 ) -> FastAPI:
     """
     Build a FastAPI app exposing:
@@ -472,6 +473,48 @@ def create_app(
 
         return {"query": query, "results": results}
 
+    # ---- Spatial search endpoint ----
+    @app.get("/search/spatial")
+    def spatial_search(x: float, y: float, z: float, radius_m: float = 1.0) -> Dict[str, Any]:
+        """
+        Spatial search for objects within a radius of a 3D point.
+
+        Args:
+            x, y, z: Center point in world coordinates (meters)
+            radius_m: Search radius in meters (default 1.0)
+
+        Returns:
+            List of nearby objects sorted by distance
+        """
+        if working_memory.index is None:
+            raise HTTPException(status_code=503, detail="Spatial search not available (no proximity index)")
+
+        center = np.array([x, y, z], dtype=np.float32)
+        grid = working_memory.index.grid
+        rings = min(10, max(1, int(np.ceil(radius_m / grid.cell_m))))
+
+        oids = working_memory.index.nearby_ids(center, rings=rings)
+
+        results = []
+        for oid in oids:
+            obj = working_memory.get(oid)
+            if obj is None:
+                continue
+            dist = float(np.linalg.norm(obj.xyz_world - center))
+            if dist > radius_m:
+                continue
+            results.append({
+                "id": oid,
+                "distance_m": round(dist, 4),
+                "label_primary": getattr(obj, "label_primary", None),
+                "xyz_world": obj.xyz_world.tolist(),
+                "confirmed": bool(getattr(obj, "confirmed", False)),
+                "stability": round(float(getattr(obj, "stability", 0.0)), 3),
+            })
+
+        results.sort(key=lambda r: r["distance_m"])
+        return {"center": [x, y, z], "radius_m": radius_m, "results": results}
+
     # ---- Analytics endpoint ----
     @app.get("/stats/analytics")
     def stats_analytics() -> Dict[str, Any]:
@@ -490,6 +533,23 @@ def create_app(
                 "hourly": seg_analytics.hourly_history(),
             }
         return result
+
+    # ---- Embedded MCP server (optional) ----
+    if mcp_enabled:
+        try:
+            from rtsm.io.mcp_embedded import create_mcp_app
+            mcp_mount = create_mcp_app(
+                working_memory=working_memory,
+                clip_adapter=clip_adapter,
+                vectors=vectors,
+            )
+            app.mount("/mcp", mcp_mount)
+        except ImportError:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "MCP enabled in config but 'mcp' package not installed. "
+                "Install with: pip install \"rtsm[mcp]\""
+            )
 
     return app
 

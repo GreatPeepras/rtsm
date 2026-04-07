@@ -2,7 +2,7 @@
 
 RTSM exposes a REST API for querying objects, system state, and runtime analytics.
 
-**Base URL**: `http://localhost:8000`
+**Base URL**: `http://localhost:8002`
 
 ---
 
@@ -149,7 +149,7 @@ Encodes the query text with CLIP and performs KNN search against all object embe
 **Example**:
 
 ```bash
-curl "http://localhost:8000/search/semantic?query=red%20mug&top_k=5"
+curl "http://localhost:8002/search/semantic?query=red%20mug&top_k=5"
 ```
 
 **Response**:
@@ -168,6 +168,50 @@ curl "http://localhost:8000/search/semantic?query=red%20mug&top_k=5"
   ]
 }
 ```
+
+### Spatial Search
+
+```http
+GET /search/spatial?x={x}&y={y}&z={z}&radius_m={r}
+```
+
+Finds objects within a radius of a 3D point in world coordinates.
+
+**Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `x` | float | required | X coordinate (meters, world frame) |
+| `y` | float | required | Y coordinate (meters, world frame) |
+| `z` | float | required | Z coordinate (meters, world frame) |
+| `radius_m` | float | 1.0 | Search radius in meters |
+
+**Example**:
+
+```bash
+curl "http://localhost:8002/search/spatial?x=1.0&y=0.5&z=2.0&radius_m=0.5"
+```
+
+**Response**:
+
+```json
+{
+  "center": [1.0, 0.5, 2.0],
+  "radius_m": 0.5,
+  "results": [
+    {
+      "id": "b7d4e2f1",
+      "distance_m": 0.23,
+      "label_primary": "mug",
+      "xyz_world": [1.1, 0.4, 2.1],
+      "confirmed": true,
+      "stability": 0.82
+    }
+  ]
+}
+```
+
+Results are sorted by distance (nearest first). Returns `503` if the proximity index is not available.
 
 ---
 
@@ -297,6 +341,71 @@ Exposes Prometheus-format metrics for external monitoring:
 
 ---
 
+## MCP (Model Context Protocol)
+
+When `mcp.enable: true` in `config/rtsm.yaml`, RTSM mounts an MCP server on the API:
+
+```
+SSE endpoint: http://localhost:8002/mcp/sse
+```
+
+This exposes RTSM's spatial memory as tools for AI agents (Claude, GPT, local LLMs). Agents can query objects, search by text or location, and read world state through the standard MCP protocol.
+
+Enable in config:
+
+```yaml
+mcp:
+  enable: true
+```
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `rtsm.semantic_query` | Search spatial memory by natural language (e.g., "where is the coffee mug?"). Returns objects with 3D positions and similarity scores. |
+| `rtsm.spatial_query` | Find objects within a radius of a 3D point in world coordinates. |
+| `rtsm.relational_query` | Find objects near a named reference object (e.g., "what is next to the laptop?"). |
+| `rtsm.list_objects` | List all objects currently tracked in spatial memory with positions and labels. |
+| `rtsm.get_object` | Get full details for a specific object by ID. |
+| `rtsm.status` | Get system status: health, object counts, and pipeline statistics. |
+
+#### Tool Parameters
+
+**`rtsm.semantic_query`**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | required | Natural language search query |
+| `top_k` | int | 5 | Max results to return |
+| `threshold` | float | 0.2 | Min cosine similarity (0–1) |
+
+**`rtsm.spatial_query`**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `x` | float | required | X coordinate (meters) |
+| `y` | float | required | Y coordinate (meters) |
+| `z` | float | required | Z coordinate (meters) |
+| `radius_m` | float | 1.0 | Search radius in meters |
+
+**`rtsm.relational_query`**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | required | Name of reference object to search around |
+| `radius_m` | float | 1.0 | Search radius in meters |
+
+**`rtsm.get_object`**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `object_id` | string | required | Object ID |
+| `include_vectors` | bool | false | Include embedding vectors |
+
+A standalone stdio bridge (`rtsm-mcp`) is also available for direct integration with agent frameworks.
+
+---
+
 ## Error Responses
 
 ```json
@@ -315,5 +424,5 @@ Exposes Prometheus-format metrics for external monitoring:
 
 ## Next Steps
 
-- [WebSocket API](websocket.md) — Real-time point cloud and object streaming
+- [WebSocket API](websocket.md) — Real-time mesh, object, and analytics streaming
 - [Quick Start](../getting-started/quick-start.md) — Try these endpoints
