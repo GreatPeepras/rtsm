@@ -6,28 +6,47 @@ This guide walks you through running RTSM and making your first semantic query.
 
 ## 1. Start RTSM
 
-RTSM expects an RGB-D stream with poses via ZeroMQ. Start the main service:
+Start the main service:
 
 ```bash
-python -m rtsm.run
+python -m rtsm
 ```
 
 This launches:
 
 | Service | Address |
 |---------|---------|
-| REST API | `http://localhost:8000` |
-| WebSocket (visualization) | `ws://localhost:8081` |
+| REST API | `http://localhost:8002` |
+| WebSocket (visualization) | `ws://localhost:8083/ws` |
+| MCP (if enabled) | `http://localhost:8002/mcp/sse` |
+
+RTSM listens for RGB-D frames via the configured receiver (WebSocket from Calabi Lens, or ZeroMQ from RealSense + RTABMap).
+
+### Replay Mode
+
+To replay a recorded session without a live camera:
+
+```bash
+python -m rtsm --replay recordings/session1
+```
 
 ---
 
 ## 2. Verify It's Running
 
 ```bash
-curl http://localhost:8000/stats/detailed
+curl http://localhost:8002/healthz
 ```
 
-You should see system stats including frame count, object count, and memory usage.
+```json
+{"status": "ok"}
+```
+
+Check detailed stats:
+
+```bash
+curl http://localhost:8002/stats/detailed
+```
 
 ---
 
@@ -36,21 +55,26 @@ You should see system stats including frame count, object count, and memory usag
 Once frames are streaming, objects will appear in memory:
 
 ```bash
-curl http://localhost:8000/objects
+curl http://localhost:8002/objects
 ```
 
 Response:
 
 ```json
-[
-  {
-    "id": "a3f2c1",
-    "label": "backpack",
-    "xyz": [1.2, 0.4, 2.1],
-    "confidence": 0.87
-  },
-  ...
-]
+{
+  "count": 62,
+  "objects": [
+    {
+      "id": "a3f2c1d8",
+      "xyz_world": [1.2, 0.4, 2.1],
+      "stability": 0.82,
+      "hits": 15,
+      "confirmed": true,
+      "label_primary": "backpack",
+      "view_bins": 3
+    }
+  ]
+}
 ```
 
 ---
@@ -60,7 +84,7 @@ Response:
 Ask natural language queries:
 
 ```bash
-curl "http://localhost:8000/search/semantic?query=red%20mug&top_k=5"
+curl "http://localhost:8002/search/semantic?query=red%20mug&top_k=5"
 ```
 
 Response:
@@ -70,10 +94,11 @@ Response:
   "query": "red mug",
   "results": [
     {
-      "id": "b7d4e2",
-      "label": "mug",
-      "xyz": [0.8, 0.2, 1.5],
-      "score": 0.82
+      "id": "b7d4e2f1",
+      "score": 0.82,
+      "label_hint": "mug",
+      "confirmed": true,
+      "xyz_world": [0.8, 0.2, 1.5]
     }
   ]
 }
@@ -81,15 +106,19 @@ Response:
 
 ---
 
-## 5. View in 3D (Optional)
+## 5. Spatial Search
 
-Open the visualization demo in your browser:
+Find objects near a 3D point:
 
+```bash
+curl "http://localhost:8002/search/spatial?x=1.0&y=0.5&z=2.0&radius_m=0.5"
 ```
-http://localhost:8081
-```
 
-This shows a Three.js point cloud with detected objects overlaid.
+---
+
+## 6. View in 3D (Optional)
+
+Open the visualization frontend in your browser. The 3D viewer connects to the WebSocket at `ws://localhost:8083/ws` and shows a live point cloud with detected objects overlaid.
 
 ---
 

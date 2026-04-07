@@ -317,6 +317,13 @@ api:
   host: "0.0.0.0"
   port: 8002
 
+# -------------------- MCP (Model Context Protocol) --------------------
+# Embedded MCP server exposes RTSM spatial memory as tools for AI agents.
+# Mounts on the existing API server at /mcp/ (SSE transport).
+# Standalone bridge (rtsm-mcp) is also available for stdio transport.
+mcp:
+  enable: true                      # Enable embedded MCP server on the API port
+
 # -------------------- Analytics --------------------
 analytics:
   enable: true                      # Enable runtime analytics buffers

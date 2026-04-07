@@ -1,101 +1,136 @@
 # Perception Pipeline
 
-The perception pipeline extracts object instances from RGB-D frames and encodes them for matching and search.
+The perception pipeline extracts object instances from RGB-D frames and encodes them for matching and search. The segmentation stage is swappable — the rest of the pipeline is shared across all backends.
 
 ---
 
 ## Pipeline Stages
 
 ```
-RGB Frame → FastSAM → Mask Filter → CLIP Encode → Vocab Classify
+RGB Frame → Segmentation → Heuristics → Top-K Scoring → CLIP Encode → Vocab Classify
+              (swappable)   (filtering)   (priority)     (embedding)    (labeling)
 ```
 
 ---
 
-## 1. Segmentation (FastSAM)
+## 1. Segmentation
 
-[FastSAM](https://github.com/CASIA-IVA-Lab/FastSAM) generates instance masks from the RGB image.
+The first stage produces instance masks from the RGB image. RTSM supports multiple backends:
 
-- **Input**: 640×480 RGB image
-- **Output**: Variable number of binary masks
-- **Speed**: ~10-15ms per frame
+### grounded_sam2 (default, Apache-2.0)
 
-FastSAM is a CNN-based approximation of SAM (Segment Anything), trading some accuracy for 50× faster inference.
+[Grounding DINO](https://github.com/IDEA-Research/GroundingDINO) detects objects via text prompt, then [SAM2](https://github.com/facebookresearch/sam2) generates high-quality masks from the detected bounding boxes.
+
+- **Architecture**: Transformer (Swin backbone + Hiera ViT)
+- **Input**: 640x480 RGB + text prompt (30-class indoor vocabulary)
+- **Output**: ~13 masks/frame (text-prompted detection)
+- **Seg time**: 222 ms mean
+
+### dual (FastSAM + YOLOE, AGPL-3.0)
+
+Two CNN models run independently, then masks are cross-validated via IoU:
+
+- **FastSAM**: Class-agnostic segmentation (~24 masks/frame)
+- **YOLOE**: Open-vocabulary detection + segmentation (~11 masks/frame, 1200+ LVIS categories)
+- **Merge**: IoU > 0.40 = dual-confirmed, remainder kept as single-source
+- **Output**: ~29 masks/frame (merged)
+- **Seg time**: 116 ms mean
+
+Dual-confirmed masks receive a priority boost and are 1.5x more likely to be selected into top-K.
+
+### Other backends
+
+| Backend | Description | Seg time |
+|---------|-------------|----------|
+| `sam2` | SAM2 auto-mask (segment everything, no labels) | ~860 ms |
+| `fastsam` | FastSAM only (class-agnostic, fast) | ~50 ms |
+| `yoloe` | YOLOE only (open-vocab, prompt-free) | ~60 ms |
 
 ---
 
-## 2. Mask Filtering
+## 2. Mask Heuristics
 
-Heuristic filters remove unsuitable masks:
+Heuristic filters remove unsuitable masks using depth and geometric information:
 
-| Filter | Purpose |
-|--------|---------|
-| Min area (0.1%) | Remove noise/tiny fragments |
-| Max area (50%) | Remove walls/floors/background |
-| Aspect ratio | Remove extreme shapes |
-| Edge touching | Optionally filter partial objects |
+| Filter | Purpose | Config key |
+|--------|---------|------------|
+| Min area | Remove noise/tiny fragments | `filters.min_area_px` (500) |
+| Max coverage | Remove walls/floors/background | `masks.max_coverage` (0.8) |
+| Aspect ratio | Remove extreme shapes | `filters.aspect_ratio` ([0.2, 5.0]) |
+| Border contact | Reject masks touching frame edges | `filters.border_touch_max_pct` (0.15) |
+| Depth validity | Require minimum valid depth pixels | `filters.depth.valid_min_pct` (0.10) |
+| Depth range | Reject too close/far objects | `filters.depth.z_min_m` / `z_max_m` |
+| Depth spread | Reject noisy depth regions | `filters.depth.sigma_max_m` (0.50) |
+| Planarity | Detect and score planar surfaces | `planarity.*` |
 
-This typically rejects 10-15% of masks as insignificant.
+!!! note "Heuristics cost varies by backend"
+    SAM2-based masks take **4x longer** to filter than FastSAM masks (239 ms vs 60 ms), likely due to higher-fidelity mask boundaries requiring more compute in depth validation and planarity checks.
 
 ---
 
 ## 3. Top-K Selection
 
-After filtering, we keep only the top K masks (default: 20) per frame to bound compute cost. Selection prioritizes:
+After filtering, masks are scored and the top K (default: 15) are kept to bound CLIP compute:
 
-1. Mask confidence score
-2. Area (medium-sized preferred)
-3. Distance from frame center
+**Priority scoring** considers:
+
+- Coverage (mask area relative to frame)
+- Depth validity (% of mask with valid depth)
+- Border fraction (penalty for edge-touching)
+- Depth spread (penalty for noisy depth)
+- Structure score (planarity + geometry)
+- Dual-confirmation boost (if applicable)
+
+Same-frame deduplication removes overlapping candidates before CLIP.
 
 ---
 
 ## 4. CLIP Encoding
 
-Each mask is:
+Each selected mask is:
 
-1. Cropped from the RGB image (with padding)
-2. Resized to 224×224
-3. Encoded via CLIP ViT-B/32
+1. Cropped from the RGB image (with 6px padding)
+2. Resized to 224x224
+3. Encoded via **CLIP ViT-B/32** (OpenAI)
 
-**Output**: 512-dimensional embedding vector
+**Output**: 512-dimensional L2-normalized embedding vector
 
 These embeddings enable:
 
-- Matching observations across frames
+- Matching observations across frames (cosine similarity)
 - Semantic search via text queries
+- Object identity tracking over time
+
+**Speed**: ~23 ms for 15 candidates (batch encode on GPU).
 
 ---
 
 ## 5. Vocabulary Classification
 
-Object labels are assigned by comparing the CLIP embedding to pre-computed text embeddings:
+Object labels are assigned by comparing the CLIP embedding to pre-computed text embeddings from a configurable vocabulary (`config/clip/vocab.yaml`):
 
 ```python
-text_embeddings = clip.encode_text([
-    "a photo of a mug",
-    "a photo of a backpack",
-    "a photo of a chair",
-    ...
-])
-
 similarities = cosine_similarity(image_embedding, text_embeddings)
 label = vocab[argmax(similarities)]
 confidence = max(similarities)
 ```
 
-The vocabulary is configurable — add domain-specific objects for your use case.
+Labels are tracked as EWMA (exponentially weighted moving average) scores across observations, so transient misclassifications don't persist.
 
 ---
 
-## Performance
+## Performance Summary
 
-| Stage | Time (RTX 5090) |
-|-------|-----------------|
-| FastSAM | ~12ms |
-| Mask filtering | <1ms |
-| CLIP encode (20 masks) | ~15ms |
-| Vocab classify | <1ms |
-| **Total** | **<30ms** |
+*Measured on RTX 5090, 640x480 input. See [Benchmarks](../benchmarks.md) for full data.*
+
+| Stage | dual (ms) | grounded_sam2 (ms) |
+|-------|-----------|-------------------|
+| Segmentation | 116 | 222 |
+| Heuristics | 60 | 239 |
+| Scoring | 0.2 | 0.2 |
+| CLIP encode | 23 | 24 |
+| Association | 6 | 4 |
+| **Total** | **210** | **510** |
 
 ---
 
@@ -103,3 +138,4 @@ The vocabulary is configurable — add domain-specific objects for your use case
 
 - [Memory Model](memory-model.md) — How observations become persistent objects
 - [Architecture](architecture.md) — Full system overview
+- [Benchmarks](../benchmarks.md) — Detailed performance data

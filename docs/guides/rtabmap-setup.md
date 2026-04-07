@@ -66,7 +66,7 @@ RTSM expects poses via ZeroMQ. Use the bridge utility:
 
 ```bash
 # From the rtsm-rtabmap-bridge repo
-python rtabmap_zmq_bridge.py --rtabmap-addr localhost:5555 --zmq-pub tcp://*:5556
+python rtabmap_zmq_bridge.py --rtabmap-addr localhost:5555 --zmq-pub tcp://127.0.0.1:6000
 ```
 
 ### Message Format
@@ -103,7 +103,9 @@ In `config/rtsm.yaml`:
 
 ```yaml
 io:
-  zmq_slam_addr: "tcp://localhost:5556"
+  receiver: zeromq
+  camera_endpoint: tcp://172.27.240.1:5555   # D435i RGB-D frames
+  rtabmap_endpoint: tcp://127.0.0.1:6000     # RTABMap pose topics
 ```
 
 ---
@@ -113,7 +115,7 @@ io:
 ### "No poses received"
 
 1. Check RTAB-Map is running and tracking
-2. Verify ZMQ bridge is connected: `netstat -an | grep 5556`
+2. Verify ZMQ bridge is connected: `netstat -an | grep 6000`
 3. Check for firewall blocking localhost ports
 
 ### Drift / Poor Tracking

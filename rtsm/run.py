@@ -310,6 +310,9 @@ def main():
         vis_server=vis_server,
     )
 
+    mcp_cfg = cfg.get("mcp", {})
+    mcp_enabled = bool(mcp_cfg.get("enable", False))
+
     app = create_app(
         working_memory=wm,
         clip_adapter=clip,
@@ -320,9 +323,12 @@ def main():
         reset_components=reset_components,
         seg_analytics=seg_analytics,
         latency_analytics=latency_analytics,
+        mcp_enabled=mcp_enabled,
     )
     start_server(app, host=host, port=port)
     logger.info(f"FastAPI server started on http://{display_host}:{port}")
+    if mcp_enabled:
+        logger.info(f"MCP server (SSE) available at http://{display_host}:{port}/mcp/sse")
 
     print("=" * 60)
     print("  RTSM is running! Waiting for data...")
@@ -338,6 +344,8 @@ def main():
         print(f"  Camera:  {io_cfg.get('camera_endpoint', 'tcp://127.0.0.1:5555')}")
         print(f"  RTABMap: {io_cfg.get('rtabmap_endpoint', 'tcp://127.0.0.1:6000')}")
     print(f"  API:     http://{display_host}:{port}")
+    if mcp_enabled:
+        print(f"  MCP:     http://{display_host}:{port}/mcp/sse")
     if vis_server:
         vis_port = vis_cfg.get("port", 8081)
         print(f"  Vis WS:  ws://{display_host}:{vis_port}/ws")

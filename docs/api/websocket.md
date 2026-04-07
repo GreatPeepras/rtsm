@@ -1,121 +1,143 @@
 # WebSocket API
 
-RTSM provides a WebSocket endpoint for real-time streaming of point clouds and object updates.
+RTSM provides a WebSocket endpoint for real-time streaming of 3D meshes, object updates, and runtime analytics to the visualization frontend.
 
-**Endpoint**: `ws://localhost:8081`
+**Endpoint**: `ws://localhost:8083/ws`
 
 ---
 
 ## Connection
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8081');
+const ws = new WebSocket('ws://localhost:8083/ws');
 
 ws.onopen = () => {
-  console.log('Connected to RTSM');
+  console.log('Connected to RTSM visualization');
 };
 
 ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  handleMessage(data);
+  if (event.data instanceof ArrayBuffer) {
+    handleBinaryMessage(event.data);
+  } else {
+    const data = JSON.parse(event.data);
+    handleJsonMessage(data);
+  }
 };
 ```
+
+!!! note "Binary + JSON protocol"
+    The visualization WebSocket sends both **binary messages** (mesh geometry) and **JSON messages** (objects, analytics, commands). Clients must handle both.
 
 ---
 
 ## Message Types
 
-### Point Cloud Update
+### Mesh Create (Binary)
 
-Streamed periodically with the current point cloud.
+Sent when a new TSDF mesh extraction completes. Contains packed binary data:
 
-```json
-{
-  "type": "point_cloud",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "points": [
-    [1.2, 0.4, 2.1, 255, 128, 64],
-    [1.3, 0.5, 2.0, 240, 120, 60]
-  ],
-  "count": 10000
-}
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| Mesh ID | string | Unique mesh identifier |
+| Vertices | float32[] | XYZ positions (N×3) |
+| Colors | uint8[] | RGB colors (N×3) |
+| Transform | float32[16] | 4×4 transformation matrix |
 
-Each point is `[x, y, z, r, g, b]`.
+Meshes replace naive per-frame point clouds via TSDF volumetric fusion. New mesh extractions are triggered every `extract_every_n` frames (default: 30) or `extract_interval_s` seconds (default: 2.0).
 
 ---
 
-### Objects Update
+### Mesh Pose Update (Binary)
 
-Sent when objects are created, updated, or removed.
+Sent when a SLAM loop closure corrects the pose of an existing mesh:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Mesh ID | string | Mesh to update |
+| Transform | float32[16] | Updated 4×4 pose matrix |
+
+---
+
+### Objects Update (JSON)
+
+Pushed periodically (default: every 200ms) with the current working memory state:
 
 ```json
 {
-  "type": "objects_update",
-  "timestamp": "2024-01-15T10:30:00Z",
+  "type": "objects",
   "objects": [
     {
-      "id": "a3f2c1",
-      "label": "backpack",
-      "xyz": [1.2, 0.4, 2.1],
-      "confidence": 0.87,
-      "confirmed": true
+      "id": "a3f2c1d8",
+      "xyz_world": [1.2, 0.4, 2.1],
+      "label_hint": "backpack",
+      "label_scores": {"backpack": 0.87, "bag": 0.45},
+      "confirmed": true,
+      "stability": 0.82
     }
   ]
 }
 ```
 
+Includes proto (unconfirmed) objects when `visualization.objects.include_proto: true` (default).
+
+Push interval is configurable via `visualization.objects.push_interval_ms`.
+
 ---
 
-### Object Created
+### Runtime Analytics (JSON)
 
-Sent when a new object is first detected.
+Pushed periodically (default: every 1000ms) with pipeline performance data:
+
+**Full sync** (every 30s by default):
 
 ```json
 {
-  "type": "object_created",
-  "object": {
-    "id": "b7d4e2",
-    "label": "mug",
-    "xyz": [0.8, 0.2, 1.5],
-    "confidence": 0.65,
-    "confirmed": false
+  "type": "runtime_analytics",
+  "mode": "full",
+  "config": { ... },
+  "latency": {
+    "aggregate": {
+      "frame_count": 247,
+      "processing_hz": 2.8,
+      "t_total": {"mean": 0.362, "p50": 0.340, "p95": 0.612}
+    },
+    "hourly": [ ... ]
+  },
+  "segmentation": {
+    "backend": "dual",
+    "aggregate": { ... },
+    "hourly": [ ... ]
+  }
+}
+```
+
+**Incremental append** (every 1s):
+
+```json
+{
+  "type": "runtime_analytics",
+  "mode": "append",
+  "latency": {
+    "aggregate": { ... },
+    "bucket": { ... }
+  },
+  "segmentation": {
+    "backend": "dual",
+    "aggregate": { ... },
+    "bucket": { ... }
   }
 }
 ```
 
 ---
 
-### Object Confirmed
+### Clear (JSON)
 
-Sent when a proto-object is promoted to confirmed status.
-
-```json
-{
-  "type": "object_confirmed",
-  "object": {
-    "id": "b7d4e2",
-    "label": "mug",
-    "xyz": [0.8, 0.2, 1.5],
-    "confidence": 0.82,
-    "confirmed": true
-  }
-}
-```
-
----
-
-### System Stats
-
-Periodic system statistics.
+Sent to all clients when a clear/reset is triggered:
 
 ```json
 {
-  "type": "stats",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "fps": 6.2,
-  "objects_count": 32,
-  "frame_latency_ms": 28
+  "type": "clear"
 }
 ```
 
@@ -123,80 +145,49 @@ Periodic system statistics.
 
 ## Client Commands
 
-Send JSON commands to control the stream:
+Send JSON text messages to request data:
 
-### Subscribe to Specific Events
-
-```json
-{
-  "command": "subscribe",
-  "events": ["objects_update", "stats"]
-}
-```
-
-### Set Point Cloud Decimation
-
-Reduce point cloud density for bandwidth:
+### Request Stats
 
 ```json
-{
-  "command": "set_decimation",
-  "factor": 4
-}
+{"cmd": "stats"}
 ```
 
-### Pause/Resume Streaming
+Returns a stats snapshot with keyframe count, client count, etc.
 
-```json
-{
-  "command": "pause"
-}
-```
+### Clear Scene
 
 ```json
-{
-  "command": "resume"
-}
+{"cmd": "clear"}
 ```
+
+Clears all keyframes, meshes, resets TSDF state, and broadcasts `{"type": "clear"}` to all connected clients.
 
 ---
 
-## Example: Three.js Integration
+## Configuration
 
-```javascript
-const ws = new WebSocket('ws://localhost:8081');
+Visualization server settings in `config/rtsm.yaml`:
 
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
+```yaml
+visualization:
+  enable: true
+  host: 0.0.0.0
+  port: 8083
 
-  if (data.type === 'point_cloud') {
-    updatePointCloud(data.points);
-  }
+  tsdf:
+    enable: true
+    voxel_size: 0.01
+    extract_every_n: 30
+    extract_interval_s: 2.0
 
-  if (data.type === 'objects_update') {
-    updateObjectMarkers(data.objects);
-  }
-};
+  objects:
+    push_interval_ms: 200
+    include_proto: true
 
-function updatePointCloud(points) {
-  const geometry = new THREE.BufferGeometry();
-  const positions = new Float32Array(points.length * 3);
-  const colors = new Float32Array(points.length * 3);
-
-  points.forEach((p, i) => {
-    positions[i * 3] = p[0];
-    positions[i * 3 + 1] = p[1];
-    positions[i * 3 + 2] = p[2];
-    colors[i * 3] = p[3] / 255;
-    colors[i * 3 + 1] = p[4] / 255;
-    colors[i * 3 + 2] = p[5] / 255;
-  });
-
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-  // Update your scene...
-}
+  analytics:
+    push_interval_ms: 1000
+    full_sync_interval_s: 30
 ```
 
 ---
@@ -204,4 +195,4 @@ function updatePointCloud(points) {
 ## Next Steps
 
 - [REST API](rest-api.md) — Query endpoints
-- [3D Demo source](https://github.com/calabi-inc/rtsm/tree/main/visualization) — Full Three.js example
+- [Configuration](../getting-started/configuration.md) — All settings
