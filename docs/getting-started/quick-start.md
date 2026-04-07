@@ -122,8 +122,47 @@ Open the visualization frontend in your browser. The 3D viewer connects to the W
 
 ---
 
+## 7. Record and Replay Sessions
+
+Record a live session for later replay and benchmarking:
+
+```bash
+# Record while running pipeline
+python -m rtsm --record recordings/my_session
+
+# Record without GPU (raw frame capture only)
+python -m rtsm --record recordings/my_session --record-only
+```
+
+Replay a recorded session:
+
+```bash
+python -m rtsm --replay recordings/session1
+```
+
+This feeds the recorded frames through the full pipeline at the original recording rate — no camera hardware needed. See the [Record & Replay Guide](../guides/record-replay.md) for details.
+
+---
+
+## 8. Check Analytics (Optional)
+
+While a session is running (live or replay), view runtime analytics:
+
+```bash
+# Per-stage latency breakdown
+curl http://localhost:8002/stats/detailed
+
+# Segmentation analytics (mask counts, confirmation rates)
+curl http://localhost:8002/analytics/segmentation
+```
+
+The analytics dashboard is also available in the 3D visualization frontend as a separate tab. See the [Analytics Dashboard Guide](../guides/analytics-dashboard.md) for details.
+
+---
+
 ## Next Steps
 
 - [Configuration](configuration.md) — Tune thresholds and endpoints
 - [REST API Reference](../api/rest-api.md) — Full API documentation
+- [Record & Replay](../guides/record-replay.md) — Capture and replay sessions
 - [RTAB-Map Setup](../guides/rtabmap-setup.md) — Connect your SLAM system
