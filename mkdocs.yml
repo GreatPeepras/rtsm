@@ -39,9 +39,12 @@ nav:
       - Memory Model: concepts/memory-model.md
   - API Reference:
       - REST API: api/rest-api.md
+      - MCP (AI Agents): api/mcp.md
       - WebSocket: api/websocket.md
   - Benchmarks: benchmarks.md
   - Guides:
+      - Record & Replay: guides/record-replay.md
+      - Analytics Dashboard: guides/analytics-dashboard.md
       - RTAB-Map Setup: guides/rtabmap-setup.md
       - RealSense Setup: guides/realsense-setup.md
   - Contributing: contributing.md
@@ -67,4 +70,4 @@ extra:
       link: https://github.com/calabi-inc/rtsm
   generator: false
 
-copyright: Copyright &copy; 2025 Calabi Inc.
+copyright: Copyright &copy; 2025-2026 Calabi Inc.

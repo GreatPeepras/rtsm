@@ -30,6 +30,10 @@ This makes spatial state inspectable, queryable, and reusable across robots, age
 - **Real-time** — 210 ms mean pipeline latency (dual backend, RTX 5090)
 - **Persistent memory** — Objects tracked across views with stable IDs, promoted from proto to confirmed
 - **Semantic search** — Find objects by natural language via CLIP embeddings + FAISS
+- **Spatial search** — Find objects near 3D world coordinates or relative to other objects
+- **MCP integration** — AI agents (Claude, Cursor, LangGraph) can query spatial memory via Model Context Protocol
+- **Record & replay** — Capture live sessions for offline benchmarking and reproducible testing
+- **Runtime analytics** — Per-stage latency, segmentation rates, and throughput dashboards
 - **Queryable API** — REST endpoints for objects, search, stats, and analytics
 
 ```json
@@ -48,6 +52,7 @@ This makes spatial state inspectable, queryable, and reusable across robots, age
 - :material-cog: **[Configuration](getting-started/configuration.md)** — Tune for your setup
 - :material-api: **[REST API](api/rest-api.md)** — API reference
 - :material-chart-bar: **[Benchmarks](benchmarks.md)** — Performance data
+- :material-robot: **[MCP (AI Agents)](api/mcp.md)** — Connect AI agents to spatial memory
 
 </div>
 
