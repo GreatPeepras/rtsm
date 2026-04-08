@@ -128,10 +128,57 @@ function loadPLYFile(file: File) {
 // Binary message format (mesh_create):
 // [magic:4 'PCLD'][mesh_id_len:2][mesh_id:N][num_points:4][positions:N*12][colors:N*3][has_pose:1][pose:64?]
 const MAGIC_MESH_CREATE = 0x444C4350 // 'PCLD' little-endian
+const MAGIC_CAMERA_FRAME = 0x464D4143 // 'CAMF' little-endian
 
 const meshes = new Map<string, THREE.Points>()
 let wsConnected = false
 let meshCreateCount = 0
+
+// ── Camera feed PiP ──
+const cameraFeedImg = document.getElementById('camera-feed') as HTMLImageElement | null
+const cameraPanel = document.getElementById('camera-panel')
+const cameraToggleBtn = document.getElementById('camera-toggle')
+let cameraBlobUrl: string | null = null
+let cameraFramePending = false
+
+// Camera panel toggle
+if (cameraPanel && cameraToggleBtn) {
+  document.getElementById('camera-header')?.addEventListener('click', () => {
+    cameraPanel.classList.toggle('collapsed')
+    cameraToggleBtn.textContent = cameraPanel.classList.contains('collapsed') ? '+' : '\u2014'
+  })
+}
+
+// UI controls panel toggle
+const uiPanel = document.getElementById('ui')
+const uiToggleBtn = document.getElementById('ui-toggle-btn')
+if (uiPanel && uiToggleBtn) {
+  uiToggleBtn.addEventListener('click', () => {
+    uiPanel.classList.toggle('collapsed')
+    uiToggleBtn.textContent = uiPanel.classList.contains('collapsed') ? 'Controls +' : 'Controls -'
+  })
+}
+
+function handleCameraFrame(data: ArrayBuffer): void {
+  if (!cameraFeedImg || cameraFramePending) return
+  cameraFramePending = true
+
+  const view = new DataView(data)
+  const jpegLen = view.getUint32(4, true)
+  const jpegData = new Uint8Array(data, 8, jpegLen)
+
+  // Revoke previous Blob URL to prevent memory leak
+  if (cameraBlobUrl) URL.revokeObjectURL(cameraBlobUrl)
+  cameraBlobUrl = URL.createObjectURL(new Blob([jpegData], { type: 'image/jpeg' }))
+
+  // Throttle: update img on next animation frame
+  requestAnimationFrame(() => {
+    if (cameraFeedImg && cameraBlobUrl) {
+      cameraFeedImg.src = cameraBlobUrl
+    }
+    cameraFramePending = false
+  })
+}
 let poseUpdateCount = 0
 let totalPoints = 0
 
@@ -336,11 +383,19 @@ function connectWebSocket() {
 
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) {
-      // Binary message - mesh_create
-      const parsed = parseMeshCreate(ev.data)
-      if (parsed) {
-        createOrUpdateMesh(parsed.meshId, parsed.positions, parsed.colors, parsed.pose)
-        updateHud()
+      // Binary message - route by magic bytes
+      if (ev.data.byteLength >= 4) {
+        const magic = new DataView(ev.data).getUint32(0, true)
+        if (magic === MAGIC_CAMERA_FRAME) {
+          handleCameraFrame(ev.data)
+        } else {
+          // mesh_create (PCLD)
+          const parsed = parseMeshCreate(ev.data)
+          if (parsed) {
+            createOrUpdateMesh(parsed.meshId, parsed.positions, parsed.colors, parsed.pose)
+            updateHud()
+          }
+        }
       }
     } else {
       // JSON message
@@ -1090,7 +1145,9 @@ reconnectBtn?.addEventListener('click', () => {
 // RTSM API CONTROLS
 // ============================================================================
 
-const RTSM_API_BASE = '/api'  // Vite proxies /api to RTSM API server (port 8000)
+// In dev: Vite proxies /api -> RTSM API (strips prefix). In production: served
+// from same origin, so use empty prefix (routes are at /objects, /search, etc.)
+const RTSM_API_BASE = import.meta.env.DEV ? '/api' : ''
 
 // Reset RTSM (clears WM, sweep cache, frame window, visualization)
 rtsmResetBtn?.addEventListener('click', async () => {

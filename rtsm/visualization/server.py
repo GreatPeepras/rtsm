@@ -753,6 +753,23 @@ class VisualizationServer:
                     self._loop,
                 )
 
+            # Broadcast raw camera frame for PiP overlay (zero re-encode if JPEG source)
+            if self._loop and self._running:
+                jpeg_bytes = getattr(pkt, 'rgb_jpeg', None)
+                if jpeg_bytes is not None:
+                    # Source was JPEG: forward directly (0ms overhead)
+                    asyncio.run_coroutine_threadsafe(
+                        self.broadcaster.send_camera_frame(jpeg_bytes),
+                        self._loop,
+                    )
+                else:
+                    # Source was NV12/BGRA: encode to JPEG for broadcast
+                    _, jpeg_buf = cv2.imencode('.jpg', rgb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    asyncio.run_coroutine_threadsafe(
+                        self.broadcaster.send_camera_frame(jpeg_buf.tobytes()),
+                        self._loop,
+                    )
+
             stats = self.registry.stats()
             logger.debug(f"[visualization] WS {mesh_id}: {positions.shape[0]:,} pts | Total: {stats['keyframes']} KFs")
 

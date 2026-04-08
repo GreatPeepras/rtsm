@@ -545,10 +545,11 @@ class WebSocketReceiver:
                     self._latency_analytics.record_throttle_skip()
                 return None
 
-        # 7. Decode RGB
+        # 7. Decode RGB (capture raw JPEG for zero-copy viz forwarding)
         rgb_fmt = header.get("rgb_format", "jpeg")
         rgb_w = int(header.get("rgb_width", 0))
         rgb_h = int(header.get("rgb_height", 0))
+        raw_jpeg = bytes(rgb_bytes) if rgb_fmt == "jpeg" else None
         rgb = decode_rgb(rgb_bytes, fmt=rgb_fmt, width=rgb_w, height=rgb_h)
 
         # 8. Decode depth (native resolution, NaN for invalid)
@@ -641,6 +642,7 @@ class WebSocketReceiver:
             intr=intr,
             is_keyframe=is_keyframe,
             confidence=confidence_m,
+            rgb_jpeg=raw_jpeg,
         )
 
     # ── Server lifecycle ──

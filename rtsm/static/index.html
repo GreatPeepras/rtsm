@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RTSM Demo — Real-Time Spatio-Semantic Memory</title>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #111; color: #eee; overflow: hidden; }
+      #app { width: 100%; height: 100%; }
+
+      /* Tab bar */
+      #tab-bar {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        height: 32px;
+        display: flex;
+        align-items: stretch;
+        background: #1a1a1a;
+        border-bottom: 1px solid #333;
+        z-index: 50;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+      }
+      .tab-btn {
+        padding: 0 20px;
+        border: none;
+        background: transparent;
+        color: #888;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .tab-btn:hover { color: #ccc; }
+      .tab-btn.active { color: #fff; border-bottom-color: #1e90ff; }
+
+      /* View containers */
+      #view-3d { display: block; }
+      #view-analytics { display: none; position: fixed; top: 32px; left: 0; right: 0; bottom: 0; overflow-y: auto; overflow-x: hidden; background: #111; }
+
+      #hud {
+        position: fixed;
+        left: 10px;
+        top: 42px;
+        color: #fff;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+        z-index: 10;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+        background: rgba(0,0,0,0.4);
+        padding: 8px 12px;
+        border-radius: 6px;
+        line-height: 1.5;
+      }
+
+      #ui {
+        position: fixed;
+        top: 42px;
+        right: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 11;
+      }
+
+      .ui-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        background: rgba(0,0,0,0.4);
+        padding: 6px 8px;
+        border-radius: 6px;
+      }
+
+      #ui input[type="file"] {
+        display: none;
+      }
+
+      #ui button, #ui label {
+        padding: 6px 10px;
+        border-radius: 4px;
+        border: 1px solid #444;
+        background: #2a2a2a;
+        color: #eee;
+        cursor: pointer;
+        font-size: 12px;
+        transition: background 0.15s;
+      }
+
+      #ui button:hover, #ui label:hover {
+        background: #3a3a3a;
+      }
+
+      #ui button.primary {
+        background: #1e90ff;
+        border-color: #1e90ff;
+      }
+
+      #ui button.primary:hover {
+        background: #1a7acc;
+      }
+
+      #ui button.success {
+        background: #28a745;
+        border-color: #28a745;
+      }
+
+      #ui button.success:hover {
+        background: #218838;
+      }
+
+      #ui button.warning {
+        background: #ffc107;
+        border-color: #ffc107;
+        color: #000;
+      }
+
+      #ui button.warning:hover {
+        background: #e0a800;
+      }
+
+      #mode {
+        font-size: 11px;
+        color: #aaa;
+        padding: 4px 8px;
+      }
+
+      .section-label {
+        font-size: 10px;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-right: 4px;
+      }
+
+      /* Object Inspector Panel */
+      #object-panel {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(0,0,0,0.85);
+        border-top: 1px solid #333;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+        z-index: 20;
+        transition: transform 0.2s ease;
+      }
+
+      #object-panel.collapsed #panel-content {
+        display: none;
+      }
+
+      #panel-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        background: rgba(30,30,30,0.95);
+        border-bottom: 1px solid #333;
+      }
+
+      #panel-title {
+        font-weight: bold;
+        color: #fff;
+        min-width: 120px;
+      }
+
+      #object-search {
+        flex: 1;
+        max-width: 300px;
+        padding: 4px 8px;
+        border: 1px solid #444;
+        border-radius: 4px;
+        background: #222;
+        color: #eee;
+        font-size: 12px;
+      }
+
+      #object-search:focus {
+        outline: none;
+        border-color: #1e90ff;
+      }
+
+      #panel-toggle, #panel-filter {
+        padding: 4px 10px;
+        border: 1px solid #444;
+        border-radius: 4px;
+        background: #2a2a2a;
+        color: #eee;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      #panel-toggle:hover, #panel-filter:hover {
+        background: #3a3a3a;
+      }
+
+      #panel-filter.active {
+        background: #00ff88;
+        color: #000;
+        border-color: #00ff88;
+      }
+
+      #panel-content {
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      #object-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        gap: 4px;
+        padding: 8px;
+      }
+
+      .object-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        background: #1a1a1a;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background 0.15s;
+        border: 1px solid transparent;
+      }
+
+      .object-item:hover {
+        background: #2a2a2a;
+      }
+
+      .object-item.selected {
+        background: #1e90ff22;
+        border-color: #1e90ff;
+      }
+
+      .object-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .object-dot.confirmed { background: #00ff88; }
+      .object-dot.proto { background: #ffaa00; }
+
+      .object-info {
+        flex: 1;
+        overflow: hidden;
+      }
+
+      .object-label {
+        font-weight: bold;
+        color: #fff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .object-meta {
+        font-size: 10px;
+        color: #888;
+      }
+
+      .object-scores {
+        font-size: 9px;
+        color: #6a9;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-top: 2px;
+      }
+
+      /* Snapshot Gallery Panel */
+      #snapshot-gallery {
+        position: fixed;
+        right: 10px;
+        bottom: 220px;
+        width: 320px;
+        background: rgba(0,0,0,0.9);
+        border-radius: 8px;
+        border: 1px solid #333;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+        z-index: 25;
+        display: none;
+      }
+
+      #snapshot-gallery.visible {
+        display: block;
+      }
+
+      #gallery-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        background: rgba(30,30,30,0.95);
+        border-bottom: 1px solid #333;
+        border-radius: 8px 8px 0 0;
+      }
+
+      #gallery-title {
+        font-weight: bold;
+        color: #fff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 240px;
+      }
+
+      #gallery-close {
+        background: none;
+        border: none;
+        color: #888;
+        cursor: pointer;
+        font-size: 18px;
+        padding: 0 4px;
+      }
+
+      #gallery-close:hover {
+        color: #fff;
+      }
+
+      #gallery-content {
+        padding: 12px;
+      }
+
+      #gallery-loading {
+        color: #888;
+        text-align: center;
+        padding: 20px;
+      }
+
+      #gallery-images {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      .gallery-thumb {
+        width: 70px;
+        height: 70px;
+        object-fit: cover;
+        border-radius: 4px;
+        border: 2px solid transparent;
+        cursor: pointer;
+        transition: border-color 0.15s, transform 0.2s ease;
+      }
+
+      .gallery-thumb:hover {
+        border-color: #1e90ff;
+      }
+
+      .gallery-thumb.selected {
+        border-color: #00ff88;
+      }
+
+      #ss-rotate {
+        background: #333;
+        color: #ccc;
+        border: 1px solid #555;
+        border-radius: 4px;
+        padding: 2px 4px;
+        font-size: 11px;
+        margin-left: auto;
+        margin-right: 8px;
+        cursor: pointer;
+      }
+
+      #gallery-preview-wrap {
+        overflow: hidden;
+        border-radius: 4px;
+      }
+
+      #gallery-preview {
+        width: 100%;
+        border-radius: 4px;
+        display: none;
+        transition: transform 0.2s ease;
+      }
+
+      #gallery-preview.visible {
+        display: block;
+      }
+
+      #gallery-info {
+        color: #888;
+        font-size: 10px;
+        margin-top: 8px;
+        text-align: center;
+      }
+      /* ======== Analytics Dashboard (Looker-style) ======== */
+      #analytics-panel {
+        width: 100%;
+        padding: 16px 20px;
+        box-sizing: border-box;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+      }
+
+      #analytics-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      #analytics-title { font-weight: bold; font-size: 15px; color: #fff; flex: 1; }
+      #analytics-copy {
+        padding: 4px 12px; border: 1px solid #444; border-radius: 4px;
+        background: #2a2a2a; color: #ccc; cursor: pointer; font-size: 11px;
+      }
+      #analytics-copy:hover { background: #3a3a3a; }
+      #analytics-copy.copied { background: #28a745; color: #fff; border-color: #28a745; }
+
+      /* KPI scorecards row */
+      .kpi-row {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 14px;
+        flex-wrap: wrap;
+        box-sizing: border-box;
+        max-width: 100%;
+      }
+      .kpi-card {
+        flex: 1 1 120px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid #2a2a2a;
+        border-radius: 6px;
+        padding: 10px 14px;
+        min-width: 120px;
+      }
+      .kpi-label {
+        font-size: 10px; color: #888; text-transform: uppercase;
+        letter-spacing: 0.5px; margin-bottom: 4px;
+      }
+      .kpi-value {
+        font-size: 20px; font-weight: bold; color: #fff;
+        font-family: 'Consolas', 'Monaco', monospace;
+      }
+      .kpi-sub { font-size: 10px; color: #666; margin-top: 2px; }
+      .kpi-value.green { color: #00ff88; }
+      .kpi-value.yellow { color: #ffc107; }
+      .kpi-value.red { color: #ff4444; }
+
+      /* Config (collapsible) */
+      #analytics-config-toggle {
+        font-size: 10px; color: #666; text-transform: uppercase;
+        letter-spacing: 0.5px; cursor: pointer; margin-bottom: 8px;
+      }
+      .config-grid {
+        display: flex; flex-wrap: wrap; gap: 4px 16px;
+        font-size: 10px; font-family: 'Consolas', 'Monaco', monospace;
+        margin-bottom: 14px; padding: 8px 10px;
+        background: rgba(255,255,255,0.02); border-radius: 4px;
+      }
+      .config-item { white-space: nowrap; }
+      .config-key { color: #666; }
+      .config-val { color: #aaa; }
+      .config-highlight { color: #1e90ff; font-weight: bold; }
+
+      /* Chart sections */
+      .chart-section {
+        margin-bottom: 14px;
+      }
+      .chart-section-header {
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 6px;
+      }
+      .chart-section-label {
+        font-size: 10px; color: #888; text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .chart-section-detail {
+        font-size: 10px; color: #555;
+        font-family: 'Consolas', 'Monaco', monospace;
+      }
+      .chart-container {
+        width: 100%;
+        max-width: 100%;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+
+      /* Latency breakdown (inline bar) */
+      .latency-breakdown {
+        display: flex; gap: 12px; flex-wrap: wrap;
+        font-size: 10px; font-family: 'Consolas', 'Monaco', monospace;
+        margin-bottom: 6px;
+      }
+      .latency-item { display: flex; align-items: center; gap: 4px; }
+      .latency-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+      .latency-name { color: #888; }
+      .latency-val { color: #ccc; }
+      .latency-pct { color: #555; }
+
+      /* Congestion accent on KPI */
+      .kpi-card.congestion { border-color: #ff4444; }
+
+      /* Camera Feed Panel (PiP overlay) */
+      #camera-panel {
+        position: fixed;
+        bottom: 220px;
+        left: 10px;
+        width: 280px;
+        background: rgba(0,0,0,0.85);
+        border: 1px solid #333;
+        border-radius: 8px;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+        z-index: 22;
+        overflow: hidden;
+        transition: width 0.2s ease;
+      }
+      #camera-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 10px;
+        background: rgba(30,30,30,0.95);
+        border-bottom: 1px solid #333;
+        cursor: pointer;
+        user-select: none;
+      }
+      #camera-header span { color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+      #camera-toggle {
+        background: none; border: none; color: #888; cursor: pointer;
+        font-size: 14px; padding: 0 4px; line-height: 1;
+      }
+      #camera-toggle:hover { color: #fff; }
+      #camera-content { display: block; }
+      #camera-panel.collapsed #camera-content { display: none; }
+      #camera-feed {
+        width: 100%;
+        display: block;
+        background: #000;
+        min-height: 40px;
+      }
+
+      /* Collapsible UI Controls */
+      #ui-toggle-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        background: rgba(0,0,0,0.4);
+        padding: 6px 8px;
+        border-radius: 6px;
+        cursor: pointer;
+        user-select: none;
+      }
+      #ui-toggle-btn {
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid #444;
+        background: #2a2a2a;
+        color: #eee;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      #ui-toggle-btn:hover { background: #3a3a3a; }
+      #ui.collapsed .ui-collapsible { display: none; }
+    </style>
+    <script type="module" crossorigin src="/assets/index-BpibRT18.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-D1GxaB_c.css">
+  </head>
+  <body>
+    <div id="tab-bar">
+      <button class="tab-btn active" data-tab="3d">3D View</button>
+      <button class="tab-btn" data-tab="analytics">Analytics</button>
+    </div>
+
+    <div id="view-3d">
+    <div id="app"></div>
+
+    <div id="hud">Loading...</div>
+
+    <div id="ui">
+      <!-- Toggle header for collapsible controls -->
+      <div id="ui-toggle-row">
+        <button id="ui-toggle-btn">Controls -</button>
+      </div>
+
+      <!-- File loading -->
+      <div class="ui-row ui-collapsible">
+        <span class="section-label">PLY</span>
+        <input id="file" type="file" accept=".ply" />
+        <label for="file">Choose File</label>
+        <button id="load">Load</button>
+        <button id="disconnect">Disconnect</button>
+        <button id="reconnect" class="primary">Re-connect</button>
+      </div>
+
+      <!-- Streaming controls -->
+      <div class="ui-row ui-collapsible">
+        <span class="section-label">Stream</span>
+        <button id="clearStream" class="warning">Clear</button>
+        <button id="savePly" class="success">Save PLY</button>
+      </div>
+
+      <!-- Objects overlay -->
+      <div class="ui-row ui-collapsible">
+        <span class="section-label">Objects</span>
+        <button id="toggleObj">Hide Objects</button>
+        <button id="filterConfirmed">All</button>
+      </div>
+
+      <!-- View controls -->
+      <div class="ui-row ui-collapsible">
+        <span class="section-label">View</span>
+        <button id="reset">Reset</button>
+        <button id="flipX">Flip X</button>
+        <button id="flipY">Flip Y</button>
+        <button id="flipZ">Flip Z</button>
+      </div>
+
+      <!-- RTSM Controls -->
+      <div class="ui-row ui-collapsible">
+        <span class="section-label">RTSM</span>
+        <button id="rtsmReset" class="warning">Reset WM</button>
+        <button id="rtsmStats">Stats</button>
+      </div>
+
+      <!-- Mode indicator -->
+      <div class="ui-row ui-collapsible">
+        <span id="mode">Mode: Free</span>
+      </div>
+    </div>
+
+    <!-- Camera Feed Panel (PiP overlay) -->
+    <div id="camera-panel">
+      <div id="camera-header">
+        <span>Camera Feed</span>
+        <button id="camera-toggle">&mdash;</button>
+      </div>
+      <div id="camera-content">
+        <img id="camera-feed" alt="" />
+      </div>
+    </div>
+
+    <!-- Object Inspector Panel -->
+    <div id="object-panel">
+      <div id="panel-header">
+        <span id="panel-title">Objects (0)</span>
+        <input type="text" id="object-search" placeholder="Semantic search (e.g. red cup, chair)..." />
+        <button id="search-btn">Search</button>
+        <button id="show-all-btn">Show All</button>
+        <button id="panel-filter">All</button>
+        <button id="panel-toggle">▼</button>
+      </div>
+      <div id="panel-content">
+        <div id="object-list"></div>
+      </div>
+    </div>
+
+    <!-- Snapshot Gallery Panel -->
+    <div id="snapshot-gallery">
+      <div id="gallery-header">
+        <span id="gallery-title">Snapshots</span>
+        <select id="ss-rotate" title="Snapshot rotation">
+          <option value="0">0°</option>
+          <option value="90">90°</option>
+          <option value="-90">-90°</option>
+          <option value="180">180°</option>
+        </select>
+        <button id="gallery-close">&times;</button>
+      </div>
+      <div id="gallery-content">
+        <div id="gallery-loading">Select an object to view snapshots</div>
+        <div id="gallery-images"></div>
+        <div id="gallery-preview-wrap">
+          <img id="gallery-preview" alt="Selected snapshot" />
+        </div>
+        <div id="gallery-info"></div>
+      </div>
+    </div>
+    </div><!-- /view-3d -->
+
+    <div id="view-analytics">
+      <div id="analytics-panel">
+        <div id="analytics-header">
+          <span id="analytics-title">Runtime Analytics</span>
+          <button id="analytics-copy">Copy Data</button>
+        </div>
+        <div id="analytics-content">
+          <!-- Config bar (collapsible inline) -->
+          <div id="analytics-config-toggle">Config &#9662;</div>
+          <div id="analytics-config"></div>
+
+          <!-- KPI scorecards -->
+          <div class="kpi-row" id="analytics-kpi-row">
+            <div class="kpi-card" id="kpi-input-hz">
+              <div class="kpi-label">Input</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">Hz (raw camera)</div>
+            </div>
+            <div class="kpi-card" id="kpi-proc-hz">
+              <div class="kpi-label">Processing</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">Hz (pipeline)</div>
+            </div>
+            <div class="kpi-card" id="kpi-latency">
+              <div class="kpi-label">Latency</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">ms (mean)</div>
+            </div>
+            <div class="kpi-card" id="kpi-queue">
+              <div class="kpi-label">Queue</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">/ 512 cap</div>
+            </div>
+            <div class="kpi-card" id="kpi-masks">
+              <div class="kpi-label">Masks</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">survival</div>
+            </div>
+            <div class="kpi-card" id="kpi-dual">
+              <div class="kpi-label">Dual Confirmed</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">rate</div>
+            </div>
+            <div class="kpi-card" id="kpi-objects">
+              <div class="kpi-label">Objects</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">confirmed / total</div>
+            </div>
+            <div class="kpi-card" id="kpi-assoc">
+              <div class="kpi-label">Association</div>
+              <div class="kpi-value">—</div>
+              <div class="kpi-sub">matched / created</div>
+            </div>
+          </div>
+
+          <!-- Throughput chart (full width) -->
+          <div class="chart-section">
+            <div class="chart-section-header">
+              <span class="chart-section-label">Throughput</span>
+              <span class="chart-section-detail" id="analytics-throughput-detail"></span>
+            </div>
+            <div class="chart-container" id="analytics-throughput-chart"></div>
+          </div>
+
+          <!-- Latency chart (full width) -->
+          <div class="chart-section">
+            <div class="chart-section-header">
+              <span class="chart-section-label">Latency</span>
+              <span class="chart-section-detail" id="analytics-latency-detail"></span>
+            </div>
+            <div id="analytics-latency-breakdown"></div>
+            <div class="chart-container" id="analytics-latency-chart"></div>
+          </div>
+
+          <!-- Segmentation chart (full width) -->
+          <div class="chart-section" id="analytics-seg-section">
+            <div class="chart-section-header">
+              <span class="chart-section-label">Segmentation</span>
+              <span class="chart-section-detail" id="analytics-seg-detail"></span>
+            </div>
+            <div class="chart-container" id="analytics-seg-chart"></div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /view-analytics -->
+
+  </body>
+</html>

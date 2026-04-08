@@ -112,5 +112,8 @@ mobileclip2_b.ts
 demo/node_modules/
 demo/dist/
 
+# Config symlink (canonical files live in rtsm/cfg/, config/ is a symlink)
+config
+
 # MkDocs build output (should not be committed; deploy via CI or a gh-pages branch)
 site/

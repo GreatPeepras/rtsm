@@ -30,7 +30,7 @@ class ClipVocabClassifier:
 
     Usage:
         model, preprocess, tokenizer, _ = load_clip_model(cfg.clip)
-        clf = ClipVocabClassifier(model, tokenizer, preprocess, "config/clip/vocab.yaml", device="cuda")
+        clf = ClipVocabClassifier(model, tokenizer, preprocess, str(cfg_path("clip/vocab.yaml")), device="cuda")
 
         results = clf.classify_feats(rgb_pil_image, list_of_masks, return_embeddings=True)
         # results[i].label, .score, .topk, .embedding (512-d), .bbox

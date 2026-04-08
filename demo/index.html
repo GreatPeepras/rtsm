@@ -497,6 +497,69 @@
 
       /* Congestion accent on KPI */
       .kpi-card.congestion { border-color: #ff4444; }
+
+      /* Camera Feed Panel (PiP overlay) */
+      #camera-panel {
+        position: fixed;
+        bottom: 220px;
+        left: 10px;
+        width: 280px;
+        background: rgba(0,0,0,0.85);
+        border: 1px solid #333;
+        border-radius: 8px;
+        font-family: system-ui, -apple-system, Arial, sans-serif;
+        font-size: 12px;
+        z-index: 22;
+        overflow: hidden;
+        transition: width 0.2s ease;
+      }
+      #camera-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 10px;
+        background: rgba(30,30,30,0.95);
+        border-bottom: 1px solid #333;
+        cursor: pointer;
+        user-select: none;
+      }
+      #camera-header span { color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+      #camera-toggle {
+        background: none; border: none; color: #888; cursor: pointer;
+        font-size: 14px; padding: 0 4px; line-height: 1;
+      }
+      #camera-toggle:hover { color: #fff; }
+      #camera-content { display: block; }
+      #camera-panel.collapsed #camera-content { display: none; }
+      #camera-feed {
+        width: 100%;
+        display: block;
+        background: #000;
+        min-height: 40px;
+      }
+
+      /* Collapsible UI Controls */
+      #ui-toggle-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        background: rgba(0,0,0,0.4);
+        padding: 6px 8px;
+        border-radius: 6px;
+        cursor: pointer;
+        user-select: none;
+      }
+      #ui-toggle-btn {
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid #444;
+        background: #2a2a2a;
+        color: #eee;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      #ui-toggle-btn:hover { background: #3a3a3a; }
+      #ui.collapsed .ui-collapsible { display: none; }
     </style>
   </head>
   <body>
@@ -511,8 +574,13 @@
     <div id="hud">Loading...</div>
 
     <div id="ui">
+      <!-- Toggle header for collapsible controls -->
+      <div id="ui-toggle-row">
+        <button id="ui-toggle-btn">Controls -</button>
+      </div>
+
       <!-- File loading -->
-      <div class="ui-row">
+      <div class="ui-row ui-collapsible">
         <span class="section-label">PLY</span>
         <input id="file" type="file" accept=".ply" />
         <label for="file">Choose File</label>
@@ -522,21 +590,21 @@
       </div>
 
       <!-- Streaming controls -->
-      <div class="ui-row">
+      <div class="ui-row ui-collapsible">
         <span class="section-label">Stream</span>
         <button id="clearStream" class="warning">Clear</button>
         <button id="savePly" class="success">Save PLY</button>
       </div>
 
       <!-- Objects overlay -->
-      <div class="ui-row">
+      <div class="ui-row ui-collapsible">
         <span class="section-label">Objects</span>
         <button id="toggleObj">Hide Objects</button>
         <button id="filterConfirmed">All</button>
       </div>
 
       <!-- View controls -->
-      <div class="ui-row">
+      <div class="ui-row ui-collapsible">
         <span class="section-label">View</span>
         <button id="reset">Reset</button>
         <button id="flipX">Flip X</button>
@@ -545,15 +613,26 @@
       </div>
 
       <!-- RTSM Controls -->
-      <div class="ui-row">
+      <div class="ui-row ui-collapsible">
         <span class="section-label">RTSM</span>
         <button id="rtsmReset" class="warning">Reset WM</button>
         <button id="rtsmStats">Stats</button>
       </div>
 
       <!-- Mode indicator -->
-      <div class="ui-row">
+      <div class="ui-row ui-collapsible">
         <span id="mode">Mode: Free</span>
+      </div>
+    </div>
+
+    <!-- Camera Feed Panel (PiP overlay) -->
+    <div id="camera-panel">
+      <div id="camera-header">
+        <span>Camera Feed</span>
+        <button id="camera-toggle">&mdash;</button>
+      </div>
+      <div id="camera-content">
+        <img id="camera-feed" alt="" />
       </div>
     </div>
 

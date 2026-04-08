@@ -31,6 +31,9 @@ def create_app(
     seg_analytics: Optional[Any] = None,
     latency_analytics: Optional[Any] = None,
     mcp_enabled: bool = False,
+    vis_broadcaster: Optional[Any] = None,
+    vis_registry: Optional[Any] = None,
+    static_dir: Optional[str] = None,
 ) -> FastAPI:
     """
     Build a FastAPI app exposing:
@@ -550,6 +553,51 @@ def create_app(
                 "MCP enabled in config but 'mcp' package not installed. "
                 "Install with: pip install \"rtsm[mcp]\""
             )
+
+    # ---- Visualization WebSocket (optional, for single-port demo) ----
+    if vis_broadcaster is not None and vis_registry is not None:
+        from fastapi import WebSocket as _WS, WebSocketDisconnect as _WSD
+        from fastapi.middleware.cors import CORSMiddleware
+        # Add CORS for frontend
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        @app.websocket("/ws")
+        async def viz_websocket(websocket: _WS):
+            await websocket.accept()
+            await vis_broadcaster.connect(websocket)
+            synced = await vis_broadcaster.sync_new_client(websocket, vis_registry)
+            import logging as _log
+            _log.getLogger(__name__).info(f"[api/ws] Client connected, synced {synced} keyframes")
+            try:
+                while True:
+                    data = await websocket.receive_text()
+                    # Handle client commands (clear, stats)
+                    try:
+                        import json as _json
+                        msg = _json.loads(data)
+                        cmd = msg.get("cmd")
+                        if cmd == "clear":
+                            vis_registry.clear()
+                            await vis_broadcaster._broadcast_json({"type": "clear"})
+                    except Exception:
+                        pass
+            except _WSD:
+                pass
+            finally:
+                await vis_broadcaster.disconnect(websocket)
+
+    # ---- Static frontend (mount LAST so API routes take priority) ----
+    if static_dir:
+        import os
+        if os.path.isdir(static_dir):
+            from fastapi.staticfiles import StaticFiles
+            app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
 
     return app
 

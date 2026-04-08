@@ -1,0 +1,258 @@
+# ============================================================
+# RTSM Demo Config — Speed-focused, works everywhere
+# Tuned for a short 50-frame demo clip: fast confirmation,
+# clean output, broad GPU compatibility.
+# Uses grounded_sam2 (Apache 2.0, permissive default).
+#
+# Key differences from production (rtsm.yaml):
+#   topk_preclip: 8 (vs 15) -- fewer CLIP candidates = faster
+#   stability_promote: 0.40 (vs 0.55) -- easier confirmation
+#   stab_k: 0.55 (vs 0.45) -- faster stability rise
+#   proto_ttl_s: 5.0 (vs 10.0) -- cleaner proto cleanup
+#   keyframe_every_n: 5 (vs 30) -- more KFs from short clip
+#   tsdf.enable: false -- skip volumetric fusion
+#   mcp.enable: false -- not needed for demo
+#
+# Tuning results (50-frame demo clip, RTX 5090):
+#   18 confirmed objects, 21 proto, 27.8ms mean latency
+# ============================================================
+
+# -------------------- Hardware --------------------
+camera:
+  model: D435i
+  width: 640
+  height: 480
+  aligned_to: color
+  fx: 604.634705
+  fy: 604.906738
+  cx: 318.806030
+  cy: 259.239777
+
+# -------------------- Models --------------------
+segmentation:
+  backend: grounded_sam2
+  retina_masks: false
+
+  sam2:
+    model_id: facebook/sam2.1-hiera-small
+    device: cuda
+    points_per_side: 32
+    points_per_batch: 64
+    pred_iou_thresh: 0.7
+    stability_score_thresh: 0.92
+    box_nms_thresh: 0.7
+    min_mask_region_area: 100
+
+  grounded_sam2:
+    gdino_model_id: IDEA-Research/grounding-dino-tiny
+    sam2_model_id: null
+    device: cuda
+    box_threshold: 0.25
+    text_threshold: 0.2
+    vocab: null
+
+clip:
+  model: ViT-B-32
+  pretrained: openai
+  local_dir: model_store/clip
+
+# -------------------- I/O --------------------
+io:
+  receiver: websocket
+  websocket:
+    host: "0.0.0.0"
+    port: 8765
+    require_tracking_normal: true
+    keyframe_every_n: 5              # DEMO: more keyframes from short clip
+    nonkf_min_interval_s: 0.3        # DEMO: faster non-KF throughput
+    confidence_threshold: 2
+
+units:
+  depth_m_per_unit: 0.001
+  pose_m_per_unit: 1.0
+
+time_sync:
+  slop_ms: 30
+  tf_lookup_timeout_ms: 20
+  buffer_ttl_sec: 3
+
+# -------------------- Perception Pipeline --------------------
+gates:
+  min_brightness: 5
+  min_std: 5
+  min_depth_valid: 0.40              # DEMO: slightly stricter
+
+masks:
+  min_coverage: 0.005
+  max_coverage: 0.8
+  max_border_fraction: 0.15
+
+filters:
+  min_area_px: 600                   # DEMO: filter smaller noise
+  aspect_ratio: [0.2, 5.0]
+  solidity_min: 0.3
+  border_touch_max_pct: 0.15
+  depth:
+    z_min_m: 0.2
+    z_max_m: 8.0
+    valid_min_pct: 0.10
+    sigma_max_m: 0.35                # DEMO: tighter depth spread
+  border:
+    partial_min_pct: 0.30
+    extreme_drop_pct: 0.90
+    tiny_px: 150
+
+structure:
+  enable: true
+  sample_stride: 3
+  min_support_px: 2000
+  max_rms_m: 0.02
+  angle_floor_deg: 12
+  wall_dot_max: 0.3
+
+planarity:
+  sample_stride: 3
+  inlier_pct_min: 0.85
+  rms_residual_max_m: 0.015
+
+# -------------------- Staging --------------------
+staging:
+  min_area_px: 120
+  centroid_min_valid: 0.05
+  depth_valid_min: 0.02
+  depth_erode_px: 1
+  topk_preclip: 8                    # DEMO: fewer CLIP candidates = faster
+  crop_pad_px: 6
+  clip_input: 224
+
+  w_coverage: 1.0
+  w_border_fraction: -1.0
+  w_depth_valid: 1.0
+  w_depth_spread: -0.5
+  w_bbox_area: 0.5
+
+  coverage_soft_cap: 0.70
+  bbox_soft_cap: 0.70
+  w_coverage_oversize: -0.5
+  w_bbox_oversize: -0.3
+
+  w_struct: 0.2
+  struct_a: 0.3
+  struct_b: 0.3
+  struct_c: 0.1
+  struct_geom_inlier_pct_min: 0.80
+  struct_geom_rms_inv_scale_m: 0.005
+  struct_geom_rms_hi_m: 0.02
+  struct_extent_lo: 0.10
+  struct_extent_hi: 0.35
+
+  dedup_use_mask: false
+  dedup_centroid_px: 50.0
+  dedup_area_ratio_min: 0.4
+  dedup_bbox_iou_thr: 0.50
+  dedup_iou_thr: 0.80
+
+# -------------------- Spatial Memory --------------------
+sweep_cache:
+  grid_size_m: 0.25
+  per_cell_cap: 64
+  neighbors_max: 128
+  two_d: true
+  yaw_bins: 12
+  pitch_bins: 5
+  pitch_deg: 60
+  look_lru_keep: 8
+  hysteresis_frac: 0.20
+  enable_plane_dedup: false
+  plane_quant_step: 0.05
+  plane_normal_bins: 24
+
+sweep_policy:
+  ttl_s: 2.0
+  hard_max_s: 8.0
+  min_baseline_m: 0.08
+  k_depth: 0.005
+  require_novelty_on_ttl: false
+
+io_sweep:
+  mark_mode: look_cell
+  look_patch_radius_cells: 1
+
+assoc:
+  rings: 1
+  nearest_m_for_cos: 8
+  use_embeddings: true
+  cos_min: 0.90
+  gate_dist_base_m: 0.50
+  gate_reproj_px: 60
+  fallback_all_when_empty: true
+  debug_positions: false
+
+# -------------------- Object Promotion --------------------
+object:
+  proto_ttl_s: 5.0                   # DEMO: faster expiry
+  promote_hits: 2
+  stability_promote: 0.40            # DEMO: easier to confirm
+  require_view_bins: 1
+  stab_k: 0.55                       # DEMO: faster stability rise
+  miss_decay: 0.5
+
+# -------------------- Pose --------------------
+pose:
+  demote_thresh_m: 0.30
+
+# -------------------- Storage --------------------
+vectors:
+  enable: true
+  backend: faiss
+  dim: 512
+  faiss:
+    index_path: model_store/faiss/index.flatip
+  flush_period_s: 3.0
+
+# -------------------- Visualization --------------------
+visualization:
+  enable: true
+  host: 0.0.0.0
+  port: 8083
+  apply_camera_flip: true
+  depth:
+    min_m: 0.1
+    max_m: 3.5
+  tsdf:
+    enable: false                    # DEMO: skip TSDF for speed + memory
+    integration_max_width: 480       # DEMO: smaller if used
+    voxel_size: 0.01
+    sdf_trunc: 0.04
+    max_depth_m: 3.5
+    extract_every_n: 30
+    extract_interval_s: 2.0
+    frame_buffer_size: 200
+    correction_reset_threshold_m: 0.05
+  objects:
+    push_interval_ms: 200
+    include_proto: true
+  analytics:
+    push_interval_ms: 1000
+    full_sync_interval_s: 30
+
+slam:
+  log_pose_source: true
+  accept_pose_corrections: true
+  correct_working_memory: true
+
+api:
+  host: "0.0.0.0"
+  port: 8002
+
+mcp:
+  enable: false                      # DEMO: not needed
+
+analytics:
+  enable: true
+  retention_s: 3600
+  buffer_frames: 300
+
+logging:
+  periodic_summary: true
+  summary_interval_s: 10.0

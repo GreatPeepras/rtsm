@@ -4,6 +4,7 @@ WebSocket Broadcaster for RTSM Visualization
 Handles:
 - Client connection management
 - Binary mesh_create messages (point clouds)
+- Binary camera_frame messages (raw JPEG for PiP overlay)
 - JSON mesh_update_pose and mesh_delete messages
 - New client sync (send all existing keyframes)
 - WM objects_update messages (real-time object overlay)
@@ -11,16 +12,25 @@ Handles:
 
 import struct
 import asyncio
+import logging
 from typing import Set, Optional, List, Dict, Any
 from fastapi import WebSocket
 import numpy as np
 
 from rtsm.visualization.registry import KeyframeRegistry, KeyframeRecord
 
+logger = logging.getLogger(__name__)
 
 # Binary message format for mesh_create:
 # [magic:4][mesh_id_len:2][mesh_id:N][num_points:4][positions:N*12][colors:N*3][has_pose:1][pose:64?]
 MAGIC_MESH_CREATE = b'PCLD'  # 0x50434C44
+
+# Binary message format for camera_frame:
+# [magic:4 = 'CAMF'][jpeg_len:4 uint32 LE][jpeg_bytes:N]
+MAGIC_CAMERA_FRAME = b'CAMF'  # 0x464D4143
+
+# Timeout for sending to a single client (prevents slow client blocking)
+_SEND_TIMEOUT_S = 5.0
 
 
 class WSBroadcaster:
@@ -29,6 +39,9 @@ class WSBroadcaster:
 
     Backend is source of truth - assigns mesh_id and controls lifecycle.
     Frontend only renders based on commands received.
+
+    Uses asyncio.gather for concurrent sends so a slow client
+    doesn't block delivery to other clients.
     """
 
     def __init__(self):
@@ -49,6 +62,8 @@ class WSBroadcaster:
     def client_count(self) -> int:
         """Number of connected clients."""
         return len(self._clients)
+
+    # ── Packing helpers ──
 
     def _pack_mesh_create(
         self,
@@ -90,48 +105,84 @@ class WSBroadcaster:
 
         return header + mesh_id_bytes + pos_data + col_data + bytes([has_pose]) + pose_data
 
-    async def _broadcast_bytes(self, data: bytes) -> None:
-        """Send binary data to all connected clients."""
-        async with self._lock:
-            dead_clients = []
-            for client in self._clients:
-                try:
-                    await client.send_bytes(data)
-                except Exception:
-                    dead_clients.append(client)
+    @staticmethod
+    def pack_camera_frame(jpeg_bytes: bytes) -> bytes:
+        """Pack a camera_frame message as binary.
 
-            # Remove dead clients
-            for client in dead_clients:
-                self._clients.discard(client)
+        Format: [magic:4 'CAMF'][jpeg_len:4 uint32 LE][jpeg_bytes:N]
+        """
+        return MAGIC_CAMERA_FRAME + struct.pack('<I', len(jpeg_bytes)) + jpeg_bytes
+
+    @staticmethod
+    def unpack_camera_frame(data: bytes) -> Optional[bytes]:
+        """Unpack a camera_frame message. Returns JPEG bytes or None if invalid."""
+        if len(data) < 8:
+            return None
+        magic = data[:4]
+        if magic != MAGIC_CAMERA_FRAME:
+            return None
+        jpeg_len = struct.unpack_from('<I', data, 4)[0]
+        if len(data) < 8 + jpeg_len:
+            return None
+        return data[8 : 8 + jpeg_len]
+
+    # ── Concurrent broadcast helpers ──
+
+    async def _try_send_bytes(self, ws: WebSocket, data: bytes) -> bool:
+        """Send binary data to a single client with timeout."""
+        try:
+            await asyncio.wait_for(ws.send_bytes(data), timeout=_SEND_TIMEOUT_S)
+            return True
+        except Exception:
+            return False
+
+    async def _try_send_json(self, ws: WebSocket, data: dict) -> bool:
+        """Send JSON data to a single client with timeout."""
+        try:
+            await asyncio.wait_for(ws.send_json(data), timeout=_SEND_TIMEOUT_S)
+            return True
+        except Exception:
+            return False
+
+    async def _broadcast_bytes(self, data: bytes) -> None:
+        """Send binary data to all connected clients concurrently."""
+        async with self._lock:
+            if not self._clients:
+                return
+            clients = list(self._clients)
+
+        # Send concurrently (outside lock to avoid holding it during I/O)
+        results = await asyncio.gather(
+            *(self._try_send_bytes(c, data) for c in clients),
+            return_exceptions=True,
+        )
+
+        # Remove dead clients
+        dead = [c for c, ok in zip(clients, results) if ok is not True]
+        if dead:
+            async with self._lock:
+                for c in dead:
+                    self._clients.discard(c)
 
     async def _broadcast_json(self, data: dict) -> None:
-        """Send JSON data to all connected clients."""
+        """Send JSON data to all connected clients concurrently."""
         async with self._lock:
-            dead_clients = []
-            for client in self._clients:
-                try:
-                    await client.send_json(data)
-                except Exception:
-                    dead_clients.append(client)
+            if not self._clients:
+                return
+            clients = list(self._clients)
 
-            for client in dead_clients:
-                self._clients.discard(client)
+        results = await asyncio.gather(
+            *(self._try_send_json(c, data) for c in clients),
+            return_exceptions=True,
+        )
 
-    async def _send_bytes_to(self, ws: WebSocket, data: bytes) -> bool:
-        """Send binary data to a specific client. Returns True on success."""
-        try:
-            await ws.send_bytes(data)
-            return True
-        except Exception:
-            return False
+        dead = [c for c, ok in zip(clients, results) if ok is not True]
+        if dead:
+            async with self._lock:
+                for c in dead:
+                    self._clients.discard(c)
 
-    async def _send_json_to(self, ws: WebSocket, data: dict) -> bool:
-        """Send JSON data to a specific client. Returns True on success."""
-        try:
-            await ws.send_json(data)
-            return True
-        except Exception:
-            return False
+    # ── Public send methods ──
 
     async def send_mesh_create(
         self,
@@ -150,6 +201,15 @@ class WSBroadcaster:
             pose: Optional (4, 4) float32 Twc transform
         """
         data = self._pack_mesh_create(mesh_id, positions, colors, pose)
+        await self._broadcast_bytes(data)
+
+    async def send_camera_frame(self, jpeg_bytes: bytes) -> None:
+        """Broadcast a raw JPEG camera frame to all clients.
+
+        Uses binary protocol (CAMF magic) for zero base64 overhead.
+        Frontend uses Blob URL for native JPEG decode.
+        """
+        data = self.pack_camera_frame(jpeg_bytes)
         await self._broadcast_bytes(data)
 
     async def send_mesh_update_pose(self, mesh_id: str, pose: np.ndarray) -> None:
@@ -203,7 +263,7 @@ class WSBroadcaster:
                 kf.colors,
                 kf.pose
             )
-            if await self._send_bytes_to(ws, data):
+            if await self._try_send_bytes(ws, data):
                 synced += 1
             else:
                 # Client disconnected during sync

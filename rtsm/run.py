@@ -29,9 +29,10 @@ from rtsm.io.websocket import WebSocketReceiver
 from rtsm.utils.net import print_server_addresses, get_local_ipv4_addresses
 from rtsm.stores.sweep_policy import SweepPolicy
 from rtsm.api.server import create_app, start_server, ResetComponents
+from rtsm.cfg import load_config, cfg_path
 
 import argparse
-import yaml
+import sys
 import threading
 import logging
 
@@ -49,6 +50,12 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    # Dispatch 'demo' subcommand before argparse (preserves backward compat)
+    if len(sys.argv) > 1 and sys.argv[1] == "demo":
+        from rtsm.demo import run_demo
+        run_demo(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(description="RTSM - Real-Time Spatio-Semantic Memory")
     parser.add_argument("--replay", type=str, default=None, metavar="DIR",
                         help="Replay a recorded session from DIR at original rate")
@@ -69,8 +76,8 @@ def main():
         print("For CUDA support, add:  --extra-index-url https://download.pytorch.org/whl/cu128")
         return
 
-    cfg = yaml.safe_load(open("config/rtsm.yaml", "r"))
-    logger.info("Configuration loaded from config/rtsm.yaml")
+    cfg = load_config("rtsm.yaml")
+    logger.info(f"Configuration loaded from {cfg_path('rtsm.yaml')}")
 
     # ── Record-only mode: skip all heavy init, just record raw WebSocket ──
     if args.record and args.record_only:
@@ -150,7 +157,7 @@ def main():
     assoc = Associator(cfg)
     ingest_gate = IngestGate(cfg)
     logger.info(f"Ingest gate successfully initialized")
-    vocab_clf = ClipVocabClassifier(clip.artifacts.model, clip.artifacts.tokenizer, clip.artifacts.preprocess, "config/clip/vocab.yaml", device=cfg.get("device","cuda"))
+    vocab_clf = ClipVocabClassifier(clip.artifacts.model, clip.artifacts.tokenizer, clip.artifacts.preprocess, str(cfg_path("clip/vocab.yaml")), device=cfg.get("device","cuda"))
     logger.info(f"CLIP vocabulary classifier successfully initialized")
     vec_cfg = cfg.get("vectors", {})
     backend = str(vec_cfg.get("backend", "faiss")).lower()
