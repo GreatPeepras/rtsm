@@ -159,14 +159,30 @@ def create_app(
         return d
 
     @app.get("/objects")
-    def list_objects(include_vectors: bool = False) -> Dict[str, Any]:
+    def list_objects(include_vectors: bool = False, include_snapshot: bool = False) -> Dict[str, Any]:
+        """List all objects in working memory.
+
+        Args:
+            include_vectors: Include CLIP embedding vectors in response
+            include_snapshot: Include latest observation crop (base64 JPEG)
+                for multimodal agent verification
+        """
         try:
             objs: List[Any] = working_memory.iter_objects()
         except Exception:
             objs = []
+        result_list = []
+        for o in objs:
+            entry = _obj_detail(o, include_vectors=include_vectors) if include_vectors else _obj_summary(o)
+            if include_snapshot:
+                crops = getattr(o, 'image_crops', None) or []
+                if crops:
+                    entry["snapshot_b64"] = base64.b64encode(crops[-1]).decode('ascii')
+                    entry["snapshot_count"] = len(crops)
+            result_list.append(entry)
         return {
             "count": len(objs),
-            "objects": [(_obj_detail(o, include_vectors=include_vectors) if include_vectors else _obj_summary(o)) for o in objs],
+            "objects": result_list,
         }
 
     @app.get("/objects/{oid}")
@@ -433,17 +449,30 @@ def create_app(
 
     # ---- Semantic search endpoint ----
     @app.get("/search/semantic")
-    def semantic_search(query: str, top_k: int = 10, threshold: float = 0.2) -> Dict[str, Any]:
+    def semantic_search(
+        query: str,
+        top_k: int = 10,
+        threshold: float = 0.0,
+        include_snapshot: bool = False,
+    ) -> Dict[str, Any]:
         """
         Semantic search for objects using CLIP text encoding + FAISS KNN.
+
+        CLIP ViT-B/32 raw cosine scores cluster in the 0.25-0.35 range for
+        indoor objects. The ranking is meaningful (top results are most
+        relevant) even though absolute scores are low. Default threshold=0.0
+        returns all ranked results so agents can decide their own cutoff.
+
+        For visual verification, set include_snapshot=true to get the most
+        recent observation crop (base64 JPEG) for each result. This enables
+        multimodal LLM planners to visually verify objects without relying
+        on CLIP classification.
 
         Args:
             query: Natural language search query (e.g., "red cup", "chair")
             top_k: Maximum number of results to return
-            threshold: Minimum cosine similarity threshold (0.0 to 1.0)
-
-        Returns:
-            List of matching objects with similarity scores
+            threshold: Minimum cosine similarity threshold (default 0.0 = return all ranked)
+            include_snapshot: If true, include base64 JPEG of most recent crop
         """
         if not clip_adapter or not vectors:
             raise HTTPException(status_code=503, detail="Semantic search not available (CLIP or vectors not configured)")
@@ -466,13 +495,23 @@ def create_app(
             if score < threshold:
                 continue
             obj = working_memory.get(oid)
-            results.append({
+            entry: Dict[str, Any] = {
                 "id": oid,
                 "score": round(float(score), 4),
-                "label_hint": obj.label_primary if obj else None,
                 "confirmed": obj.confirmed if obj else True,
+                "stability": round(float(obj.stability), 3) if obj else 0.0,
                 "xyz_world": obj.xyz_world.tolist() if obj and obj.xyz_world is not None else None,
-            })
+            }
+
+            # Include most recent snapshot for multimodal agent verification
+            if include_snapshot and obj:
+                crops = getattr(obj, 'image_crops', None) or []
+                if crops:
+                    # Most recent crop is last in list
+                    entry["snapshot_b64"] = base64.b64encode(crops[-1]).decode('ascii')
+                    entry["snapshot_count"] = len(crops)
+
+            results.append(entry)
 
         return {"query": query, "results": results}
 

@@ -650,13 +650,26 @@ function updateObjectMarkers() {
       marker.scale.set(1, 1, 1)
     }
 
-    // Label - use object ID as primary identifier
+    // Label: short ID + stability (no CLIP label — unreliable with current vocab)
     let label = objectLabels.get(obj.id)
-    const labelText = obj.id.slice(0, 8)
+    const labelText = `${obj.id.slice(0, 6)} ${obj.stability.toFixed(2)}`
     if (!label) {
       label = createTextSprite(labelText, obj.confirmed ? '#00ff88' : '#ffaa00')
       world.add(label)
       objectLabels.set(obj.id, label)
+    } else {
+      // Update label text if stability changed (recreate sprite)
+      // Only recreate if text differs to avoid GC churn
+      const currentText = (label.userData as any)?.text
+      if (currentText !== labelText) {
+        world.remove(label)
+        ;(label.material as THREE.SpriteMaterial).map?.dispose()
+        ;(label.material as THREE.Material).dispose()
+        label = createTextSprite(labelText, obj.confirmed ? '#00ff88' : '#ffaa00')
+        ;(label.userData as any) = { text: labelText }
+        world.add(label)
+        objectLabels.set(obj.id, label)
+      }
     }
     label.position.set(obj.xyz_world[0], obj.xyz_world[1] + 0.08, obj.xyz_world[2])
     label.visible = visible
@@ -717,10 +730,9 @@ function updateSelectionMarker() {
   selectionMarker.lookAt(camera.position)
   selectionMarker.visible = true
 
-  // Update label text and position - use object ID as primary
-  const labelText = selectedObj.id.slice(0, 8)
-  // Recreate label sprite with new text
-  const newLabel = createTextSprite(`▶ ${labelText}`, '#1e90ff')
+  // Update label text and position - short ID + stability
+  const labelText = `${selectedObj.id.slice(0, 8)} | ${selectedObj.stability.toFixed(2)}`
+  const newLabel = createTextSprite(labelText, '#1e90ff')
   // Make label always render on top
   ;(newLabel.material as THREE.SpriteMaterial).depthTest = false
   ;(newLabel.material as THREE.SpriteMaterial).depthWrite = false
@@ -988,21 +1000,22 @@ function updateObjectList() {
   }
 
   objectListEl.innerHTML = filtered.map(obj => {
-    const displayLabel = getBestDisplayLabel(obj)
     const isSelected = obj.id === selectedObjectId
     const semanticScore = semanticSearchResults.get(obj.id)
 
-    // Show semantic similarity score if in search mode, otherwise show stability
+    // In search mode show similarity, otherwise stability
     const scoreStr = isSearchMode && semanticScore !== undefined
-      ? `sim: ${semanticScore.toFixed(2)}`
-      : `stab: ${obj.stability.toFixed(2)}`
+      ? `sim ${semanticScore.toFixed(2)}`
+      : `${obj.stability.toFixed(2)}`
+
+    const statusTag = obj.confirmed ? 'confirmed' : 'proto'
 
     return `
       <div class="object-item ${isSelected ? 'selected' : ''}" data-id="${obj.id}">
-        <div class="object-dot ${obj.confirmed ? 'confirmed' : 'proto'}"></div>
+        <div class="object-dot ${statusTag}"></div>
         <div class="object-info">
           <div class="object-label">${obj.id.slice(0, 8)}</div>
-          <div class="object-meta">${displayLabel} · ${scoreStr}</div>
+          <div class="object-meta">${statusTag} &middot; ${scoreStr}</div>
         </div>
       </div>
     `
@@ -1053,9 +1066,7 @@ async function loadObjectSnapshots(objectId: string) {
   }
 
   if (galleryTitle) {
-    const obj = rtsmObjects.find(o => o.id === objectId)
-    const label = obj ? getBestDisplayLabel(obj) : objectId.slice(0, 8)
-    galleryTitle.textContent = `Snapshots: ${label}`
+    galleryTitle.textContent = `Snapshots: ${objectId.slice(0, 8)}`
   }
 
   try {
