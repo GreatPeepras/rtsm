@@ -134,31 +134,72 @@ const meshes = new Map<string, THREE.Points>()
 let wsConnected = false
 let meshCreateCount = 0
 
-// ── Camera feed PiP ──
+// ── Camera feed PiP (FaceTime-style: draggable, resizable, minimizable) ──
 const cameraFeedImg = document.getElementById('camera-feed') as HTMLImageElement | null
-const cameraPanel = document.getElementById('camera-panel')
-const cameraToggleBtn = document.getElementById('camera-toggle')
+const cameraPanel = document.getElementById('camera-panel') as HTMLElement | null
+const cameraHeader = document.getElementById('camera-header') as HTMLElement | null
 let cameraBlobUrl: string | null = null
 let cameraFramePending = false
+let cameraSizeLarge = false
 
-// Camera panel toggle
-if (cameraPanel && cameraToggleBtn) {
-  document.getElementById('camera-header')?.addEventListener('click', () => {
-    cameraPanel.classList.toggle('collapsed')
-    cameraToggleBtn.textContent = cameraPanel.classList.contains('collapsed') ? '+' : '\u2014'
+// Camera minimize toggle
+document.getElementById('camera-toggle')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  cameraPanel?.classList.toggle('collapsed')
+})
+
+// Camera resize toggle (small <-> large)
+document.getElementById('camera-resize')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  if (!cameraPanel) return
+  cameraSizeLarge = !cameraSizeLarge
+  cameraPanel.style.width = cameraSizeLarge ? '400px' : '240px'
+})
+
+// Draggable camera panel
+if (cameraPanel && cameraHeader) {
+  let dragging = false
+  let dragOffsetX = 0
+  let dragOffsetY = 0
+
+  cameraHeader.addEventListener('mousedown', (e) => {
+    // Only start drag from the header bar itself, not buttons
+    if ((e.target as HTMLElement).closest('.cam-btn')) return
+    dragging = true
+    dragOffsetX = e.clientX - cameraPanel.offsetLeft
+    dragOffsetY = e.clientY - cameraPanel.offsetTop
+    cameraPanel.style.transition = 'none'
+    e.preventDefault()
+  })
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return
+    let x = e.clientX - dragOffsetX
+    let y = e.clientY - dragOffsetY
+    // Clamp to viewport
+    x = Math.max(0, Math.min(x, window.innerWidth - cameraPanel.offsetWidth))
+    y = Math.max(32, Math.min(y, window.innerHeight - cameraPanel.offsetHeight))
+    cameraPanel.style.left = x + 'px'
+    cameraPanel.style.top = y + 'px'
+    cameraPanel.style.bottom = 'auto'
+    cameraPanel.style.right = 'auto'
+  })
+
+  window.addEventListener('mouseup', () => {
+    if (dragging) {
+      dragging = false
+      cameraPanel.style.transition = ''
+    }
   })
 }
 
-// UI controls panel toggle
+// UI controls panel toggle (chevron)
 const uiPanel = document.getElementById('ui')
-const uiToggleBtn = document.getElementById('ui-toggle-btn')
-if (uiPanel && uiToggleBtn) {
-  uiToggleBtn.addEventListener('click', () => {
-    uiPanel.classList.toggle('collapsed')
-    uiToggleBtn.textContent = uiPanel.classList.contains('collapsed') ? 'Controls +' : 'Controls -'
-  })
-}
+document.getElementById('ui-toggle-row')?.addEventListener('click', () => {
+  uiPanel?.classList.toggle('collapsed')
+})
 
+// Camera frame handler (binary CAMF protocol, Blob URL for native decode)
 function handleCameraFrame(data: ArrayBuffer): void {
   if (!cameraFeedImg || cameraFramePending) return
   cameraFramePending = true
@@ -167,15 +208,11 @@ function handleCameraFrame(data: ArrayBuffer): void {
   const jpegLen = view.getUint32(4, true)
   const jpegData = new Uint8Array(data, 8, jpegLen)
 
-  // Revoke previous Blob URL to prevent memory leak
   if (cameraBlobUrl) URL.revokeObjectURL(cameraBlobUrl)
   cameraBlobUrl = URL.createObjectURL(new Blob([jpegData], { type: 'image/jpeg' }))
 
-  // Throttle: update img on next animation frame
   requestAnimationFrame(() => {
-    if (cameraFeedImg && cameraBlobUrl) {
-      cameraFeedImg.src = cameraBlobUrl
-    }
+    if (cameraFeedImg && cameraBlobUrl) cameraFeedImg.src = cameraBlobUrl
     cameraFramePending = false
   })
 }

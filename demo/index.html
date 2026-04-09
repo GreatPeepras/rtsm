@@ -15,22 +15,26 @@
         height: 32px;
         display: flex;
         align-items: stretch;
-        background: #1a1a1a;
-        border-bottom: 1px solid #333;
+        background: rgba(16,16,16,0.9);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border-bottom: 1px solid rgba(255,255,255,0.06);
         z-index: 50;
         font-family: system-ui, -apple-system, Arial, sans-serif;
-        font-size: 12px;
+        font-size: 11px;
+        font-weight: 500;
       }
       .tab-btn {
         padding: 0 20px;
         border: none;
         background: transparent;
-        color: #888;
+        color: rgba(255,255,255,0.4);
         cursor: pointer;
         border-bottom: 2px solid transparent;
         transition: color 0.15s, border-color 0.15s;
+        letter-spacing: 0.3px;
       }
-      .tab-btn:hover { color: #ccc; }
+      .tab-btn:hover { color: rgba(255,255,255,0.7); }
       .tab-btn.active { color: #fff; border-bottom-color: #1e90ff; }
 
       /* View containers */
@@ -39,36 +43,42 @@
 
       #hud {
         position: fixed;
-        left: 10px;
+        left: 12px;
         top: 42px;
-        color: #fff;
+        color: rgba(255,255,255,0.85);
         font-family: system-ui, -apple-system, Arial, sans-serif;
-        font-size: 12px;
+        font-size: 11px;
         z-index: 10;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.6);
-        background: rgba(0,0,0,0.4);
+        text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+        background: rgba(20,20,20,0.6);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
         padding: 8px 12px;
-        border-radius: 6px;
-        line-height: 1.5;
+        border-radius: 10px;
+        line-height: 1.6;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.3);
       }
 
       #ui {
         position: fixed;
         top: 42px;
-        right: 10px;
+        right: 12px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 4px;
         z-index: 11;
       }
 
       .ui-row {
         display: flex;
-        gap: 6px;
+        gap: 4px;
         align-items: center;
-        background: rgba(0,0,0,0.4);
-        padding: 6px 8px;
-        border-radius: 6px;
+        background: rgba(20,20,20,0.7);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        padding: 5px 8px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
       }
 
       #ui input[type="file"] {
@@ -76,134 +86,144 @@
       }
 
       #ui button, #ui label {
-        padding: 6px 10px;
-        border-radius: 4px;
-        border: 1px solid #444;
-        background: #2a2a2a;
-        color: #eee;
+        padding: 5px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.06);
+        color: rgba(255,255,255,0.75);
         cursor: pointer;
-        font-size: 12px;
-        transition: background 0.15s;
+        font-size: 11px;
+        font-weight: 500;
+        transition: background 0.15s, color 0.15s;
       }
 
       #ui button:hover, #ui label:hover {
-        background: #3a3a3a;
+        background: rgba(255,255,255,0.12);
+        color: #fff;
       }
 
       #ui button.primary {
-        background: #1e90ff;
-        border-color: #1e90ff;
+        background: rgba(30,144,255,0.25);
+        border-color: rgba(30,144,255,0.3);
+        color: #5ba8ff;
       }
-
       #ui button.primary:hover {
-        background: #1a7acc;
+        background: rgba(30,144,255,0.4);
+        color: #fff;
       }
 
       #ui button.success {
-        background: #28a745;
-        border-color: #28a745;
+        background: rgba(40,167,69,0.2);
+        border-color: rgba(40,167,69,0.3);
+        color: #5fd47a;
       }
-
       #ui button.success:hover {
-        background: #218838;
+        background: rgba(40,167,69,0.35);
+        color: #fff;
       }
 
       #ui button.warning {
-        background: #ffc107;
-        border-color: #ffc107;
-        color: #000;
+        background: rgba(255,193,7,0.15);
+        border-color: rgba(255,193,7,0.25);
+        color: #e6b800;
       }
-
       #ui button.warning:hover {
-        background: #e0a800;
+        background: rgba(255,193,7,0.3);
+        color: #fff;
       }
 
       #mode {
-        font-size: 11px;
-        color: #aaa;
-        padding: 4px 8px;
+        font-size: 10px;
+        color: rgba(255,255,255,0.4);
+        padding: 2px 6px;
       }
 
       .section-label {
-        font-size: 10px;
-        color: #888;
+        font-size: 9px;
+        color: rgba(255,255,255,0.3);
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.8px;
         margin-right: 4px;
+        font-weight: 600;
       }
 
-      /* Object Inspector Panel */
+      /* ======== Object Inspector Panel ======== */
       #object-panel {
         position: fixed;
         bottom: 0;
         left: 0;
         right: 0;
-        background: rgba(0,0,0,0.85);
-        border-top: 1px solid #333;
+        background: rgba(16,16,16,0.92);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-top: 1px solid rgba(255,255,255,0.06);
         font-family: system-ui, -apple-system, Arial, sans-serif;
         font-size: 12px;
         z-index: 20;
-        transition: transform 0.2s ease;
       }
 
       #object-panel.collapsed #panel-content {
-        display: none;
+        max-height: 0; opacity: 0; overflow: hidden; pointer-events: none;
+      }
+      #panel-content {
+        max-height: 200px;
+        overflow-y: auto;
+        transition: max-height 0.25s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease;
+        opacity: 1;
       }
 
       #panel-header {
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 8px 12px;
-        background: rgba(30,30,30,0.95);
-        border-bottom: 1px solid #333;
+        gap: 8px;
+        padding: 7px 12px;
       }
 
       #panel-title {
-        font-weight: bold;
-        color: #fff;
-        min-width: 120px;
+        font-weight: 600;
+        color: rgba(255,255,255,0.85);
+        font-size: 11px;
+        min-width: 80px;
       }
 
       #object-search {
         flex: 1;
-        max-width: 300px;
-        padding: 4px 8px;
-        border: 1px solid #444;
-        border-radius: 4px;
-        background: #222;
+        max-width: 280px;
+        padding: 4px 10px;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 6px;
+        background: rgba(255,255,255,0.05);
         color: #eee;
-        font-size: 12px;
+        font-size: 11px;
+        transition: border-color 0.15s;
       }
 
       #object-search:focus {
         outline: none;
-        border-color: #1e90ff;
+        border-color: rgba(30,144,255,0.5);
       }
 
-      #panel-toggle, #panel-filter {
+      #panel-toggle, #panel-filter, #search-btn, #show-all-btn {
         padding: 4px 10px;
-        border: 1px solid #444;
-        border-radius: 4px;
-        background: #2a2a2a;
-        color: #eee;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 6px;
+        background: rgba(255,255,255,0.06);
+        color: rgba(255,255,255,0.65);
         cursor: pointer;
-        font-size: 12px;
+        font-size: 11px;
+        font-weight: 500;
+        transition: background 0.15s, color 0.15s;
       }
 
-      #panel-toggle:hover, #panel-filter:hover {
-        background: #3a3a3a;
+      #panel-toggle:hover, #panel-filter:hover, #search-btn:hover, #show-all-btn:hover {
+        background: rgba(255,255,255,0.12);
+        color: #fff;
       }
 
       #panel-filter.active {
-        background: #00ff88;
-        color: #000;
-        border-color: #00ff88;
-      }
-
-      #panel-content {
-        max-height: 200px;
-        overflow-y: auto;
+        background: rgba(0,255,136,0.2);
+        color: #5fd47a;
+        border-color: rgba(0,255,136,0.3);
       }
 
       #object-list {
@@ -218,20 +238,20 @@
         align-items: center;
         gap: 8px;
         padding: 6px 10px;
-        background: #1a1a1a;
-        border-radius: 4px;
+        background: rgba(255,255,255,0.03);
+        border-radius: 6px;
         cursor: pointer;
         transition: background 0.15s;
         border: 1px solid transparent;
       }
 
       .object-item:hover {
-        background: #2a2a2a;
+        background: rgba(255,255,255,0.07);
       }
 
       .object-item.selected {
-        background: #1e90ff22;
-        border-color: #1e90ff;
+        background: rgba(30,144,255,0.12);
+        border-color: rgba(30,144,255,0.3);
       }
 
       .object-dot {
@@ -271,19 +291,22 @@
         margin-top: 2px;
       }
 
-      /* Snapshot Gallery Panel */
+      /* ======== Snapshot Gallery Panel ======== */
       #snapshot-gallery {
         position: fixed;
-        right: 10px;
-        bottom: 220px;
-        width: 320px;
-        background: rgba(0,0,0,0.9);
-        border-radius: 8px;
-        border: 1px solid #333;
+        right: 12px;
+        bottom: 52px;
+        width: 300px;
+        background: rgba(16,16,16,0.92);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-radius: 12px;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
         font-family: system-ui, -apple-system, Arial, sans-serif;
         font-size: 12px;
         z-index: 25;
         display: none;
+        overflow: hidden;
       }
 
       #snapshot-gallery.visible {
@@ -295,31 +318,30 @@
         justify-content: space-between;
         align-items: center;
         padding: 8px 12px;
-        background: rgba(30,30,30,0.95);
-        border-bottom: 1px solid #333;
-        border-radius: 8px 8px 0 0;
       }
 
       #gallery-title {
-        font-weight: bold;
-        color: #fff;
+        font-weight: 600;
+        color: rgba(255,255,255,0.85);
+        font-size: 11px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        max-width: 240px;
+        max-width: 200px;
       }
 
       #gallery-close {
         background: none;
         border: none;
-        color: #888;
+        color: rgba(255,255,255,0.35);
         cursor: pointer;
-        font-size: 18px;
+        font-size: 16px;
         padding: 0 4px;
+        transition: color 0.15s;
       }
 
       #gallery-close:hover {
-        color: #fff;
+        color: rgba(255,255,255,0.8);
       }
 
       #gallery-content {
@@ -498,68 +520,83 @@
       /* Congestion accent on KPI */
       .kpi-card.congestion { border-color: #ff4444; }
 
-      /* Camera Feed Panel (PiP overlay) */
+      /* ======== Camera Feed PiP (FaceTime-style) ======== */
       #camera-panel {
         position: fixed;
-        bottom: 220px;
-        left: 10px;
-        width: 280px;
-        background: rgba(0,0,0,0.85);
-        border: 1px solid #333;
-        border-radius: 8px;
+        bottom: 52px;
+        left: 12px;
+        width: 240px;
+        background: rgba(20,20,20,0.92);
+        border-radius: 12px;
         font-family: system-ui, -apple-system, Arial, sans-serif;
         font-size: 12px;
         z-index: 22;
         overflow: hidden;
-        transition: width 0.2s ease;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+        transition: box-shadow 0.2s ease;
+        cursor: default;
       }
+      #camera-panel:hover { box-shadow: 0 6px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.1); }
       #camera-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
         padding: 6px 10px;
-        background: rgba(30,30,30,0.95);
-        border-bottom: 1px solid #333;
-        cursor: pointer;
+        cursor: grab;
         user-select: none;
       }
-      #camera-header span { color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-      #camera-toggle {
-        background: none; border: none; color: #888; cursor: pointer;
-        font-size: 14px; padding: 0 4px; line-height: 1;
+      #camera-header:active { cursor: grabbing; }
+      #camera-header span {
+        color: rgba(255,255,255,0.5);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 500;
       }
-      #camera-toggle:hover { color: #fff; }
-      #camera-content { display: block; }
-      #camera-panel.collapsed #camera-content { display: none; }
+      .cam-btn {
+        background: none; border: none; color: rgba(255,255,255,0.35); cursor: pointer;
+        padding: 2px; line-height: 1; display: flex; align-items: center;
+        transition: color 0.15s;
+      }
+      .cam-btn:hover { color: rgba(255,255,255,0.8); }
+      .cam-btn svg { width: 14px; height: 14px; }
+      #camera-actions { display: flex; gap: 4px; align-items: center; }
+      #camera-content {
+        transition: max-height 0.25s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease;
+        max-height: 200px; opacity: 1; overflow: hidden;
+      }
+      #camera-panel.collapsed #camera-content { max-height: 0; opacity: 0; }
+      #camera-panel.collapsed { width: 240px; }
       #camera-feed {
-        width: 100%;
-        display: block;
-        background: #000;
-        min-height: 40px;
+        width: 100%; display: block; background: #000;
+        border-radius: 0 0 12px 12px;
       }
 
-      /* Collapsible UI Controls */
+      /* ======== Controls Panel (minimalist slide) ======== */
       #ui-toggle-row {
-        display: flex;
-        gap: 6px;
-        align-items: center;
-        background: rgba(0,0,0,0.4);
-        padding: 6px 8px;
-        border-radius: 6px;
-        cursor: pointer;
-        user-select: none;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(20,20,20,0.7);
+        padding: 4px 6px; border-radius: 8px;
+        cursor: pointer; user-select: none;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        transition: background 0.15s;
       }
-      #ui-toggle-btn {
-        padding: 4px 8px;
-        border-radius: 4px;
-        border: 1px solid #444;
-        background: #2a2a2a;
-        color: #eee;
-        cursor: pointer;
-        font-size: 11px;
+      #ui-toggle-row:hover { background: rgba(40,40,40,0.8); }
+      #ui-toggle-row svg {
+        width: 16px; height: 16px;
+        color: rgba(255,255,255,0.5);
+        transition: transform 0.25s cubic-bezier(0.4,0,0.2,1), color 0.15s;
       }
-      #ui-toggle-btn:hover { background: #3a3a3a; }
-      #ui.collapsed .ui-collapsible { display: none; }
+      #ui-toggle-row:hover svg { color: rgba(255,255,255,0.8); }
+      #ui.collapsed #ui-toggle-row svg { transform: rotate(180deg); }
+      #ui.collapsed .ui-collapsible {
+        max-height: 0; opacity: 0; margin: 0; padding: 0; overflow: hidden;
+        pointer-events: none;
+      }
+      .ui-collapsible {
+        transition: max-height 0.25s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease;
+        max-height: 200px; opacity: 1; overflow: hidden;
+      }
     </style>
   </head>
   <body>
@@ -574,9 +611,9 @@
     <div id="hud">Loading...</div>
 
     <div id="ui">
-      <!-- Toggle header for collapsible controls -->
+      <!-- Minimalist toggle: chevron icon (rotates when collapsed) -->
       <div id="ui-toggle-row">
-        <button id="ui-toggle-btn">Controls -</button>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
 
       <!-- File loading -->
@@ -625,11 +662,20 @@
       </div>
     </div>
 
-    <!-- Camera Feed Panel (PiP overlay) -->
+    <!-- Camera Feed PiP (FaceTime-style, draggable) -->
     <div id="camera-panel">
       <div id="camera-header">
-        <span>Camera Feed</span>
-        <button id="camera-toggle">&mdash;</button>
+        <span>Camera</span>
+        <div id="camera-actions">
+          <!-- Expand/resize icon (arrows pointing outward) -->
+          <button class="cam-btn" id="camera-resize" title="Resize">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+          </button>
+          <!-- Minimize icon (horizontal line) -->
+          <button class="cam-btn" id="camera-toggle" title="Minimize">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="6" y1="12" x2="18" y2="12"/></svg>
+          </button>
+        </div>
       </div>
       <div id="camera-content">
         <img id="camera-feed" alt="" />
