@@ -159,20 +159,39 @@ def create_app(
         return d
 
     @app.get("/objects")
-    def list_objects(include_vectors: bool = False, include_snapshot: bool = False) -> Dict[str, Any]:
-        """List all objects in working memory.
+    def list_objects(
+        include_vectors: bool = False,
+        include_snapshot: bool = False,
+        confirmed_only: bool = False,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """List objects in working memory with pagination.
 
         Args:
             include_vectors: Include CLIP embedding vectors in response
             include_snapshot: Include latest observation crop (base64 JPEG)
                 for multimodal agent verification
+            confirmed_only: If true, only return confirmed objects
+            offset: Skip first N objects (for pagination)
+            limit: Maximum objects to return (default 100, max 500)
         """
+        limit = min(max(1, limit), 500)
+        offset = max(0, offset)
+
         try:
             objs: List[Any] = working_memory.iter_objects()
         except Exception:
             objs = []
+
+        if confirmed_only:
+            objs = [o for o in objs if getattr(o, 'confirmed', False)]
+
+        total = len(objs)
+        page = objs[offset : offset + limit]
+
         result_list = []
-        for o in objs:
+        for o in page:
             entry = _obj_detail(o, include_vectors=include_vectors) if include_vectors else _obj_summary(o)
             if include_snapshot:
                 crops = getattr(o, 'image_crops', None) or []
@@ -181,7 +200,10 @@ def create_app(
                     entry["snapshot_count"] = len(crops)
             result_list.append(entry)
         return {
-            "count": len(objs),
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "count": len(result_list),
             "objects": result_list,
         }
 
@@ -517,17 +539,27 @@ def create_app(
 
     # ---- Spatial search endpoint ----
     @app.get("/search/spatial")
-    def spatial_search(x: float, y: float, z: float, radius_m: float = 1.0) -> Dict[str, Any]:
+    def spatial_search(
+        x: float, y: float, z: float,
+        radius_m: float = 1.0,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
         """
         Spatial search for objects within a radius of a 3D point.
 
         Args:
             x, y, z: Center point in world coordinates (meters)
             radius_m: Search radius in meters (default 1.0)
+            offset: Skip first N results (for pagination)
+            limit: Maximum results to return (default 50, max 200)
 
         Returns:
-            List of nearby objects sorted by distance
+            List of nearby objects sorted by distance, with pagination
         """
+        limit = min(max(1, limit), 200)
+        offset = max(0, offset)
+
         if working_memory.index is None:
             raise HTTPException(status_code=503, detail="Spatial search not available (no proximity index)")
 
@@ -537,7 +569,7 @@ def create_app(
 
         oids = working_memory.index.nearby_ids(center, rings=rings)
 
-        results = []
+        all_results = []
         for oid in oids:
             obj = working_memory.get(oid)
             if obj is None:
@@ -545,17 +577,27 @@ def create_app(
             dist = float(np.linalg.norm(obj.xyz_world - center))
             if dist > radius_m:
                 continue
-            results.append({
+            all_results.append({
                 "id": oid,
                 "distance_m": round(dist, 4),
-                "label_primary": getattr(obj, "label_primary", None),
                 "xyz_world": obj.xyz_world.tolist(),
                 "confirmed": bool(getattr(obj, "confirmed", False)),
                 "stability": round(float(getattr(obj, "stability", 0.0)), 3),
             })
 
-        results.sort(key=lambda r: r["distance_m"])
-        return {"center": [x, y, z], "radius_m": radius_m, "results": results}
+        all_results.sort(key=lambda r: r["distance_m"])
+        total = len(all_results)
+        page = all_results[offset : offset + limit]
+
+        return {
+            "center": [x, y, z],
+            "radius_m": radius_m,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "count": len(page),
+            "results": page,
+        }
 
     # ---- Analytics endpoint ----
     @app.get("/stats/analytics")

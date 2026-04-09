@@ -37,6 +37,27 @@
       .tab-btn:hover { color: rgba(255,255,255,0.7); }
       .tab-btn.active { color: #fff; border-bottom-color: #1e90ff; }
 
+      #tab-spacer { flex: 1; }
+      #conn-controls {
+        display: flex; align-items: center; gap: 6px;
+        padding: 0 12px;
+      }
+      .conn-dot {
+        width: 7px; height: 7px; border-radius: 50%;
+        transition: background 0.3s;
+      }
+      .conn-dot.connected { background: #00ff88; box-shadow: 0 0 6px rgba(0,255,136,0.4); }
+      .conn-dot.disconnected { background: #ff4444; box-shadow: 0 0 6px rgba(255,68,68,0.3); }
+      .conn-btn {
+        background: none; border: none; cursor: pointer;
+        color: rgba(255,255,255,0.4); padding: 2px;
+        display: flex; align-items: center;
+        transition: color 0.15s;
+      }
+      .conn-btn:hover { color: rgba(255,255,255,0.85); }
+      .conn-btn svg { width: 15px; height: 15px; }
+      .conn-btn-danger:hover { color: #ff6666; }
+
       /* View containers */
       #view-3d { display: block; }
       #view-analytics { display: none; position: fixed; top: 32px; left: 0; right: 0; bottom: 0; overflow-y: auto; overflow-x: hidden; background: #111; }
@@ -598,13 +619,24 @@
         max-height: 200px; opacity: 1; overflow: hidden;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-CkWd-yjX.js"></script>
+    <script type="module" crossorigin src="/assets/index-CqUS_-N6.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-D1GxaB_c.css">
   </head>
   <body>
     <div id="tab-bar">
       <button class="tab-btn active" data-tab="3d">3D View</button>
       <button class="tab-btn" data-tab="analytics">Analytics</button>
+      <div id="tab-spacer"></div>
+      <!-- Connection status + controls (right side of tab bar) -->
+      <div id="conn-controls">
+        <span id="conn-status" class="conn-dot disconnected" title="Disconnected"></span>
+        <button id="reconnect" class="conn-btn" title="Reconnect">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+        <button id="disconnect" class="conn-btn conn-btn-danger" title="Disconnect">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        </button>
+      </div>
     </div>
 
     <div id="view-3d">
@@ -624,8 +656,6 @@
         <input id="file" type="file" accept=".ply" />
         <label for="file">Choose File</label>
         <button id="load">Load</button>
-        <button id="disconnect">Disconnect</button>
-        <button id="reconnect" class="primary">Re-connect</button>
       </div>
 
       <!-- Streaming controls -->

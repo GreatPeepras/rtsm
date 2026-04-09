@@ -697,15 +697,15 @@ function updateSelectionMarker() {
     return
   }
 
-  // Create selection marker if needed
+  // Create selection marker if needed (cyan ring, pulses in animate loop)
   if (!selectionMarker) {
-    const geom = new THREE.RingGeometry(0.06, 0.08, 32)
+    const geom = new THREE.RingGeometry(0.06, 0.09, 32)
     const mat = new THREE.MeshBasicMaterial({
-      color: 0x1e90ff,
+      color: 0x00ddff,
       transparent: true,
       opacity: 0.9,
       side: THREE.DoubleSide,
-      depthTest: false,  // Always render on top
+      depthTest: false,
       depthWrite: false
     })
     selectionMarker = new THREE.Mesh(geom, mat)
@@ -730,9 +730,9 @@ function updateSelectionMarker() {
   selectionMarker.lookAt(camera.position)
   selectionMarker.visible = true
 
-  // Update label text and position - short ID + stability
+  // Update label text and position - short ID + stability (cyan to match ring)
   const labelText = `${selectedObj.id.slice(0, 8)} | ${selectedObj.stability.toFixed(2)}`
-  const newLabel = createTextSprite(labelText, '#1e90ff')
+  const newLabel = createTextSprite(labelText, '#00ddff')
   // Make label always render on top
   ;(newLabel.material as THREE.SpriteMaterial).depthTest = false
   ;(newLabel.material as THREE.SpriteMaterial).depthWrite = false
@@ -1150,13 +1150,17 @@ rebuildBtn?.addEventListener('click', () => {
   }
 })
 
-// Helper to update disconnect/reconnect button states
+// Helper to update connection UI (tab bar status dot + button states)
+const connStatusDot = document.getElementById('conn-status')
+
 function updateConnectionButtons() {
-  if (disconnectBtn) {
-    disconnectBtn.disabled = !wsConnected
-  }
-  if (reconnectBtn) {
-    reconnectBtn.disabled = wsConnected
+  if (disconnectBtn) disconnectBtn.disabled = !wsConnected
+  if (reconnectBtn) reconnectBtn.disabled = wsConnected
+  // Update status dot in tab bar
+  if (connStatusDot) {
+    connStatusDot.classList.toggle('connected', wsConnected)
+    connStatusDot.classList.toggle('disconnected', !wsConnected)
+    connStatusDot.title = wsConnected ? 'Connected' : 'Disconnected'
   }
 }
 
@@ -1540,6 +1544,32 @@ renderer.domElement.addEventListener('dblclick', (event) => {
 
 function animate() {
   requestAnimationFrame(animate)
+
+  // Pulse selected object marker (cyan blink, 2Hz sine wave)
+  if (selectionMarker && selectionMarker.visible) {
+    const t = performance.now() / 1000
+    const pulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 4) // 2Hz, range 0..1
+    const mat = selectionMarker.material as THREE.MeshBasicMaterial
+    mat.opacity = 0.4 + pulse * 0.6  // range 0.4..1.0
+    // Also scale-pulse the marker subtly
+    const s = 1.0 + pulse * 0.15  // range 1.0..1.15
+    selectionMarker.scale.set(s, s, s)
+  }
+
+  // Pulse the selected object's sphere marker too
+  if (selectedObjectId) {
+    const marker = objectMarkers.get(selectedObjectId)
+    if (marker) {
+      const t = performance.now() / 1000
+      const pulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 4)
+      ;(marker.material as THREE.MeshBasicMaterial).color.setHex(
+        pulse > 0.5 ? 0x00ddff : 0x1e90ff  // blink between cyan and blue
+      )
+      const s = 1.5 + pulse * 0.5  // range 1.5..2.0
+      marker.scale.set(s, s, s)
+    }
+  }
+
   renderer.render(scene, camera)
 }
 
