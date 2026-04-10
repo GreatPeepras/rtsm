@@ -53,8 +53,8 @@ pip install -r requirements.txt
 **Terminal 1 — RTSM Backend (optional, for object overlay)**
 ```bash
 # From project root
-python -m rtsm.run
-# or: rtsm-run
+python -m rtsm
+# or: rtsm
 # API available at http://localhost:8000
 ```
 

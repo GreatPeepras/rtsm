@@ -584,13 +584,14 @@
       #camera-actions { display: flex; gap: 4px; align-items: center; }
       #camera-content {
         transition: max-height 0.25s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease;
-        max-height: 200px; opacity: 1; overflow: hidden;
+        max-height: 500px; opacity: 1; overflow: hidden;
       }
       #camera-panel.collapsed #camera-content { max-height: 0; opacity: 0; }
       #camera-panel.collapsed { width: 240px; }
       #camera-feed {
         width: 100%; display: block; background: #000;
         border-radius: 0 0 12px 12px;
+        transition: transform 0.2s ease, margin 0.2s ease;
       }
 
       /* ======== Controls Panel (minimalist slide) ======== */
@@ -619,7 +620,7 @@
         max-height: 200px; opacity: 1; overflow: hidden;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-DHWAo9l5.js"></script>
+    <script type="module" crossorigin src="/assets/index-ZckEaJch.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-D1GxaB_c.css">
   </head>
   <body>
@@ -699,6 +700,10 @@
       <div id="camera-header">
         <span>Camera</span>
         <div id="camera-actions">
+          <!-- Rotate landscape toggle (default: on for portrait iPhone) -->
+          <button class="cam-btn" id="camera-rotate" title="Toggle rotation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7.5 3.5L12 7l-4.5 3.5"/></svg>
+          </button>
           <!-- Expand/resize icon (arrows pointing outward) -->
           <button class="cam-btn" id="camera-resize" title="Resize">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>

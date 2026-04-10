@@ -47,11 +47,16 @@ class WSBroadcaster:
     def __init__(self):
         self._clients: Set[WebSocket] = set()
         self._lock = asyncio.Lock()
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def connect(self, ws: WebSocket) -> None:
         """Register a new WebSocket client."""
         async with self._lock:
             self._clients.add(ws)
+            # Capture the event loop that owns the WebSocket connections.
+            # All broadcasts must run on this loop (not the viz server's loop).
+            if self._client_loop is None:
+                self._client_loop = asyncio.get_running_loop()
 
     async def disconnect(self, ws: WebSocket) -> None:
         """Remove a WebSocket client."""
@@ -62,6 +67,20 @@ class WSBroadcaster:
     def client_count(self) -> int:
         """Number of connected clients."""
         return len(self._clients)
+
+    # ── Thread-safe scheduling ──
+
+    def schedule(self, coro) -> None:
+        """Schedule an async broadcast from any thread.
+
+        Uses the event loop that owns the WebSocket clients (captured in
+        connect()).  Safe to call from the viz-server thread, the replay
+        thread, or anywhere else.
+        """
+        loop = self._client_loop
+        if loop is None:
+            return  # no clients yet
+        asyncio.run_coroutine_threadsafe(coro, loop)
 
     # ── Packing helpers ──
 

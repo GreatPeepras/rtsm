@@ -215,6 +215,7 @@ class WebSocketReceiver:
         confidence_threshold: int = 1,
         apply_camera_flip: bool = False,
         on_keyframe: Optional[callable] = None,
+        on_camera_frame: Optional[callable] = None,
         on_pose_corrections: Optional[callable] = None,
         on_pose_corrections_batch: Optional[callable] = None,
         on_raw_message: Optional[callable] = None,
@@ -230,6 +231,7 @@ class WebSocketReceiver:
         self._confidence_threshold = confidence_threshold
         self._apply_camera_flip = apply_camera_flip
         self._on_keyframe = on_keyframe
+        self._on_camera_frame = on_camera_frame
         self._on_pose_corrections = on_pose_corrections
         self._on_pose_corrections_batch = on_pose_corrections_batch
         self._on_raw_message = on_raw_message
@@ -348,6 +350,12 @@ class WebSocketReceiver:
                         try:
                             pkt = self._parse_binary_message(msg["bytes"])
                             if pkt is not None:
+                                # Broadcast camera frame at full rate (every decoded frame)
+                                if self._on_camera_frame is not None:
+                                    try:
+                                        self._on_camera_frame(pkt)
+                                    except Exception as e:
+                                        logger.error(f"[websocket] on_camera_frame callback error: {e}")
                                 if self._latency_analytics:
                                     self._latency_analytics.sample_queue_depth(self.ingest_q.qsize())
                                 ok = self.ingest_q.put(pkt, block=False)

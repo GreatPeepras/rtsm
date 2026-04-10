@@ -62,20 +62,16 @@ def _find_demo_data() -> str:
 def _find_static_dir() -> str | None:
     """Locate the built frontend static directory.
 
-    Search order:
-      1. rtsm/static/ (package data or repo checkout)
-      2. demo/dist/ (dev, after npm run build)
+    Search order (dev build wins so you never need to copy):
+      1. demo/dist/ (dev, after npm run build)
+      2. rtsm/static/ (packaged release)
     """
-    # 1. Package static dir
-    pkg_static = Path(__file__).parent / "static"
-    if pkg_static.is_dir() and (pkg_static / "index.html").is_file():
-        return str(pkg_static)
-
-    # 2. Dev build
     dev_dist = Path("demo/dist")
     if dev_dist.is_dir() and (dev_dist / "index.html").is_file():
         return str(dev_dist.resolve())
-
+    pkg_static = Path(__file__).parent / "static"
+    if pkg_static.is_dir() and (pkg_static / "index.html").is_file():
+        return str(pkg_static)
     return None
 
 
@@ -222,6 +218,7 @@ def run_demo(argv: list[str] | None = None) -> None:
         confidence_threshold=int(ws_cfg.get("confidence_threshold", 1)),
         apply_camera_flip=bool(vis_cfg.get("apply_camera_flip", False)),
         on_keyframe=vis_server.handle_frame_packet if vis_server else None,
+        on_camera_frame=vis_server.broadcast_camera_frame if vis_server else None,
         on_pose_corrections=vis_server.handle_kf_pose_update if vis_server else None,
         on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
         latency_analytics=latency_analytics,
@@ -259,15 +256,12 @@ def run_demo(argv: list[str] | None = None) -> None:
         seg_analytics=seg_analytics,
         latency_analytics=latency_analytics,
         mcp_enabled=bool(mcp_cfg.get("enable", False)),
+        vis_server=vis_server,
         vis_broadcaster=vis_broadcaster,
         vis_registry=vis_server_registry,
         static_dir=static_dir,
     )
     start_server(app, host="0.0.0.0", port=port)
-
-    # Start viz server processing loops (objects push, analytics push)
-    if vis_server:
-        vis_server.start()
 
     # Start replay
     replay.start()
@@ -288,6 +282,12 @@ def run_demo(argv: list[str] | None = None) -> None:
     print("  Processing demo clip... (50 frames, ~25s)")
     print("  Press Ctrl+C to stop")
     print("=" * 60)
+
+    # Auto-open browser to the web UI
+    if static_dir and not args.no_viz:
+        import webbrowser
+        url = f"http://localhost:{port}"
+        threading.Timer(1.5, webbrowser.open, args=[url]).start()
 
     try:
         pipe.run_forever()

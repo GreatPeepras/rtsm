@@ -41,6 +41,7 @@ class ReplayReceiver:
         confidence_threshold: int = 1,
         apply_camera_flip: bool = False,
         on_keyframe: Optional[callable] = None,
+        on_camera_frame: Optional[callable] = None,
         on_pose_corrections: Optional[callable] = None,
         on_pose_corrections_batch: Optional[callable] = None,
         latency_analytics=None,
@@ -48,6 +49,7 @@ class ReplayReceiver:
         self._recording_dir = os.path.abspath(recording_dir)
         self._ingest_q = ingest_queue
         self._on_keyframe = on_keyframe
+        self._on_camera_frame = on_camera_frame
 
         # Validate recording directory
         bin_path = os.path.join(self._recording_dir, "messages.bin")
@@ -157,6 +159,12 @@ class ReplayReceiver:
 
                     pkt = self._decoder._parse_binary_message(raw)
                     if pkt is not None:
+                        # Broadcast camera frame for every decoded packet (full frame rate PiP)
+                        if self._on_camera_frame is not None:
+                            try:
+                                self._on_camera_frame(pkt)
+                            except Exception as e:
+                                logger.error(f"[replay] on_camera_frame callback error: {e}")
                         if self._latency_analytics:
                             self._latency_analytics.sample_queue_depth(self._ingest_q.qsize())
                         ok = self._ingest_q.put(pkt, block=False)

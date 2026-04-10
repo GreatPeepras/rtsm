@@ -210,14 +210,14 @@ python scripts/fetch_models.py --only yolo
 
 ```bash
 # Live — Calabi Lens (ARKit over WebSocket)
-python -m rtsm.run
+python -m rtsm
 
 # Live — D435i + RTAB-Map (ZeroMQ)
 # Set io.receiver: zeromq in config/rtsm.yaml first
-python -m rtsm.run
+python -m rtsm
 
 # Replay a recorded session (no device needed)
-python -m rtsm.run --replay recordings/session1
+python -m rtsm --replay recordings/session1
 ```
 
 RTSM will start:
@@ -231,13 +231,13 @@ Record a session for offline testing and reproducible iteration:
 
 ```bash
 # Record only (no GPU needed, no pipeline — works with core-only install)
-python -m rtsm.run --record recordings/my_session --record-only
+python -m rtsm --record recordings/my_session --record-only
 
 # Record while running pipeline
-python -m rtsm.run --record recordings/my_session
+python -m rtsm --record recordings/my_session
 
 # Replay at original recording rate
-python -m rtsm.run --replay recordings/my_session
+python -m rtsm --replay recordings/my_session
 ```
 
 Recordings are self-contained directories with raw WebSocket data. Replay feeds the exact same bytes through the full decode + pipeline path, preserving all time-dependent behavior (TTL caches, throttles).

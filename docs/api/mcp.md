@@ -23,7 +23,7 @@ mcp:
 
 ```bash
 pip install "rtsm[gpu]"
-python -m rtsm.run --replay recordings/session1
+python -m rtsm --replay recordings/session1
 ```
 
 The MCP endpoint is now live at `http://localhost:8002/mcp/sse`.

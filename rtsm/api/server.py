@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import base64
 import numpy as np
-from fastapi import FastAPI, Response, HTTPException
+from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect
 from prometheus_client import Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 
@@ -31,6 +31,7 @@ def create_app(
     seg_analytics: Optional[Any] = None,
     latency_analytics: Optional[Any] = None,
     mcp_enabled: bool = False,
+    vis_server: Optional[Any] = None,
     vis_broadcaster: Optional[Any] = None,
     vis_registry: Optional[Any] = None,
     static_dir: Optional[str] = None,
@@ -41,10 +42,28 @@ def create_app(
       - /readyz: readiness (trivial true for now)
       - /stats: JSON snapshot (WorkingMemory.stats() + optional extra stats)
       - /metrics: Prometheus metrics (mounted ASGI app)
+      - /ws: WebSocket for visualization (when vis_server is provided)
+      - /: Static frontend (when static_dir is provided)
 
-    The app expects a `working_memory` with a `stats()` method.
+    When vis_server is provided, its periodic tasks (objects push, analytics)
+    run on this server's event loop — no separate viz server port needed.
     """
-    app = FastAPI(title="RTSM API — Real-Time Spatio-Semantic Memory", version="1.0.0")
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Start visualization periodic tasks on THIS event loop
+        if vis_server is not None:
+            await vis_server.start_tasks()
+        yield
+        if vis_server is not None:
+            await vis_server.stop_tasks()
+
+    app = FastAPI(
+        title="RTSM API — Real-Time Spatio-Semantic Memory",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
 
     # ---------------- Prometheus metrics ----------------
     # Create a few dynamic gauges that read values from WorkingMemory on scrape.
@@ -397,10 +416,9 @@ def create_app(
                     vis.tsdf.reset()
                     vis_result["tsdf_reset"] = True
                 # Broadcast clear to all connected web clients
-                if hasattr(vis, 'broadcaster') and vis._loop and vis._running:
-                    asyncio.run_coroutine_threadsafe(
-                        vis.broadcaster._broadcast_json({"type": "clear"}),
-                        vis._loop,
+                if hasattr(vis, 'broadcaster') and vis._running:
+                    vis.broadcaster.schedule(
+                        vis.broadcaster._broadcast_json({"type": "clear"})
                     )
                     vis_result["clients_notified"] = True
                 result["cleared"]["visualization"] = vis_result
@@ -637,22 +655,24 @@ def create_app(
 
     # ---- Visualization WebSocket (optional, for single-port demo) ----
     if vis_broadcaster is not None and vis_registry is not None:
-        from fastapi import WebSocket as _WS, WebSocketDisconnect as _WSD
-        from fastapi.middleware.cors import CORSMiddleware
-        # Add CORS for frontend
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
 
         @app.websocket("/ws")
-        async def viz_websocket(websocket: _WS):
+        async def viz_websocket(websocket: WebSocket):
             await websocket.accept()
             await vis_broadcaster.connect(websocket)
             synced = await vis_broadcaster.sync_new_client(websocket, vis_registry)
+            # Sync latest TSDF mesh to new client
+            if vis_server is not None and hasattr(vis_server, 'tsdf') and vis_server.tsdf is not None:
+                latest = vis_server.tsdf.get_latest_mesh()
+                if latest is not None:
+                    import numpy as _np
+                    positions, colors = latest
+                    identity = _np.eye(4, dtype=_np.float32)
+                    data = vis_broadcaster._pack_mesh_create(
+                        "tsdf_fused", positions, colors, identity
+                    )
+                    await vis_broadcaster._try_send_bytes(websocket, data)
+                    synced += 1
             import logging as _log
             _log.getLogger(__name__).info(f"[api/ws] Client connected, synced {synced} keyframes")
             try:
@@ -668,7 +688,7 @@ def create_app(
                             await vis_broadcaster._broadcast_json({"type": "clear"})
                     except Exception:
                         pass
-            except _WSD:
+            except WebSocketDisconnect:
                 pass
             finally:
                 await vis_broadcaster.disconnect(websocket)
@@ -684,7 +704,11 @@ def create_app(
 
 
 def start_server(app: FastAPI, host: str = "0.0.0.0", port: int = 8000) -> threading.Thread:
-    """Start a uvicorn server in a background daemon thread and return the thread."""
+    """Start a uvicorn server in a background daemon thread.
+
+    Blocks until the server is listening and the lifespan startup has
+    completed (so vis_server.start_tasks() has run before we return).
+    """
     import uvicorn
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
@@ -692,11 +716,22 @@ def start_server(app: FastAPI, host: str = "0.0.0.0", port: int = 8000) -> threa
     # Avoid uvicorn installing signal handlers in a child thread
     server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
 
+    ready = threading.Event()
+    _orig_startup = server.startup
+
+    async def _startup_then_signal(*a, **kw):
+        result = await _orig_startup(*a, **kw)
+        ready.set()
+        return result
+
+    server.startup = _startup_then_signal  # type: ignore[attr-defined]
+
     def _run() -> None:
         server.run()
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
+    ready.wait(timeout=30)  # block until lifespan completes
     return t
 
 

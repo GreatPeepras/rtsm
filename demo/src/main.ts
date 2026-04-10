@@ -141,6 +141,8 @@ const cameraHeader = document.getElementById('camera-header') as HTMLElement | n
 let cameraBlobUrl: string | null = null
 let cameraFramePending = false
 let cameraSizeLarge = false
+let cameraRotated = true  // default: rotate 90° CW for portrait iPhone feeds
+let cameraRotateScale = 0  // cached scale factor (0 = not yet computed)
 
 // Camera minimize toggle
 document.getElementById('camera-toggle')?.addEventListener('click', (e) => {
@@ -154,6 +156,13 @@ document.getElementById('camera-resize')?.addEventListener('click', (e) => {
   if (!cameraPanel) return
   cameraSizeLarge = !cameraSizeLarge
   cameraPanel.style.width = cameraSizeLarge ? '400px' : '240px'
+})
+
+// Camera rotation toggle (landscape <-> portrait)
+document.getElementById('camera-rotate')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  cameraRotated = !cameraRotated
+  applyCameraRotation()
 })
 
 // Draggable camera panel
@@ -199,6 +208,21 @@ document.getElementById('ui-toggle-row')?.addEventListener('click', () => {
   uiPanel?.classList.toggle('collapsed')
 })
 
+// Apply or remove camera rotation transform based on cached dimensions
+function applyCameraRotation(): void {
+  if (!cameraFeedImg) return
+  if (cameraRotated && cameraRotateScale > 0) {
+    cameraFeedImg.style.transform = `rotate(90deg) scale(${cameraRotateScale})`
+    const marginPct = -((1 / cameraRotateScale) - cameraRotateScale) / 2 * 100
+    cameraFeedImg.style.marginTop = marginPct + '%'
+    cameraFeedImg.style.marginBottom = marginPct + '%'
+  } else {
+    cameraFeedImg.style.transform = ''
+    cameraFeedImg.style.marginTop = ''
+    cameraFeedImg.style.marginBottom = ''
+  }
+}
+
 // Camera frame handler (binary CAMF protocol, Blob URL for native decode)
 function handleCameraFrame(data: ArrayBuffer): void {
   if (!cameraFeedImg || cameraFramePending) return
@@ -212,7 +236,23 @@ function handleCameraFrame(data: ArrayBuffer): void {
   cameraBlobUrl = URL.createObjectURL(new Blob([jpegData], { type: 'image/jpeg' }))
 
   requestAnimationFrame(() => {
-    if (cameraFeedImg && cameraBlobUrl) cameraFeedImg.src = cameraBlobUrl
+    if (!cameraFeedImg || !cameraBlobUrl) { cameraFramePending = false; return }
+    cameraFeedImg.src = cameraBlobUrl
+
+    // Compute rotation scale once from first loaded frame
+    if (cameraRotateScale === 0) {
+      cameraFeedImg.onload = () => {
+        if (cameraRotateScale > 0 || !cameraFeedImg) return
+        const w = cameraFeedImg.naturalWidth
+        const h = cameraFeedImg.naturalHeight
+        if (w > 0 && h > 0) {
+          cameraRotateScale = w / h
+          applyCameraRotation()
+          cameraFeedImg.onload = null  // only need this once
+        }
+      }
+    }
+
     cameraFramePending = false
   })
 }
