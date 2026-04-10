@@ -20,6 +20,8 @@ class CLIPAdapter:
         model, preprocess, tokenizer = load_clip(model_name, pretrained, local_dir, device=device)
         self.artifacts = ClipArtifacts(model=model, preprocess=preprocess, tokenizer=tokenizer)
         self.device = device
+        # OpenAI CLIP models benefit from "a photo of a {}" wrapping; SigLIP does not
+        self._prompt_wrap = (pretrained == "openai")
 
     def encode_image(self, image):  # image path, PIL, or np.ndarray
         return _encode_image(image, self.artifacts.model, self.artifacts.preprocess, device=self.device, keep_on_device=True)

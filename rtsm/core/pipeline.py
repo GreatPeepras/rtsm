@@ -740,10 +740,18 @@ class Pipeline:
                         mask_np, (crop.shape[1], crop.shape[0]),
                         interpolation=cv2.INTER_NEAREST,
                     )
-                    # Zero out background pixels (set to gray mean rather than black
-                    # to avoid CLIP treating black as a meaningful signal)
-                    bg_color = crop.mean(axis=(0, 1)).astype(np.uint8)
-                    crop[mask_resized == 0] = bg_color
+                    # Suppress background pixels using configured fill strategy
+                    bg_fill = self.cfg.get("staging", {}).get("bg_fill", "mean")
+                    if bg_fill == "white":
+                        crop[mask_resized == 0] = 255
+                    elif bg_fill == "black":
+                        crop[mask_resized == 0] = 0
+                    elif bg_fill == "blur":
+                        blurred = cv2.GaussianBlur(crop, (31, 31), 0)
+                        crop[mask_resized == 0] = blurred[mask_resized == 0]
+                    else:  # "mean" (default)
+                        bg_color = crop.mean(axis=(0, 1)).astype(np.uint8)
+                        crop[mask_resized == 0] = bg_color
 
             crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_LINEAR)
             c.crop = crop

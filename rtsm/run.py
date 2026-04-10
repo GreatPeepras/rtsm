@@ -78,6 +78,8 @@ def main():
                         help="Replay a recorded session from DIR at original rate")
     parser.add_argument("--record", type=str, default=None, metavar="DIR",
                         help="Record raw WebSocket session to DIR")
+    parser.add_argument("--replay-speed", type=float, default=1.0,
+                        help="Replay speed multiplier (<1 = slower, e.g. 0.5 = half speed)")
     parser.add_argument("--record-only", action="store_true",
                         help="Record without running pipeline (no GPU needed)")
     args = parser.parse_args()
@@ -152,8 +154,12 @@ def main():
         seg_analytics = SegAnalyticsBuffer(max_frames=buffer_frames, retention_s=retention_s)
         latency_analytics = PipelineLatencyBuffer(max_frames=buffer_frames, retention_s=retention_s)
         logger.info(f"Runtime analytics initialized (retention={retention_s}s, buffer={buffer_frames} frames)")
-    clip = CLIPAdapter("ViT-B-32", "openai", "model_store/clip", device=cfg.get("device","cuda"))
-    logger.info(f"CLIP model successfully loaded from model_store/clip")
+    clip_cfg = cfg.get("clip", {})
+    clip_model = clip_cfg.get("model", "ViT-B-32")
+    clip_pretrained = clip_cfg.get("pretrained", "openai")
+    clip_local = clip_cfg.get("local_dir", "model_store/clip")
+    clip = CLIPAdapter(clip_model, clip_pretrained, clip_local, device=cfg.get("device","cuda"))
+    logger.info(f"CLIP model loaded: {clip_model} ({clip_pretrained})")
     # Determine world-frame up axis from receiver type (ARKit=Y-up, D435i/ROS=Z-up)
     io_cfg = cfg.get("io", {})
     receiver_type = str(io_cfg.get("receiver", "zeromq")).lower()
@@ -247,9 +253,10 @@ def main():
             on_pose_corrections=vis_server.handle_kf_pose_update if vis_server else None,
             on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
             latency_analytics=latency_analytics,
+            replay_speed=args.replay_speed,
         )
         replay_receiver.start()
-        logger.info(f"Replay receiver started from {args.replay}")
+        logger.info(f"Replay receiver started from {args.replay} (speed={args.replay_speed}x)")
 
     elif receiver_type == "websocket":
         # Optional: attach recorder if --record is set

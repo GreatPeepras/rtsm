@@ -69,8 +69,8 @@ segmentation:
     prefer_mask: yoloe26              # which mask to keep for dual-confirmed
 
 clip:
-  model: ViT-B-32
-  pretrained: openai
+  model: ViT-B-16-SigLIP
+  pretrained: webli
   local_dir: model_store/clip
 
 # -------------------- I/O & Network --------------------
@@ -151,6 +151,7 @@ staging:
   topk_preclip: 15
   crop_pad_px: 6
   clip_input: 224
+  bg_fill: mean                   # Background fill for masked crops: mean | white | black | blur
 
   # Priority weights
   w_coverage: 1.0
@@ -252,7 +253,7 @@ pose:
 vectors:
   enable: true
   backend: faiss                  # faiss | milvus
-  dim: 512                        # CLIP ViT-B/32 visual embedding size
+  dim: 768                        # SigLIP ViT-B-16 visual embedding size
   faiss:
     index_path: model_store/faiss/index.flatip
   # milvus:
