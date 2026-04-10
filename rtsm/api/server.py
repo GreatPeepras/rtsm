@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import base64
 import numpy as np
-from fastapi import FastAPI, Response, HTTPException
+from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect
 from prometheus_client import Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 
@@ -31,6 +31,10 @@ def create_app(
     seg_analytics: Optional[Any] = None,
     latency_analytics: Optional[Any] = None,
     mcp_enabled: bool = False,
+    vis_server: Optional[Any] = None,
+    vis_broadcaster: Optional[Any] = None,
+    vis_registry: Optional[Any] = None,
+    static_dir: Optional[str] = None,
 ) -> FastAPI:
     """
     Build a FastAPI app exposing:
@@ -38,10 +42,28 @@ def create_app(
       - /readyz: readiness (trivial true for now)
       - /stats: JSON snapshot (WorkingMemory.stats() + optional extra stats)
       - /metrics: Prometheus metrics (mounted ASGI app)
+      - /ws: WebSocket for visualization (when vis_server is provided)
+      - /: Static frontend (when static_dir is provided)
 
-    The app expects a `working_memory` with a `stats()` method.
+    When vis_server is provided, its periodic tasks (objects push, analytics)
+    run on this server's event loop — no separate viz server port needed.
     """
-    app = FastAPI(title="RTSM API — Real-Time Spatio-Semantic Memory", version="1.0.0")
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Start visualization periodic tasks on THIS event loop
+        if vis_server is not None:
+            await vis_server.start_tasks()
+        yield
+        if vis_server is not None:
+            await vis_server.stop_tasks()
+
+    app = FastAPI(
+        title="RTSM API — Real-Time Spatio-Semantic Memory",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
 
     # ---------------- Prometheus metrics ----------------
     # Create a few dynamic gauges that read values from WorkingMemory on scrape.
@@ -156,14 +178,52 @@ def create_app(
         return d
 
     @app.get("/objects")
-    def list_objects(include_vectors: bool = False) -> Dict[str, Any]:
+    def list_objects(
+        include_vectors: bool = False,
+        include_snapshot: bool = False,
+        confirmed_only: bool = False,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """List objects in working memory with pagination.
+
+        Args:
+            include_vectors: Include CLIP embedding vectors in response
+            include_snapshot: Include latest observation crop (base64 JPEG)
+                for multimodal agent verification
+            confirmed_only: If true, only return confirmed objects
+            offset: Skip first N objects (for pagination)
+            limit: Maximum objects to return (default 100, max 500)
+        """
+        limit = min(max(1, limit), 500)
+        offset = max(0, offset)
+
         try:
             objs: List[Any] = working_memory.iter_objects()
         except Exception:
             objs = []
+
+        if confirmed_only:
+            objs = [o for o in objs if getattr(o, 'confirmed', False)]
+
+        total = len(objs)
+        page = objs[offset : offset + limit]
+
+        result_list = []
+        for o in page:
+            entry = _obj_detail(o, include_vectors=include_vectors) if include_vectors else _obj_summary(o)
+            if include_snapshot:
+                crops = getattr(o, 'image_crops', None) or []
+                if crops:
+                    entry["snapshot_b64"] = base64.b64encode(crops[-1]).decode('ascii')
+                    entry["snapshot_count"] = len(crops)
+            result_list.append(entry)
         return {
-            "count": len(objs),
-            "objects": [(_obj_detail(o, include_vectors=include_vectors) if include_vectors else _obj_summary(o)) for o in objs],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "count": len(result_list),
+            "objects": result_list,
         }
 
     @app.get("/objects/{oid}")
@@ -356,10 +416,9 @@ def create_app(
                     vis.tsdf.reset()
                     vis_result["tsdf_reset"] = True
                 # Broadcast clear to all connected web clients
-                if hasattr(vis, 'broadcaster') and vis._loop and vis._running:
-                    asyncio.run_coroutine_threadsafe(
-                        vis.broadcaster._broadcast_json({"type": "clear"}),
-                        vis._loop,
+                if hasattr(vis, 'broadcaster') and vis._running:
+                    vis.broadcaster.schedule(
+                        vis.broadcaster._broadcast_json({"type": "clear"})
                     )
                     vis_result["clients_notified"] = True
                 result["cleared"]["visualization"] = vis_result
@@ -430,17 +489,30 @@ def create_app(
 
     # ---- Semantic search endpoint ----
     @app.get("/search/semantic")
-    def semantic_search(query: str, top_k: int = 10, threshold: float = 0.2) -> Dict[str, Any]:
+    def semantic_search(
+        query: str,
+        top_k: int = 10,
+        threshold: float = 0.0,
+        include_snapshot: bool = False,
+    ) -> Dict[str, Any]:
         """
         Semantic search for objects using CLIP text encoding + FAISS KNN.
+
+        CLIP ViT-B/32 raw cosine scores cluster in the 0.25-0.35 range for
+        indoor objects. The ranking is meaningful (top results are most
+        relevant) even though absolute scores are low. Default threshold=0.0
+        returns all ranked results so agents can decide their own cutoff.
+
+        For visual verification, set include_snapshot=true to get the most
+        recent observation crop (base64 JPEG) for each result. This enables
+        multimodal LLM planners to visually verify objects without relying
+        on CLIP classification.
 
         Args:
             query: Natural language search query (e.g., "red cup", "chair")
             top_k: Maximum number of results to return
-            threshold: Minimum cosine similarity threshold (0.0 to 1.0)
-
-        Returns:
-            List of matching objects with similarity scores
+            threshold: Minimum cosine similarity threshold (default 0.0 = return all ranked)
+            include_snapshot: If true, include base64 JPEG of most recent crop
         """
         if not clip_adapter or not vectors:
             raise HTTPException(status_code=503, detail="Semantic search not available (CLIP or vectors not configured)")
@@ -463,29 +535,49 @@ def create_app(
             if score < threshold:
                 continue
             obj = working_memory.get(oid)
-            results.append({
+            entry: Dict[str, Any] = {
                 "id": oid,
                 "score": round(float(score), 4),
-                "label_hint": obj.label_primary if obj else None,
                 "confirmed": obj.confirmed if obj else True,
+                "stability": round(float(obj.stability), 3) if obj else 0.0,
                 "xyz_world": obj.xyz_world.tolist() if obj and obj.xyz_world is not None else None,
-            })
+            }
+
+            # Include most recent snapshot for multimodal agent verification
+            if include_snapshot and obj:
+                crops = getattr(obj, 'image_crops', None) or []
+                if crops:
+                    # Most recent crop is last in list
+                    entry["snapshot_b64"] = base64.b64encode(crops[-1]).decode('ascii')
+                    entry["snapshot_count"] = len(crops)
+
+            results.append(entry)
 
         return {"query": query, "results": results}
 
     # ---- Spatial search endpoint ----
     @app.get("/search/spatial")
-    def spatial_search(x: float, y: float, z: float, radius_m: float = 1.0) -> Dict[str, Any]:
+    def spatial_search(
+        x: float, y: float, z: float,
+        radius_m: float = 1.0,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
         """
         Spatial search for objects within a radius of a 3D point.
 
         Args:
             x, y, z: Center point in world coordinates (meters)
             radius_m: Search radius in meters (default 1.0)
+            offset: Skip first N results (for pagination)
+            limit: Maximum results to return (default 50, max 200)
 
         Returns:
-            List of nearby objects sorted by distance
+            List of nearby objects sorted by distance, with pagination
         """
+        limit = min(max(1, limit), 200)
+        offset = max(0, offset)
+
         if working_memory.index is None:
             raise HTTPException(status_code=503, detail="Spatial search not available (no proximity index)")
 
@@ -495,7 +587,7 @@ def create_app(
 
         oids = working_memory.index.nearby_ids(center, rings=rings)
 
-        results = []
+        all_results = []
         for oid in oids:
             obj = working_memory.get(oid)
             if obj is None:
@@ -503,17 +595,27 @@ def create_app(
             dist = float(np.linalg.norm(obj.xyz_world - center))
             if dist > radius_m:
                 continue
-            results.append({
+            all_results.append({
                 "id": oid,
                 "distance_m": round(dist, 4),
-                "label_primary": getattr(obj, "label_primary", None),
                 "xyz_world": obj.xyz_world.tolist(),
                 "confirmed": bool(getattr(obj, "confirmed", False)),
                 "stability": round(float(getattr(obj, "stability", 0.0)), 3),
             })
 
-        results.sort(key=lambda r: r["distance_m"])
-        return {"center": [x, y, z], "radius_m": radius_m, "results": results}
+        all_results.sort(key=lambda r: r["distance_m"])
+        total = len(all_results)
+        page = all_results[offset : offset + limit]
+
+        return {
+            "center": [x, y, z],
+            "radius_m": radius_m,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "count": len(page),
+            "results": page,
+        }
 
     # ---- Analytics endpoint ----
     @app.get("/stats/analytics")
@@ -551,11 +653,62 @@ def create_app(
                 "Install with: pip install \"rtsm[mcp]\""
             )
 
+    # ---- Visualization WebSocket (optional, for single-port demo) ----
+    if vis_broadcaster is not None and vis_registry is not None:
+
+        @app.websocket("/ws")
+        async def viz_websocket(websocket: WebSocket):
+            await websocket.accept()
+            await vis_broadcaster.connect(websocket)
+            synced = await vis_broadcaster.sync_new_client(websocket, vis_registry)
+            # Sync latest TSDF mesh to new client
+            if vis_server is not None and hasattr(vis_server, 'tsdf') and vis_server.tsdf is not None:
+                latest = vis_server.tsdf.get_latest_mesh()
+                if latest is not None:
+                    import numpy as _np
+                    positions, colors = latest
+                    identity = _np.eye(4, dtype=_np.float32)
+                    data = vis_broadcaster._pack_mesh_create(
+                        "tsdf_fused", positions, colors, identity
+                    )
+                    await vis_broadcaster._try_send_bytes(websocket, data)
+                    synced += 1
+            import logging as _log
+            _log.getLogger(__name__).info(f"[api/ws] Client connected, synced {synced} keyframes")
+            try:
+                while True:
+                    data = await websocket.receive_text()
+                    # Handle client commands (clear, stats)
+                    try:
+                        import json as _json
+                        msg = _json.loads(data)
+                        cmd = msg.get("cmd")
+                        if cmd == "clear":
+                            vis_registry.clear()
+                            await vis_broadcaster._broadcast_json({"type": "clear"})
+                    except Exception:
+                        pass
+            except WebSocketDisconnect:
+                pass
+            finally:
+                await vis_broadcaster.disconnect(websocket)
+
+    # ---- Static frontend (mount LAST so API routes take priority) ----
+    if static_dir:
+        import os
+        if os.path.isdir(static_dir):
+            from fastapi.staticfiles import StaticFiles
+            app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
+
     return app
 
 
 def start_server(app: FastAPI, host: str = "0.0.0.0", port: int = 8000) -> threading.Thread:
-    """Start a uvicorn server in a background daemon thread and return the thread."""
+    """Start a uvicorn server in a background daemon thread.
+
+    Blocks until the server is listening and the lifespan startup has
+    completed (so vis_server.start_tasks() has run before we return).
+    """
     import uvicorn
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
@@ -563,11 +716,22 @@ def start_server(app: FastAPI, host: str = "0.0.0.0", port: int = 8000) -> threa
     # Avoid uvicorn installing signal handlers in a child thread
     server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
 
+    ready = threading.Event()
+    _orig_startup = server.startup
+
+    async def _startup_then_signal(*a, **kw):
+        result = await _orig_startup(*a, **kw)
+        ready.set()
+        return result
+
+    server.startup = _startup_then_signal  # type: ignore[attr-defined]
+
     def _run() -> None:
         server.run()
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
+    ready.wait(timeout=30)  # block until lifespan completes
     return t
 
 

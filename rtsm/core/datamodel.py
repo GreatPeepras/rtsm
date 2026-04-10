@@ -143,6 +143,7 @@ class FramePacket:
     intr: Optional[PinholeIntrinsics]
     is_keyframe: bool = False
     confidence: Optional[NDArray[np.uint8]] = None  # (H,W) uint8 ARKit confidence 0/1/2
+    rgb_jpeg: Optional[bytes] = None  # raw JPEG bytes (if source was JPEG), for zero-copy viz forwarding
 
     # convenience helpers
     @property

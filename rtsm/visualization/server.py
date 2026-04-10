@@ -282,7 +282,7 @@ class VisualizationServer:
                     data = self.broadcaster._pack_mesh_create(
                         "tsdf_fused", positions, colors, identity
                     )
-                    await self.broadcaster._send_bytes_to(websocket, data)
+                    await self.broadcaster._try_send_bytes(websocket, data)
                     synced += 1
             logger.debug(f"[visualization] New client synced with {synced} keyframes")
 
@@ -534,11 +534,10 @@ class VisualizationServer:
                 map_id=map_id
             )
 
-            # Broadcast to clients (thread-safe via asyncio)
-            if self._loop and self._running:
-                asyncio.run_coroutine_threadsafe(
-                    self.broadcaster.send_mesh_create(mesh_id, positions, colors, pose),
-                    self._loop
+            # Broadcast to clients (thread-safe via broadcaster.schedule)
+            if self._running:
+                self.broadcaster.schedule(
+                    self.broadcaster.send_mesh_create(mesh_id, positions, colors, pose)
                 )
 
             stats = self.registry.stats()
@@ -557,10 +556,9 @@ class VisualizationServer:
 
         if self.registry.exists(mesh_id):
             self.registry.update_pose(mesh_id, pose)
-            if self._loop and self._running:
-                asyncio.run_coroutine_threadsafe(
-                    self.broadcaster.send_mesh_update_pose(mesh_id, pose),
-                    self._loop
+            if self._running:
+                self.broadcaster.schedule(
+                    self.broadcaster.send_mesh_update_pose(mesh_id, pose)
                 )
             logger.debug(f"[visualization] Pose set for existing KF {mesh_id}")
         else:
@@ -584,10 +582,9 @@ class VisualizationServer:
         mesh_id = kf_id
 
         if self.registry.update_pose(mesh_id, pose):
-            if self._loop and self._running:
-                asyncio.run_coroutine_threadsafe(
-                    self.broadcaster.send_mesh_update_pose(mesh_id, pose),
-                    self._loop
+            if self._running:
+                self.broadcaster.schedule(
+                    self.broadcaster.send_mesh_update_pose(mesh_id, pose)
                 )
             logger.debug(f"[visualization] Pose updated for KF {mesh_id} (BA/LC)")
 
@@ -623,6 +620,28 @@ class VisualizationServer:
         for kf_id, new_pose in corrections.items():
             if isinstance(new_pose, np.ndarray):
                 self._pose_history[kf_id] = new_pose.copy()
+
+    def broadcast_camera_frame(self, pkt) -> None:
+        """Broadcast camera JPEG to visualization clients.
+
+        Lightweight — called for every decoded frame (not just keyframes)
+        so the PiP overlay runs at full frame rate.
+        """
+        if not self._running:
+            return
+        jpeg_bytes = getattr(pkt, 'rgb_jpeg', None)
+        if jpeg_bytes is not None:
+            self.broadcaster.schedule(
+                self.broadcaster.send_camera_frame(jpeg_bytes)
+            )
+        else:
+            rgb = pkt.rgb
+            if rgb is None:
+                return
+            _, jpeg_buf = cv2.imencode('.jpg', rgb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            self.broadcaster.schedule(
+                self.broadcaster.send_camera_frame(jpeg_buf.tobytes())
+            )
 
     def handle_frame_packet(self, pkt) -> None:
         """
@@ -716,7 +735,7 @@ class VisualizationServer:
                     timestamp_ns=int(pkt.time.t_sensor_ns or 0),
                 )
 
-                if should_extract and self._loop and self._running:
+                if should_extract and self._running:
                     threading.Thread(
                         target=self._extract_and_broadcast_tsdf,
                         daemon=True,
@@ -747,10 +766,9 @@ class VisualizationServer:
                 map_id="websocket",
             )
 
-            if self._loop and self._running:
-                asyncio.run_coroutine_threadsafe(
-                    self.broadcaster.send_mesh_create(mesh_id, positions, colors, pose),
-                    self._loop,
+            if self._running:
+                self.broadcaster.schedule(
+                    self.broadcaster.send_mesh_create(mesh_id, positions, colors, pose)
                 )
 
             stats = self.registry.stats()
@@ -816,12 +834,11 @@ class VisualizationServer:
             # TSDF points are already in world frame; use identity pose
             identity = np.eye(4, dtype=np.float32)
 
-            if self._loop and self._running:
-                asyncio.run_coroutine_threadsafe(
+            if self._running:
+                self.broadcaster.schedule(
                     self.broadcaster.send_mesh_create(
                         "tsdf_fused", positions, colors, identity
-                    ),
-                    self._loop,
+                    )
                 )
 
             logger.debug(
@@ -848,6 +865,40 @@ class VisualizationServer:
         server = uvicorn.Server(config)
 
         self._loop.run_until_complete(server.serve())
+
+    # ── Integrated mode (tasks on API server's loop) ──
+
+    async def start_tasks(self) -> None:
+        """Start periodic push tasks on the current event loop.
+
+        Called from the API server's lifespan (integrated mode).
+        The caller's loop becomes the broadcast loop.
+        """
+        if self._running:
+            logger.warning("[visualization] Tasks already running")
+            return
+        self._running = True
+        self.broadcaster._client_loop = asyncio.get_running_loop()
+        self._objects_task = asyncio.create_task(self._push_objects_loop())
+        if self._seg_analytics or self._latency_analytics:
+            self._analytics_task = asyncio.create_task(self._push_analytics_loop())
+        logger.info("[visualization] Periodic tasks started (integrated mode)")
+
+    async def stop_tasks(self) -> None:
+        """Cancel periodic tasks. Called from the API server's lifespan shutdown."""
+        self._running = False
+        for task in [self._objects_task, self._analytics_task]:
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._objects_task = None
+        self._analytics_task = None
+        logger.info("[visualization] Periodic tasks stopped")
+
+    # ── Standalone mode (own uvicorn on dedicated port) ──
 
     def start(self) -> None:
         """Start the visualization server in a background thread."""

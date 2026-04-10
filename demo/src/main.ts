@@ -128,10 +128,134 @@ function loadPLYFile(file: File) {
 // Binary message format (mesh_create):
 // [magic:4 'PCLD'][mesh_id_len:2][mesh_id:N][num_points:4][positions:N*12][colors:N*3][has_pose:1][pose:64?]
 const MAGIC_MESH_CREATE = 0x444C4350 // 'PCLD' little-endian
+const MAGIC_CAMERA_FRAME = 0x464D4143 // 'CAMF' little-endian
 
 const meshes = new Map<string, THREE.Points>()
 let wsConnected = false
 let meshCreateCount = 0
+
+// ── Camera feed PiP (FaceTime-style: draggable, resizable, minimizable) ──
+const cameraFeedImg = document.getElementById('camera-feed') as HTMLImageElement | null
+const cameraPanel = document.getElementById('camera-panel') as HTMLElement | null
+const cameraHeader = document.getElementById('camera-header') as HTMLElement | null
+let cameraBlobUrl: string | null = null
+let cameraFramePending = false
+let cameraSizeLarge = false
+let cameraRotated = true  // default: rotate 90° CW for portrait iPhone feeds
+let cameraRotateScale = 0  // cached scale factor (0 = not yet computed)
+
+// Camera minimize toggle
+document.getElementById('camera-toggle')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  cameraPanel?.classList.toggle('collapsed')
+})
+
+// Camera resize toggle (small <-> large)
+document.getElementById('camera-resize')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  if (!cameraPanel) return
+  cameraSizeLarge = !cameraSizeLarge
+  cameraPanel.style.width = cameraSizeLarge ? '400px' : '240px'
+})
+
+// Camera rotation toggle (landscape <-> portrait)
+document.getElementById('camera-rotate')?.addEventListener('click', (e) => {
+  e.stopPropagation()
+  cameraRotated = !cameraRotated
+  applyCameraRotation()
+})
+
+// Draggable camera panel
+if (cameraPanel && cameraHeader) {
+  let dragging = false
+  let dragOffsetX = 0
+  let dragOffsetY = 0
+
+  cameraHeader.addEventListener('mousedown', (e) => {
+    // Only start drag from the header bar itself, not buttons
+    if ((e.target as HTMLElement).closest('.cam-btn')) return
+    dragging = true
+    dragOffsetX = e.clientX - cameraPanel.offsetLeft
+    dragOffsetY = e.clientY - cameraPanel.offsetTop
+    cameraPanel.style.transition = 'none'
+    e.preventDefault()
+  })
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return
+    let x = e.clientX - dragOffsetX
+    let y = e.clientY - dragOffsetY
+    // Clamp to viewport
+    x = Math.max(0, Math.min(x, window.innerWidth - cameraPanel.offsetWidth))
+    y = Math.max(32, Math.min(y, window.innerHeight - cameraPanel.offsetHeight))
+    cameraPanel.style.left = x + 'px'
+    cameraPanel.style.top = y + 'px'
+    cameraPanel.style.bottom = 'auto'
+    cameraPanel.style.right = 'auto'
+  })
+
+  window.addEventListener('mouseup', () => {
+    if (dragging) {
+      dragging = false
+      cameraPanel.style.transition = ''
+    }
+  })
+}
+
+// UI controls panel toggle (chevron)
+const uiPanel = document.getElementById('ui')
+document.getElementById('ui-toggle-row')?.addEventListener('click', () => {
+  uiPanel?.classList.toggle('collapsed')
+})
+
+// Apply or remove camera rotation transform based on cached dimensions
+function applyCameraRotation(): void {
+  if (!cameraFeedImg) return
+  if (cameraRotated && cameraRotateScale > 0) {
+    cameraFeedImg.style.transform = `rotate(90deg) scale(${cameraRotateScale})`
+    const marginPct = -((1 / cameraRotateScale) - cameraRotateScale) / 2 * 100
+    cameraFeedImg.style.marginTop = marginPct + '%'
+    cameraFeedImg.style.marginBottom = marginPct + '%'
+  } else {
+    cameraFeedImg.style.transform = ''
+    cameraFeedImg.style.marginTop = ''
+    cameraFeedImg.style.marginBottom = ''
+  }
+}
+
+// Camera frame handler (binary CAMF protocol, Blob URL for native decode)
+function handleCameraFrame(data: ArrayBuffer): void {
+  if (!cameraFeedImg || cameraFramePending) return
+  cameraFramePending = true
+
+  const view = new DataView(data)
+  const jpegLen = view.getUint32(4, true)
+  const jpegData = new Uint8Array(data, 8, jpegLen)
+
+  if (cameraBlobUrl) URL.revokeObjectURL(cameraBlobUrl)
+  cameraBlobUrl = URL.createObjectURL(new Blob([jpegData], { type: 'image/jpeg' }))
+
+  requestAnimationFrame(() => {
+    if (!cameraFeedImg || !cameraBlobUrl) { cameraFramePending = false; return }
+    cameraFeedImg.src = cameraBlobUrl
+
+    // Compute rotation scale once from first loaded frame
+    if (cameraRotateScale === 0) {
+      cameraFeedImg.onload = () => {
+        if (cameraRotateScale > 0 || !cameraFeedImg) return
+        const w = cameraFeedImg.naturalWidth
+        const h = cameraFeedImg.naturalHeight
+        if (w > 0 && h > 0) {
+          cameraRotateScale = w / h
+          applyCameraRotation()
+          cameraFeedImg.onload = null  // only need this once
+        }
+      }
+    }
+
+    cameraFramePending = false
+  })
+}
 let poseUpdateCount = 0
 let totalPoints = 0
 
@@ -336,11 +460,19 @@ function connectWebSocket() {
 
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) {
-      // Binary message - mesh_create
-      const parsed = parseMeshCreate(ev.data)
-      if (parsed) {
-        createOrUpdateMesh(parsed.meshId, parsed.positions, parsed.colors, parsed.pose)
-        updateHud()
+      // Binary message - route by magic bytes
+      if (ev.data.byteLength >= 4) {
+        const magic = new DataView(ev.data).getUint32(0, true)
+        if (magic === MAGIC_CAMERA_FRAME) {
+          handleCameraFrame(ev.data)
+        } else {
+          // mesh_create (PCLD)
+          const parsed = parseMeshCreate(ev.data)
+          if (parsed) {
+            createOrUpdateMesh(parsed.meshId, parsed.positions, parsed.colors, parsed.pose)
+            updateHud()
+          }
+        }
       }
     } else {
       // JSON message
@@ -558,13 +690,26 @@ function updateObjectMarkers() {
       marker.scale.set(1, 1, 1)
     }
 
-    // Label - use object ID as primary identifier
+    // Label: short ID + stability (no CLIP label — unreliable with current vocab)
     let label = objectLabels.get(obj.id)
-    const labelText = obj.id.slice(0, 8)
+    const labelText = `${obj.id.slice(0, 6)} ${obj.stability.toFixed(2)}`
     if (!label) {
       label = createTextSprite(labelText, obj.confirmed ? '#00ff88' : '#ffaa00')
       world.add(label)
       objectLabels.set(obj.id, label)
+    } else {
+      // Update label text if stability changed (recreate sprite)
+      // Only recreate if text differs to avoid GC churn
+      const currentText = (label.userData as any)?.text
+      if (currentText !== labelText) {
+        world.remove(label)
+        ;(label.material as THREE.SpriteMaterial).map?.dispose()
+        ;(label.material as THREE.Material).dispose()
+        label = createTextSprite(labelText, obj.confirmed ? '#00ff88' : '#ffaa00')
+        ;(label.userData as any) = { text: labelText }
+        world.add(label)
+        objectLabels.set(obj.id, label)
+      }
     }
     label.position.set(obj.xyz_world[0], obj.xyz_world[1] + 0.08, obj.xyz_world[2])
     label.visible = visible
@@ -592,15 +737,15 @@ function updateSelectionMarker() {
     return
   }
 
-  // Create selection marker if needed
+  // Create selection marker if needed (cyan ring, pulses in animate loop)
   if (!selectionMarker) {
-    const geom = new THREE.RingGeometry(0.06, 0.08, 32)
+    const geom = new THREE.RingGeometry(0.06, 0.09, 32)
     const mat = new THREE.MeshBasicMaterial({
-      color: 0x1e90ff,
+      color: 0x00ddff,
       transparent: true,
       opacity: 0.9,
       side: THREE.DoubleSide,
-      depthTest: false,  // Always render on top
+      depthTest: false,
       depthWrite: false
     })
     selectionMarker = new THREE.Mesh(geom, mat)
@@ -625,10 +770,9 @@ function updateSelectionMarker() {
   selectionMarker.lookAt(camera.position)
   selectionMarker.visible = true
 
-  // Update label text and position - use object ID as primary
-  const labelText = selectedObj.id.slice(0, 8)
-  // Recreate label sprite with new text
-  const newLabel = createTextSprite(`▶ ${labelText}`, '#1e90ff')
+  // Update label text and position - short ID + stability (cyan to match ring)
+  const labelText = `${selectedObj.id.slice(0, 8)} | ${selectedObj.stability.toFixed(2)}`
+  const newLabel = createTextSprite(labelText, '#00ddff')
   // Make label always render on top
   ;(newLabel.material as THREE.SpriteMaterial).depthTest = false
   ;(newLabel.material as THREE.SpriteMaterial).depthWrite = false
@@ -815,7 +959,7 @@ async function performSemanticSearch() {
   console.log(`[semantic-search] Searching for: "${query}"`)
 
   try {
-    const resp = await fetch(`${RTSM_API_BASE}/search/semantic?query=${encodeURIComponent(query)}&top_k=5&threshold=0.10`)
+    const resp = await fetch(`${RTSM_API_BASE}/search/semantic?query=${encodeURIComponent(query)}&top_k=10&threshold=0.20`)
     const data = await resp.json()
     console.log('[semantic-search] API response:', data)
 
@@ -896,21 +1040,22 @@ function updateObjectList() {
   }
 
   objectListEl.innerHTML = filtered.map(obj => {
-    const displayLabel = getBestDisplayLabel(obj)
     const isSelected = obj.id === selectedObjectId
     const semanticScore = semanticSearchResults.get(obj.id)
 
-    // Show semantic similarity score if in search mode, otherwise show stability
+    // In search mode show similarity, otherwise stability
     const scoreStr = isSearchMode && semanticScore !== undefined
-      ? `sim: ${semanticScore.toFixed(2)}`
-      : `stab: ${obj.stability.toFixed(2)}`
+      ? `sim ${semanticScore.toFixed(2)}`
+      : `${obj.stability.toFixed(2)}`
+
+    const statusTag = obj.confirmed ? 'confirmed' : 'proto'
 
     return `
       <div class="object-item ${isSelected ? 'selected' : ''}" data-id="${obj.id}">
-        <div class="object-dot ${obj.confirmed ? 'confirmed' : 'proto'}"></div>
+        <div class="object-dot ${statusTag}"></div>
         <div class="object-info">
           <div class="object-label">${obj.id.slice(0, 8)}</div>
-          <div class="object-meta">${displayLabel} · ${scoreStr}</div>
+          <div class="object-meta">${statusTag} &middot; ${scoreStr}</div>
         </div>
       </div>
     `
@@ -961,9 +1106,7 @@ async function loadObjectSnapshots(objectId: string) {
   }
 
   if (galleryTitle) {
-    const obj = rtsmObjects.find(o => o.id === objectId)
-    const label = obj ? getBestDisplayLabel(obj) : objectId.slice(0, 8)
-    galleryTitle.textContent = `Snapshots: ${label}`
+    galleryTitle.textContent = `Snapshots: ${objectId.slice(0, 8)}`
   }
 
   try {
@@ -1047,13 +1190,17 @@ rebuildBtn?.addEventListener('click', () => {
   }
 })
 
-// Helper to update disconnect/reconnect button states
+// Helper to update connection UI (tab bar status dot + button states)
+const connStatusDot = document.getElementById('conn-status')
+
 function updateConnectionButtons() {
-  if (disconnectBtn) {
-    disconnectBtn.disabled = !wsConnected
-  }
-  if (reconnectBtn) {
-    reconnectBtn.disabled = wsConnected
+  if (disconnectBtn) disconnectBtn.disabled = !wsConnected
+  if (reconnectBtn) reconnectBtn.disabled = wsConnected
+  // Update status dot in tab bar
+  if (connStatusDot) {
+    connStatusDot.classList.toggle('connected', wsConnected)
+    connStatusDot.classList.toggle('disconnected', !wsConnected)
+    connStatusDot.title = wsConnected ? 'Connected' : 'Disconnected'
   }
 }
 
@@ -1090,7 +1237,9 @@ reconnectBtn?.addEventListener('click', () => {
 // RTSM API CONTROLS
 // ============================================================================
 
-const RTSM_API_BASE = '/api'  // Vite proxies /api to RTSM API server (port 8000)
+// In dev: Vite proxies /api -> RTSM API (strips prefix). In production: served
+// from same origin, so use empty prefix (routes are at /objects, /search, etc.)
+const RTSM_API_BASE = import.meta.env.DEV ? '/api' : ''
 
 // Reset RTSM (clears WM, sweep cache, frame window, visualization)
 rtsmResetBtn?.addEventListener('click', async () => {
@@ -1435,6 +1584,32 @@ renderer.domElement.addEventListener('dblclick', (event) => {
 
 function animate() {
   requestAnimationFrame(animate)
+
+  // Pulse selected object marker (cyan blink, 2Hz sine wave)
+  if (selectionMarker && selectionMarker.visible) {
+    const t = performance.now() / 1000
+    const pulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 4) // 2Hz, range 0..1
+    const mat = selectionMarker.material as THREE.MeshBasicMaterial
+    mat.opacity = 0.4 + pulse * 0.6  // range 0.4..1.0
+    // Also scale-pulse the marker subtly
+    const s = 1.0 + pulse * 0.15  // range 1.0..1.15
+    selectionMarker.scale.set(s, s, s)
+  }
+
+  // Pulse the selected object's sphere marker too
+  if (selectedObjectId) {
+    const marker = objectMarkers.get(selectedObjectId)
+    if (marker) {
+      const t = performance.now() / 1000
+      const pulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 4)
+      ;(marker.material as THREE.MeshBasicMaterial).color.setHex(
+        pulse > 0.5 ? 0x00ddff : 0x1e90ff  // blink between cyan and blue
+      )
+      const s = 1.5 + pulse * 0.5  // range 1.5..2.0
+      marker.scale.set(s, s, s)
+    }
+  }
+
   renderer.render(scene, camera)
 }
 

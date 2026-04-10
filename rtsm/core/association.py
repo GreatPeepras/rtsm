@@ -105,7 +105,7 @@ class Associator:
         gate_z = float(assoc_cfg.get('gate_z_m', 1e9))  # effectively off unless set
         gate_px = float(assoc_cfg.get('gate_reproj_px', 30.0))
         use_embeddings = bool(assoc_cfg.get('use_embeddings', True))
-        cos_min = float(assoc_cfg.get('cos_min', 0.80)) if use_embeddings else -1.0
+        cos_min = float(assoc_cfg.get('cos_min', 0.95)) if use_embeddings else -1.0
         nearest_m = int(assoc_cfg.get('nearest_m_for_cos', 12))
         spawn_cap = int(assoc_cfg.get('spawn_max_per_cell_per_trigger', 2))
 

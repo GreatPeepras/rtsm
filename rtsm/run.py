@@ -29,11 +29,13 @@ from rtsm.io.websocket import WebSocketReceiver
 from rtsm.utils.net import print_server_addresses, get_local_ipv4_addresses
 from rtsm.stores.sweep_policy import SweepPolicy
 from rtsm.api.server import create_app, start_server, ResetComponents
+from rtsm.cfg import load_config, cfg_path
 
 import argparse
-import yaml
+import sys
 import threading
 import logging
+from pathlib import Path
 
 # Configure logging at module level
 logging.basicConfig(
@@ -48,7 +50,29 @@ logging.getLogger("rtsm.core.association").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _find_static_dir() -> str | None:
+    """Locate the built frontend static directory.
+
+    Search order (dev build wins so you never need to copy):
+      1. demo/dist/ (dev, after npm run build)
+      2. rtsm/static/ (packaged release)
+    """
+    dev_dist = Path("demo/dist")
+    if dev_dist.is_dir() and (dev_dist / "index.html").is_file():
+        return str(dev_dist.resolve())
+    pkg_static = Path(__file__).parent / "static"
+    if pkg_static.is_dir() and (pkg_static / "index.html").is_file():
+        return str(pkg_static)
+    return None
+
+
 def main():
+    # Dispatch 'demo' subcommand before argparse (preserves backward compat)
+    if len(sys.argv) > 1 and sys.argv[1] == "demo":
+        from rtsm.demo import run_demo
+        run_demo(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(description="RTSM - Real-Time Spatio-Semantic Memory")
     parser.add_argument("--replay", type=str, default=None, metavar="DIR",
                         help="Replay a recorded session from DIR at original rate")
@@ -69,8 +93,8 @@ def main():
         print("For CUDA support, add:  --extra-index-url https://download.pytorch.org/whl/cu128")
         return
 
-    cfg = yaml.safe_load(open("config/rtsm.yaml", "r"))
-    logger.info("Configuration loaded from config/rtsm.yaml")
+    cfg = load_config("rtsm.yaml")
+    logger.info(f"Configuration loaded from {cfg_path('rtsm.yaml')}")
 
     # ── Record-only mode: skip all heavy init, just record raw WebSocket ──
     if args.record and args.record_only:
@@ -150,7 +174,7 @@ def main():
     assoc = Associator(cfg)
     ingest_gate = IngestGate(cfg)
     logger.info(f"Ingest gate successfully initialized")
-    vocab_clf = ClipVocabClassifier(clip.artifacts.model, clip.artifacts.tokenizer, clip.artifacts.preprocess, "config/clip/vocab.yaml", device=cfg.get("device","cuda"))
+    vocab_clf = ClipVocabClassifier(clip.artifacts.model, clip.artifacts.tokenizer, clip.artifacts.preprocess, str(cfg_path("clip/vocab.yaml")), device=cfg.get("device","cuda"))
     logger.info(f"CLIP vocabulary classifier successfully initialized")
     vec_cfg = cfg.get("vectors", {})
     backend = str(vec_cfg.get("backend", "faiss")).lower()
@@ -219,6 +243,7 @@ def main():
             confidence_threshold=int(ws_cfg.get("confidence_threshold", 1)),
             apply_camera_flip=bool(vis_cfg.get("apply_camera_flip", False)),
             on_keyframe=vis_server.handle_frame_packet if vis_server else None,
+            on_camera_frame=vis_server.broadcast_camera_frame if vis_server else None,
             on_pose_corrections=vis_server.handle_kf_pose_update if vis_server else None,
             on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
             latency_analytics=latency_analytics,
@@ -242,6 +267,7 @@ def main():
             confidence_threshold=int(ws_cfg.get("confidence_threshold", 1)),
             apply_camera_flip=bool(vis_cfg.get("apply_camera_flip", False)),
             on_keyframe=vis_server.handle_frame_packet if vis_server else None,
+            on_camera_frame=vis_server.broadcast_camera_frame if vis_server else None,
             on_pose_corrections=vis_server.handle_kf_pose_update if vis_server else None,
             on_pose_corrections_batch=vis_server.handle_pose_corrections_batch if vis_server else None,
             on_raw_message=recorder.on_message if recorder else None,
@@ -276,11 +302,9 @@ def main():
             f"Unknown io.receiver: {receiver_type!r}. Choose 'zeromq' or 'websocket'."
         )
 
-    # Start visualization server if enabled
+    # Visualization tasks start via API server lifespan (start_tasks())
     if vis_server:
-        vis_server.start()
-        vis_port_val = vis_cfg.get("port", 8081)
-        logger.info(f"Visualization server started on ws://{display_host}:{vis_port_val}/ws")
+        logger.info("Visualization server initialized (tasks start with API server)")
 
     pipe = Pipeline(
         cfg=cfg,
@@ -313,6 +337,11 @@ def main():
     mcp_cfg = cfg.get("mcp", {})
     mcp_enabled = bool(mcp_cfg.get("enable", False))
 
+    # Resolve frontend static dir and viz broadcaster for single-port serving
+    static_dir = _find_static_dir()
+    vis_broadcaster = vis_server.broadcaster if vis_server else None
+    vis_server_registry = vis_server.registry if vis_server else None
+
     app = create_app(
         working_memory=wm,
         clip_adapter=clip,
@@ -324,6 +353,10 @@ def main():
         seg_analytics=seg_analytics,
         latency_analytics=latency_analytics,
         mcp_enabled=mcp_enabled,
+        vis_server=vis_server,
+        vis_broadcaster=vis_broadcaster,
+        vis_registry=vis_server_registry,
+        static_dir=static_dir,
     )
     start_server(app, host=host, port=port)
     logger.info(f"FastAPI server started on http://{display_host}:{port}")
@@ -344,13 +377,20 @@ def main():
         print(f"  Camera:  {io_cfg.get('camera_endpoint', 'tcp://127.0.0.1:5555')}")
         print(f"  RTABMap: {io_cfg.get('rtabmap_endpoint', 'tcp://127.0.0.1:6000')}")
     print(f"  API:     http://{display_host}:{port}")
+    if static_dir:
+        print(f"  Web UI:  http://{display_host}:{port}")
+    if vis_broadcaster:
+        print(f"  Viz WS:  ws://{display_host}:{port}/ws")
     if mcp_enabled:
         print(f"  MCP:     http://{display_host}:{port}/mcp/sse")
-    if vis_server:
-        vis_port = vis_cfg.get("port", 8081)
-        print(f"  Vis WS:  ws://{display_host}:{vis_port}/ws")
     print("  Press Ctrl+C to stop")
     print("=" * 60)
+
+    # Auto-open browser to the web UI
+    if vis_server:
+        import webbrowser
+        url = f"http://localhost:{port}"
+        threading.Timer(1.5, webbrowser.open, args=[url]).start()
 
     try:
         pipe.run_forever()

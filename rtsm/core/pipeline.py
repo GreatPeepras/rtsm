@@ -720,10 +720,30 @@ class Pipeline:
                 c.crop = None
                 continue
 
-            crop = rgb[y0:y1, x0:x1]           # still a view; cheap
+            crop = rgb[y0:y1, x0:x1].copy()    # copy needed for masking
             if crop.size == 0:
                 c.crop = None
                 continue
+
+            # Apply segmentation mask to suppress background —
+            # CLIP embeds the full crop; without masking, background dominates
+            # and all objects converge to similar embeddings.
+            if c.mask is not None:
+                # Scale mask region to match RGB crop bounds
+                mask_region = c.mask[
+                    int(y0 / mask_to_rgb_sy) : int(y1 / mask_to_rgb_sy),
+                    int(x0 / mask_to_rgb_sx) : int(x1 / mask_to_rgb_sx),
+                ]
+                if mask_region.numel() > 0:
+                    mask_np = mask_region.cpu().numpy().astype(np.uint8)
+                    mask_resized = cv2.resize(
+                        mask_np, (crop.shape[1], crop.shape[0]),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    # Zero out background pixels (set to gray mean rather than black
+                    # to avoid CLIP treating black as a meaningful signal)
+                    bg_color = crop.mean(axis=(0, 1)).astype(np.uint8)
+                    crop[mask_resized == 0] = bg_color
 
             crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_LINEAR)
             c.crop = crop
