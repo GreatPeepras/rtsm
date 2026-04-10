@@ -498,10 +498,11 @@ def create_app(
         """
         Semantic search for objects using CLIP text encoding + FAISS KNN.
 
-        CLIP ViT-B/32 raw cosine scores cluster in the 0.25-0.35 range for
-        indoor objects. The ranking is meaningful (top results are most
-        relevant) even though absolute scores are low. Default threshold=0.0
-        returns all ranked results so agents can decide their own cutoff.
+        Cosine scores vary by model: CLIP ViT-B/32 clusters 0.25-0.35,
+        SigLIP ViT-B-16 clusters 0.05-0.15 for indoor objects. The ranking
+        is meaningful (top results are most relevant) even though absolute
+        scores are low. Default threshold=0.0 returns all ranked results
+        so agents can decide their own cutoff.
 
         For visual verification, set include_snapshot=true to get the most
         recent observation crop (base64 JPEG) for each result. This enables
@@ -518,8 +519,14 @@ def create_app(
             raise HTTPException(status_code=503, detail="Semantic search not available (CLIP or vectors not configured)")
 
         # 1. Encode query text with CLIP
+        # For OpenAI CLIP models, wrap short queries in caption format
+        # ("a photo of a dog") since CLIP was trained on image-caption pairs.
+        # SigLIP models work better with raw queries (trained differently).
+        clip_query = query
+        if hasattr(clip_adapter, '_prompt_wrap') and clip_adapter._prompt_wrap and len(query.split()) <= 3:
+            clip_query = f"a photo of a {query}"
         try:
-            query_emb = clip_adapter.encode_text(query)
+            query_emb = clip_adapter.encode_text(clip_query)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to encode query: {e}")
 

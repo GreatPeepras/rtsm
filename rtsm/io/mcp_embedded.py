@@ -245,7 +245,11 @@ def _semantic_query(wm, clip_adapter, vectors, *, query: str, top_k: int, thresh
     if not clip_adapter or not vectors:
         return {"error": "unavailable", "message": "Semantic search not available (CLIP or vectors not configured)"}
 
-    query_emb = clip_adapter.encode_text(query)
+    # Wrap short queries for OpenAI CLIP models (not needed for SigLIP)
+    clip_query = query
+    if hasattr(clip_adapter, '_prompt_wrap') and clip_adapter._prompt_wrap and len(query.split()) <= 3:
+        clip_query = f"a photo of a {query}"
+    query_emb = clip_adapter.encode_text(clip_query)
     matches = vectors.search(query_emb, top_k=top_k)
 
     results = []

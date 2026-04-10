@@ -124,9 +124,13 @@ def run_demo(argv: list[str] | None = None) -> None:
     segmenter.warmup()
     print(f"        Segmentation ready: {segmenter.name}")
 
-    print("  [4/5] Loading CLIP model (ViT-B-32)...")
+    clip_cfg = cfg.get("clip", {})
+    clip_model = clip_cfg.get("model", "ViT-B-16-SigLIP")
+    clip_pretrained = clip_cfg.get("pretrained", "webli")
+    clip_local = clip_cfg.get("local_dir", "model_store/clip")
+    print(f"  [4/5] Loading CLIP model ({clip_model})...")
     print("        (Downloads ~350MB on first run)")
-    clip = CLIPAdapter("ViT-B-32", "openai", "model_store/clip", device=cfg.get("device", "cuda"))
+    clip = CLIPAdapter(clip_model, clip_pretrained, clip_local, device=cfg.get("device", "cuda"))
     vocab_clf = ClipVocabClassifier(
         clip.artifacts.model, clip.artifacts.tokenizer, clip.artifacts.preprocess,
         str(cfg_path("clip/vocab.yaml")), device=cfg.get("device", "cuda"),

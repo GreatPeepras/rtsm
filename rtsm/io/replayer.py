@@ -45,6 +45,7 @@ class ReplayReceiver:
         on_pose_corrections: Optional[callable] = None,
         on_pose_corrections_batch: Optional[callable] = None,
         latency_analytics=None,
+        replay_speed: float = 1.0,
     ) -> None:
         self._recording_dir = os.path.abspath(recording_dir)
         self._ingest_q = ingest_queue
@@ -78,6 +79,8 @@ class ReplayReceiver:
             on_pose_corrections_batch=on_pose_corrections_batch,
             latency_analytics=latency_analytics,  # passed to decoder for frame_received/tracking/throttle hooks
         )
+
+        self._replay_speed = max(0.1, replay_speed)  # <1 = slower, >1 = faster
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -138,12 +141,13 @@ class ReplayReceiver:
                 if self._stop_event.is_set():
                     break
 
-                # Sleep to match original recording rate
+                # Sleep to match original recording rate (adjusted by replay_speed)
                 t_mono = entry["t_mono_s"]
                 delta = t_mono - prev_t
                 if delta > 0:
+                    adjusted_delta = delta / self._replay_speed
                     # Use small sleep chunks so stop_event is responsive
-                    deadline = time.monotonic() + delta
+                    deadline = time.monotonic() + adjusted_delta
                     while time.monotonic() < deadline:
                         if self._stop_event.is_set():
                             break

@@ -52,8 +52,8 @@ segmentation:
     vocab: null
 
 clip:
-  model: ViT-B-32
-  pretrained: openai
+  model: ViT-B-16-SigLIP
+  pretrained: webli
   local_dir: model_store/clip
 
 # -------------------- I/O --------------------
@@ -205,7 +205,7 @@ pose:
 vectors:
   enable: true
   backend: faiss
-  dim: 512
+  dim: 768
   faiss:
     index_path: model_store/faiss/index.flatip
   flush_period_s: 3.0
