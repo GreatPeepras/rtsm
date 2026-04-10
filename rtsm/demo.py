@@ -16,7 +16,10 @@ import logging
 import os
 import sys
 import threading
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message=".*allow_in_graph is deprecated.*", category=FutureWarning)
 
 logging.basicConfig(
     level=logging.INFO,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+warnings.filterwarnings("ignore", message=".*allow_in_graph is deprecated.*", category=FutureWarning)
 
 # ── GPU-dependent imports (require rtsm[gpu]) ──
 _GPU_AVAILABLE = True
