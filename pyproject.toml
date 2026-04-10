@@ -70,4 +70,4 @@ exclude = [
 ]
 
 [tool.setuptools.package-data]
-rtsm = ["cfg/**/*.yaml", "static/**"]
+rtsm = ["cfg/**/*.yaml", "static/**", "data/demo_clip/*"]

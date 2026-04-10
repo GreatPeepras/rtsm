@@ -44,21 +44,22 @@ def _find_demo_data() -> str:
     Raises:
         FileNotFoundError: If demo data cannot be found.
     """
-    # 1. CWD-relative (repo checkout)
+    # 1. Package data (pip install — ships inside rtsm/data/demo_clip/)
+    from importlib import resources
+    pkg_data = resources.files("rtsm.data").joinpath("demo_clip")
+    pkg_data_path = Path(str(pkg_data))
+    if pkg_data_path.is_dir() and (pkg_data_path / "messages.bin").is_file():
+        return str(pkg_data_path.resolve())
+
+    # 2. CWD-relative (repo checkout, uses symlink)
     cwd_path = Path("recordings/demo_clip")
     if cwd_path.is_dir() and (cwd_path / "messages.bin").is_file():
         return str(cwd_path.resolve())
 
-    # 2. Relative to this file (in case of unusual install layout)
-    pkg_path = Path(__file__).parent.parent / "recordings" / "demo_clip"
-    if pkg_path.is_dir() and (pkg_path / "messages.bin").is_file():
-        return str(pkg_path.resolve())
-
     raise FileNotFoundError(
-        "Demo data not found. Expected at recordings/demo_clip/.\n"
-        "If you installed via pip, clone the repo to get demo data:\n"
-        "  git clone https://github.com/calabi-inc/rtsm.git && cd rtsm\n"
-        "  rtsm demo"
+        "Demo data not found.\n"
+        "If you installed via pip, try upgrading:  pip install -U rtsm[gpu]\n"
+        "If from source:  git pull && rtsm demo"
     )
 
 
