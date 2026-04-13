@@ -45,7 +45,7 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Natural language search query"},
                 "top_k": {"type": "integer", "description": "Max results to return", "default": 5},
-                "threshold": {"type": "number", "description": "Min similarity (0-1)", "default": 0.2},
+                "threshold": {"type": "number", "description": "Min similarity (0-1). SigLIP scores for indoor objects cluster 0.05-0.15.", "default": 0.0},
             },
             "required": ["query"],
         },
@@ -197,7 +197,7 @@ def _dispatch(
             wm, clip_adapter, vectors,
             query=args["query"],
             top_k=args.get("top_k", 5),
-            threshold=args.get("threshold", 0.2),
+            threshold=args.get("threshold", 0.0),
         )
 
     if name == "rtsm.spatial_query":
@@ -300,7 +300,7 @@ def _spatial_query(wm, *, x: float, y: float, z: float, radius_m: float) -> dict
 
 def _relational_query(wm, clip_adapter, vectors, *, query: str, radius_m: float) -> dict:
     # Step 1: find the reference object via semantic search
-    sem = _semantic_query(wm, clip_adapter, vectors, query=query, top_k=1, threshold=0.15)
+    sem = _semantic_query(wm, clip_adapter, vectors, query=query, top_k=1, threshold=0.0)
     if "error" in sem:
         return sem
     results = sem.get("results", [])

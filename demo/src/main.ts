@@ -959,7 +959,7 @@ async function performSemanticSearch() {
   console.log(`[semantic-search] Searching for: "${query}"`)
 
   try {
-    const resp = await fetch(`${RTSM_API_BASE}/search/semantic?query=${encodeURIComponent(query)}&top_k=10&threshold=0.20`)
+    const resp = await fetch(`${RTSM_API_BASE}/search/semantic?query=${encodeURIComponent(query)}&top_k=10&threshold=0.0`)
     const data = await resp.json()
     console.log('[semantic-search] API response:', data)
 
