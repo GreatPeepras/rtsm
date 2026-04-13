@@ -185,6 +185,11 @@ curl "http://localhost:8002/search/semantic?query=coffee+mug&top_k=3&include_sna
 ```json
 {
   "query": "coffee mug",
+  "robot_pose": {
+    "xyz": [0.12, 0.05, 0.31],
+    "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0],
+    "timestamp": 1712345678.5
+  },
   "results": [
     {
       "id": "b7d4e2f1",
@@ -198,6 +203,8 @@ curl "http://localhost:8002/search/semantic?query=coffee+mug&top_k=3&include_sna
   ]
 }
 ```
+
+> **`robot_pose`**: All search responses include the robot's latest pose so agents can compute heading and distance to target objects in one atomic query. RTSM stores but does not compute pose — it's a passthrough from the sensor.
 
 **Agent workflow**: Query RTSM for candidates with snapshots, then pass crops to Gemini/GPT-4V for visual verification:
 

@@ -409,6 +409,9 @@ class Pipeline:
                     look_cell=None,
                     now_mono=time.monotonic(),
                 )
+                # Store latest robot pose for API queries
+                timestamp = float(pkt.time.t_wall_utc_s or pkt.time.t_mono_s or 0.0)
+                self.working_mem.update_robot_pose(twc, q, timestamp)
         except Exception:
             pass
 

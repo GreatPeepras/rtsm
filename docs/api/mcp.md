@@ -151,16 +151,24 @@ The `rtsm-mcp` command connects to a running RTSM instance via its REST API and 
 Agent → rtsm.semantic_query(query="mug", top_k=1)
 
 RTSM → {
-  "objects": [
+  "query": "mug",
+  "robot_pose": {
+    "xyz": [0.12, 0.05, 0.31],
+    "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0],
+    "timestamp": 1712345678.5
+  },
+  "results": [
     {
       "id": "obj_231",
-      "label": "mug",
-      "xyz": [2.31, -0.15, 1.18],
-      "confidence": 0.85,
-      "last_seen": "2026-04-07T10:23:15Z"
+      "score": 0.85,
+      "label_hint": "mug",
+      "confirmed": true,
+      "xyz_world": [2.31, -0.15, 1.18]
     }
   ]
 }
 ```
 
-The agent now knows the mug is at position [2.31, -0.15, 1.18] in world coordinates and can plan accordingly.
+The agent gets both the mug's position AND the robot's current position in one atomic response. It can immediately compute heading and distance to navigate there — no second API call needed.
+
+All search responses (`semantic_query`, `spatial_query`, `relational_query`) include `robot_pose`. The `status` tool also returns it. RTSM stores but does not compute pose — it's a passthrough from the sensor (ARKit, RTABMap, etc.).

@@ -560,7 +560,11 @@ def create_app(
 
             results.append(entry)
 
-        return {"query": query, "results": results}
+        return {
+            "query": query,
+            "robot_pose": working_memory.get_robot_pose(),
+            "results": results,
+        }
 
     # ---- Spatial search endpoint ----
     @app.get("/search/spatial")
@@ -617,6 +621,7 @@ def create_app(
         return {
             "center": [x, y, z],
             "radius_m": radius_m,
+            "robot_pose": working_memory.get_robot_pose(),
             "total": total,
             "offset": offset,
             "limit": limit,
