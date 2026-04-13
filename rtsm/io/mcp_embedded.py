@@ -264,7 +264,7 @@ def _semantic_query(wm, clip_adapter, vectors, *, query: str, top_k: int, thresh
             "confirmed": obj.confirmed if obj else True,
             "xyz_world": obj.xyz_world.tolist() if obj and obj.xyz_world is not None else None,
         })
-    return {"query": query, "results": results}
+    return {"query": query, "robot_pose": wm.get_robot_pose(), "results": results}
 
 
 def _spatial_query(wm, *, x: float, y: float, z: float, radius_m: float) -> dict:
@@ -295,7 +295,7 @@ def _spatial_query(wm, *, x: float, y: float, z: float, radius_m: float) -> dict
         })
 
     results.sort(key=lambda r: r["distance_m"])
-    return {"center": [x, y, z], "radius_m": radius_m, "results": results}
+    return {"center": [x, y, z], "radius_m": radius_m, "robot_pose": wm.get_robot_pose(), "results": results}
 
 
 def _relational_query(wm, clip_adapter, vectors, *, query: str, radius_m: float) -> dict:

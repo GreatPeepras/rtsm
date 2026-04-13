@@ -167,6 +167,8 @@ class WorkingMemory:
 
         self._map: Dict[str, ObjectState] = {}
         self._lock = threading.RLock()
+        # Latest robot pose — passthrough from sensor, updated every processed frame
+        self._latest_pose: Optional[Dict[str, Any]] = None
         # Reverse index: frame_id -> set of object IDs last updated on that frame
         self._frame_to_objects: Dict[str, set] = {}
         # Min-heap of (deadline_mono, oid) for proto expiry (lazy re-schedule on matches)
@@ -732,6 +734,22 @@ class WorkingMemory:
 
     # ---------- utilities ----------
 
+    def update_robot_pose(self, t_wc: np.ndarray, q_wc_xyzw: np.ndarray, timestamp: float) -> None:
+        """Store latest robot pose (passthrough from sensor).
+
+        RTSM does NOT compute or filter pose — it stores what the sensor provides.
+        This allows agents to query robot position + object positions atomically.
+        """
+        self._latest_pose = {
+            "xyz": t_wc.tolist() if hasattr(t_wc, 'tolist') else list(t_wc),
+            "quaternion_xyzw": q_wc_xyzw.tolist() if hasattr(q_wc_xyzw, 'tolist') else list(q_wc_xyzw),
+            "timestamp": float(timestamp),
+        }
+
+    def get_robot_pose(self) -> Optional[Dict[str, Any]]:
+        """Get the latest robot pose, or None if no frames processed yet."""
+        return self._latest_pose
+
     def stats(self) -> Dict[str, Any]:
         with self._lock:
             n = len(self._map)
@@ -742,6 +760,7 @@ class WorkingMemory:
                 "confirmed": c,
                 "avg_hits": avg_hits,
                 "upserts_total": int(self._upsert_count_total),
+                "robot_pose": self._latest_pose,
             }
 
     def clear(self) -> Dict[str, int]:
