@@ -39,12 +39,12 @@ TARGETS = ["TV", "pillow", "doll", "air conditioner", "speaker", "laptop"]
 # Ground truth: target -> list of known OIDs from visual inspection of session1
 # This supplements label-based matching for objects whose CLIP labels are wrong.
 GROUND_TRUTH_OIDS = {
-    "TV": ["5abbb1d3d25e4ac5", "cfc44a79"],           # "desk lamp" and "hammer" are actually the TV
-    "pillow": ["edb92e51"],                             # white pillow (correct label)
-    "doll": ["5e9ce53f"],                               # cow-pattern cushion labeled "laundry basket"
-    "air conditioner": ["3fdd90fb"],                    # air filter fan labeled "toaster"
-    "speaker": [],                                      # not detected in 38-frame run
-    "laptop": ["6b7c6a8a"],                             # MacBook (correct label)
+    "TV": ["ec98dcd3"],                                 # monitor (labeled "monitor")
+    "pillow": ["647d95bb"],                             # pillow (correct label)
+    "doll": [],                                         # not detected in this recording
+    "air conditioner": ["7c219266"],                    # portable air conditioner (correct label)
+    "speaker": ["4905c564"],                            # speaker (correct label)
+    "laptop": ["ce2c9ea8", "03d98675"],                 # laptop + tablet (both are laptop variants)
 }
 
 # Prompt templates to compare

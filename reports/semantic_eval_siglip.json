@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-04-09T20:41:20.382299",
+  "timestamp": "2026-04-14T01:04:55.997475",
   "api_base": "http://127.0.0.1:8002",
-  "objects_total": 136,
-  "objects_confirmed": 80,
-  "objects_with_embeddings": 80,
+  "objects_total": 71,
+  "objects_confirmed": 42,
+  "objects_with_embeddings": 42,
   "targets": [
     "TV",
     "pillow",
@@ -19,89 +19,89 @@
       "targets": {
         "TV": {
           "query": "TV",
-          "rank": null,
-          "matched_oid": null,
-          "target_score": null,
-          "top1_score": 0.0774,
-          "top1_label": "album",
-          "top1_oid": "b6ecf1a7145a41e6",
-          "score_spread": 0.0374,
-          "score_margin_1_2": 0.0172,
+          "rank": 1,
+          "matched_oid": "ec98dcd38f2641fd",
+          "target_score": 0.0722,
+          "top1_score": 0.0722,
+          "top1_label": "monitor",
+          "top1_oid": "ec98dcd38f2641fd",
+          "score_spread": 0.0304,
+          "score_margin_1_2": 0.0053,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "b6ecf1a7145a41e6",
-              "score": 0.0774,
-              "label": "album"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0722,
+              "label": "monitor"
             },
             {
               "rank": 2,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0602,
-              "label": "keycard"
+              "oid": "842b8881e0694de6",
+              "score": 0.0669,
+              "label": "phone"
             },
             {
               "rank": 3,
-              "oid": "81b0abedd8794940",
-              "score": 0.0475,
-              "label": "drawer"
+              "oid": "2ba8726b621b414f",
+              "score": 0.0624,
+              "label": "folder"
             },
             {
               "rank": 4,
-              "oid": "15508e4eea1f46e2",
-              "score": 0.047,
-              "label": "book"
+              "oid": "44c4569bda7341db",
+              "score": 0.0601,
+              "label": "sheet"
             },
             {
               "rank": 5,
-              "oid": "fff57f65701145d2",
-              "score": 0.0456,
-              "label": "computer box"
+              "oid": "02d55d7ac3414139",
+              "score": 0.0564,
+              "label": "cabinet"
             }
           ]
         },
         "pillow": {
           "query": "pillow",
-          "rank": 1,
-          "matched_oid": "4ca30a916d504fba",
-          "target_score": 0.0884,
-          "top1_score": 0.0884,
-          "top1_label": "pillow",
-          "top1_oid": "4ca30a916d504fba",
-          "score_spread": 0.0124,
-          "score_margin_1_2": 0.0009,
+          "rank": 7,
+          "matched_oid": "647d95bb4c154455",
+          "target_score": 0.0727,
+          "top1_score": 0.0848,
+          "top1_label": "cushion",
+          "top1_oid": "f1c7b1787ef14e45",
+          "score_spread": 0.0207,
+          "score_margin_1_2": 0.0,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "4ca30a916d504fba",
-              "score": 0.0884,
-              "label": "pillow"
+              "oid": "f1c7b1787ef14e45",
+              "score": 0.0848,
+              "label": "cushion"
             },
             {
               "rank": 2,
-              "oid": "9c1be793786c42a2",
-              "score": 0.0875,
-              "label": "connector"
+              "oid": "1369ceedd83f4c60",
+              "score": 0.0848,
+              "label": "sofa"
             },
             {
               "rank": 3,
-              "oid": "c37ae07d4f30470f",
-              "score": 0.086,
-              "label": "blanket"
+              "oid": "b8a8210fc923489e",
+              "score": 0.0738,
+              "label": "snack bag"
             },
             {
               "rank": 4,
-              "oid": "d204699c5cbd4689",
-              "score": 0.0799,
-              "label": "bag"
+              "oid": "d61fe61d8b834157",
+              "score": 0.0738,
+              "label": "towel"
             },
             {
               "rank": 5,
-              "oid": "329ecd7a38194266",
-              "score": 0.0773,
-              "label": "tube"
+              "oid": "ff28df27ec2c4da5",
+              "score": 0.0728,
+              "label": "cushion"
             }
           ]
         },
@@ -110,187 +110,187 @@
           "rank": null,
           "matched_oid": null,
           "target_score": null,
-          "top1_score": 0.052,
-          "top1_label": "robot",
-          "top1_oid": "d8cc799e1877484d",
-          "score_spread": 0.0187,
-          "score_margin_1_2": 0.0004,
+          "top1_score": 0.0348,
+          "top1_label": "headphones",
+          "top1_oid": "3a329563d7fb48b2",
+          "score_spread": 0.0142,
+          "score_margin_1_2": 0.0007,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "d8cc799e1877484d",
-              "score": 0.052,
-              "label": "robot"
+              "oid": "3a329563d7fb48b2",
+              "score": 0.0348,
+              "label": "headphones"
             },
             {
               "rank": 2,
-              "oid": "2404948d52e4440e",
-              "score": 0.0516,
-              "label": "gear"
+              "oid": "d03f516408ca4a45",
+              "score": 0.0341,
+              "label": "shoe"
             },
             {
               "rank": 3,
-              "oid": "760eb09139ea4a58",
-              "score": 0.0465,
-              "label": "electron"
+              "oid": "bd0f18d93ab64897",
+              "score": 0.0292,
+              "label": "thermos"
             },
             {
               "rank": 4,
-              "oid": "8a0daec3256a4d04",
-              "score": 0.0444,
-              "label": "person"
+              "oid": "7d34c246741744ca",
+              "score": 0.0277,
+              "label": "thermos"
             },
             {
               "rank": 5,
-              "oid": "1cb2add916994d52",
-              "score": 0.0411,
-              "label": "accessory"
+              "oid": "bb77302ef487438f",
+              "score": 0.0276,
+              "label": "bottle"
             }
           ]
         },
         "air conditioner": {
           "query": "air conditioner",
-          "rank": 4,
-          "matched_oid": "9d2eaf3851b54f0b",
-          "target_score": 0.0534,
-          "top1_score": 0.0914,
-          "top1_label": "printer",
-          "top1_oid": "a6c27062acab4905",
-          "score_spread": 0.0592,
-          "score_margin_1_2": 0.0339,
+          "rank": 1,
+          "matched_oid": "7c2192665a134d0e",
+          "target_score": 0.0882,
+          "top1_score": 0.0882,
+          "top1_label": "portable air conditioner",
+          "top1_oid": "7c2192665a134d0e",
+          "score_spread": 0.0586,
+          "score_margin_1_2": 0.0176,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "a6c27062acab4905",
-              "score": 0.0914,
-              "label": "printer"
+              "oid": "7c2192665a134d0e",
+              "score": 0.0882,
+              "label": "portable air conditioner"
             },
             {
               "rank": 2,
-              "oid": "d842138c46884371",
-              "score": 0.0575,
-              "label": "solar battery"
+              "oid": "c8f449e3e4174e75",
+              "score": 0.0706,
+              "label": "dehumidifier"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.0543,
-              "label": "fax"
+              "oid": "2989e7dcbe304bac",
+              "score": 0.0451,
+              "label": "stapler"
             },
             {
               "rank": 4,
-              "oid": "9d2eaf3851b54f0b",
-              "score": 0.0534,
-              "label": "air conditioner"
+              "oid": "e0cf26443a1c43cf",
+              "score": 0.0447,
+              "label": "soap"
             },
             {
               "rank": 5,
-              "oid": "9c1be793786c42a2",
-              "score": 0.0446,
-              "label": "connector"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0376,
+              "label": "suitcase"
             }
           ]
         },
         "speaker": {
           "query": "speaker",
           "rank": 1,
-          "matched_oid": "2e1dacc4f8d74ae7",
-          "target_score": 0.1027,
-          "top1_score": 0.1027,
+          "matched_oid": "4905c564e38d455d",
+          "target_score": 0.1016,
+          "top1_score": 0.1016,
           "top1_label": "speaker",
-          "top1_oid": "2e1dacc4f8d74ae7",
-          "score_spread": 0.0477,
-          "score_margin_1_2": 0.0353,
+          "top1_oid": "4905c564e38d455d",
+          "score_spread": 0.0429,
+          "score_margin_1_2": 0.0198,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "2e1dacc4f8d74ae7",
-              "score": 0.1027,
+              "oid": "4905c564e38d455d",
+              "score": 0.1016,
               "label": "speaker"
             },
             {
               "rank": 2,
-              "oid": "16407ade9f3b4caa",
-              "score": 0.0674,
-              "label": "flip"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0818,
+              "label": "suitcase"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.0648,
-              "label": "fax"
+              "oid": "825c01ade0b44fd0",
+              "score": 0.073,
+              "label": "light switch"
             },
             {
               "rank": 4,
-              "oid": "426cb57cb3b44f4e",
-              "score": 0.0639,
-              "label": "batman"
+              "oid": "03d9867553314cfe",
+              "score": 0.0717,
+              "label": "tablet"
             },
             {
               "rank": 5,
-              "oid": "a6c27062acab4905",
-              "score": 0.0622,
-              "label": "printer"
+              "oid": "3a329563d7fb48b2",
+              "score": 0.0656,
+              "label": "headphones"
             }
           ]
         },
         "laptop": {
           "query": "laptop",
-          "rank": 1,
-          "matched_oid": "8b140e20efb24b31",
-          "target_score": 0.0942,
-          "top1_score": 0.0942,
-          "top1_label": "computer box",
-          "top1_oid": "8b140e20efb24b31",
-          "score_spread": 0.0542,
-          "score_margin_1_2": 0.0075,
+          "rank": 3,
+          "matched_oid": "ce2c9ea8221c4cf9",
+          "target_score": 0.0806,
+          "top1_score": 0.0918,
+          "top1_label": "tablet",
+          "top1_oid": "03d9867553314cfe",
+          "score_spread": 0.0517,
+          "score_margin_1_2": 0.0081,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "8b140e20efb24b31",
-              "score": 0.0942,
-              "label": "computer box"
+              "oid": "03d9867553314cfe",
+              "score": 0.0918,
+              "label": "tablet"
             },
             {
               "rank": 2,
-              "oid": "fff57f65701145d2",
-              "score": 0.0867,
-              "label": "computer box"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0837,
+              "label": "suitcase"
             },
             {
               "rank": 3,
-              "oid": "11bcec3b8c164ef1",
-              "score": 0.0855,
+              "oid": "ce2c9ea8221c4cf9",
+              "score": 0.0806,
               "label": "laptop"
             },
             {
               "rank": 4,
-              "oid": "df829bba254040fd",
-              "score": 0.0845,
-              "label": "laptop"
+              "oid": "d3e24222a6f940c1",
+              "score": 0.0599,
+              "label": "keyboard"
             },
             {
               "rank": 5,
-              "oid": "7b74b91d5eae4d29",
-              "score": 0.0796,
-              "label": "speaker"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0578,
+              "label": "monitor"
             }
           ]
         }
       },
       "summary": {
-        "found": 4,
+        "found": 5,
         "total": 6,
         "in_top1": 3,
-        "in_top3": 3,
-        "mean_rank": 1.75,
-        "mean_target_score": 0.0847,
+        "in_top3": 4,
+        "mean_rank": 2.6,
+        "mean_target_score": 0.0831,
         "top1_rate": "3/6",
-        "top3_rate": "3/6"
+        "top3_rate": "4/6"
       }
     },
     {
@@ -299,89 +299,89 @@
       "targets": {
         "TV": {
           "query": "a photo of a TV",
-          "rank": null,
-          "matched_oid": null,
-          "target_score": null,
-          "top1_score": 0.0858,
-          "top1_label": "album",
-          "top1_oid": "b6ecf1a7145a41e6",
-          "score_spread": 0.0453,
-          "score_margin_1_2": 0.0064,
+          "rank": 1,
+          "matched_oid": "ec98dcd38f2641fd",
+          "target_score": 0.0845,
+          "top1_score": 0.0845,
+          "top1_label": "monitor",
+          "top1_oid": "ec98dcd38f2641fd",
+          "score_spread": 0.0442,
+          "score_margin_1_2": 0.0063,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "b6ecf1a7145a41e6",
-              "score": 0.0858,
-              "label": "album"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0845,
+              "label": "monitor"
             },
             {
               "rank": 2,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0794,
-              "label": "keycard"
+              "oid": "842b8881e0694de6",
+              "score": 0.0782,
+              "label": "phone"
             },
             {
               "rank": 3,
-              "oid": "81b0abedd8794940",
-              "score": 0.0606,
-              "label": "drawer"
+              "oid": "44c4569bda7341db",
+              "score": 0.071,
+              "label": "sheet"
             },
             {
               "rank": 4,
-              "oid": "15508e4eea1f46e2",
-              "score": 0.0585,
-              "label": "book"
+              "oid": "2ba8726b621b414f",
+              "score": 0.0686,
+              "label": "folder"
             },
             {
               "rank": 5,
-              "oid": "a6c27062acab4905",
-              "score": 0.0563,
-              "label": "printer"
+              "oid": "02d55d7ac3414139",
+              "score": 0.0626,
+              "label": "cabinet"
             }
           ]
         },
         "pillow": {
           "query": "a photo of a pillow",
-          "rank": 4,
-          "matched_oid": "4ca30a916d504fba",
-          "target_score": 0.0897,
-          "top1_score": 0.0961,
-          "top1_label": "connector",
-          "top1_oid": "9c1be793786c42a2",
-          "score_spread": 0.0136,
-          "score_margin_1_2": 0.0025,
+          "rank": 5,
+          "matched_oid": "647d95bb4c154455",
+          "target_score": 0.0754,
+          "top1_score": 0.0926,
+          "top1_label": "cushion",
+          "top1_oid": "f1c7b1787ef14e45",
+          "score_spread": 0.0253,
+          "score_margin_1_2": 0.0018,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "9c1be793786c42a2",
-              "score": 0.0961,
-              "label": "connector"
+              "oid": "f1c7b1787ef14e45",
+              "score": 0.0926,
+              "label": "cushion"
             },
             {
               "rank": 2,
-              "oid": "c37ae07d4f30470f",
-              "score": 0.0936,
-              "label": "blanket"
+              "oid": "1369ceedd83f4c60",
+              "score": 0.0908,
+              "label": "sofa"
             },
             {
               "rank": 3,
-              "oid": "e4000a22b1c04b87",
-              "score": 0.0918,
-              "label": "paper towel"
+              "oid": "b8a8210fc923489e",
+              "score": 0.0823,
+              "label": "snack bag"
             },
             {
               "rank": 4,
-              "oid": "4ca30a916d504fba",
-              "score": 0.0897,
-              "label": "pillow"
+              "oid": "d61fe61d8b834157",
+              "score": 0.0801,
+              "label": "towel"
             },
             {
               "rank": 5,
-              "oid": "fef2110eb3434bed",
-              "score": 0.0887,
-              "label": "diaper bag"
+              "oid": "647d95bb4c154455",
+              "score": 0.0754,
+              "label": "pillow"
             }
           ]
         },
@@ -390,187 +390,187 @@
           "rank": null,
           "matched_oid": null,
           "target_score": null,
-          "top1_score": 0.0545,
-          "top1_label": "gear",
-          "top1_oid": "2404948d52e4440e",
-          "score_spread": 0.0129,
-          "score_margin_1_2": 0.0045,
+          "top1_score": 0.0466,
+          "top1_label": "shoe",
+          "top1_oid": "d03f516408ca4a45",
+          "score_spread": 0.0196,
+          "score_margin_1_2": 0.0075,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "2404948d52e4440e",
-              "score": 0.0545,
-              "label": "gear"
+              "oid": "d03f516408ca4a45",
+              "score": 0.0466,
+              "label": "shoe"
             },
             {
               "rank": 2,
-              "oid": "81b0abedd8794940",
-              "score": 0.05,
-              "label": "drawer"
+              "oid": "f62a9e29f5cb4330",
+              "score": 0.0391,
+              "label": "bottle"
             },
             {
               "rank": 3,
-              "oid": "d8cc799e1877484d",
-              "score": 0.0498,
-              "label": "robot"
+              "oid": "3a329563d7fb48b2",
+              "score": 0.0385,
+              "label": "headphones"
             },
             {
               "rank": 4,
-              "oid": "8a0daec3256a4d04",
-              "score": 0.0495,
-              "label": "person"
+              "oid": "bb77302ef487438f",
+              "score": 0.0377,
+              "label": "bottle"
             },
             {
               "rank": 5,
-              "oid": "8b25b04881c24063",
-              "score": 0.0481,
-              "label": "bichon"
+              "oid": "bd0f18d93ab64897",
+              "score": 0.036,
+              "label": "thermos"
             }
           ]
         },
         "air conditioner": {
           "query": "a photo of a air conditioner",
-          "rank": 2,
-          "matched_oid": "9d2eaf3851b54f0b",
-          "target_score": 0.0772,
-          "top1_score": 0.113,
-          "top1_label": "printer",
-          "top1_oid": "a6c27062acab4905",
-          "score_spread": 0.0618,
-          "score_margin_1_2": 0.0358,
+          "rank": 1,
+          "matched_oid": "7c2192665a134d0e",
+          "target_score": 0.1029,
+          "top1_score": 0.1029,
+          "top1_label": "portable air conditioner",
+          "top1_oid": "7c2192665a134d0e",
+          "score_spread": 0.0621,
+          "score_margin_1_2": 0.0162,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "a6c27062acab4905",
-              "score": 0.113,
-              "label": "printer"
+              "oid": "7c2192665a134d0e",
+              "score": 0.1029,
+              "label": "portable air conditioner"
             },
             {
               "rank": 2,
-              "oid": "9d2eaf3851b54f0b",
-              "score": 0.0772,
-              "label": "air conditioner"
+              "oid": "c8f449e3e4174e75",
+              "score": 0.0867,
+              "label": "dehumidifier"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.074,
-              "label": "fax"
+              "oid": "2989e7dcbe304bac",
+              "score": 0.0563,
+              "label": "stapler"
             },
             {
               "rank": 4,
-              "oid": "d842138c46884371",
-              "score": 0.0719,
-              "label": "solar battery"
+              "oid": "e0cf26443a1c43cf",
+              "score": 0.0537,
+              "label": "soap"
             },
             {
               "rank": 5,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0575,
-              "label": "keycard"
+              "oid": "842b8881e0694de6",
+              "score": 0.0481,
+              "label": "phone"
             }
           ]
         },
         "speaker": {
           "query": "a photo of a speaker",
           "rank": 1,
-          "matched_oid": "2e1dacc4f8d74ae7",
-          "target_score": 0.1057,
-          "top1_score": 0.1057,
+          "matched_oid": "4905c564e38d455d",
+          "target_score": 0.1093,
+          "top1_score": 0.1093,
           "top1_label": "speaker",
-          "top1_oid": "2e1dacc4f8d74ae7",
-          "score_spread": 0.0509,
-          "score_margin_1_2": 0.0344,
+          "top1_oid": "4905c564e38d455d",
+          "score_spread": 0.0528,
+          "score_margin_1_2": 0.039,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "2e1dacc4f8d74ae7",
-              "score": 0.1057,
+              "oid": "4905c564e38d455d",
+              "score": 0.1093,
               "label": "speaker"
             },
             {
               "rank": 2,
-              "oid": "16407ade9f3b4caa",
-              "score": 0.0713,
-              "label": "flip"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0703,
+              "label": "suitcase"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.0682,
-              "label": "fax"
+              "oid": "825c01ade0b44fd0",
+              "score": 0.066,
+              "label": "light switch"
             },
             {
               "rank": 4,
-              "oid": "a6c27062acab4905",
-              "score": 0.068,
-              "label": "printer"
+              "oid": "3a329563d7fb48b2",
+              "score": 0.0612,
+              "label": "headphones"
             },
             {
               "rank": 5,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.064,
-              "label": "keycard"
+              "oid": "842b8881e0694de6",
+              "score": 0.0609,
+              "label": "phone"
             }
           ]
         },
         "laptop": {
           "query": "a photo of a laptop",
-          "rank": 1,
-          "matched_oid": "8b140e20efb24b31",
-          "target_score": 0.0929,
-          "top1_score": 0.0929,
-          "top1_label": "computer box",
-          "top1_oid": "8b140e20efb24b31",
-          "score_spread": 0.0393,
-          "score_margin_1_2": 0.0053,
+          "rank": 2,
+          "matched_oid": "ce2c9ea8221c4cf9",
+          "target_score": 0.0815,
+          "top1_score": 0.0841,
+          "top1_label": "tablet",
+          "top1_oid": "03d9867553314cfe",
+          "score_spread": 0.0314,
+          "score_margin_1_2": 0.0026,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "8b140e20efb24b31",
-              "score": 0.0929,
-              "label": "computer box"
+              "oid": "03d9867553314cfe",
+              "score": 0.0841,
+              "label": "tablet"
             },
             {
               "rank": 2,
-              "oid": "df829bba254040fd",
-              "score": 0.0876,
+              "oid": "ce2c9ea8221c4cf9",
+              "score": 0.0815,
               "label": "laptop"
             },
             {
               "rank": 3,
-              "oid": "fff57f65701145d2",
-              "score": 0.0873,
-              "label": "computer box"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0779,
+              "label": "suitcase"
             },
             {
               "rank": 4,
-              "oid": "adc5aaa3e794437d",
-              "score": 0.0853,
-              "label": "laptop"
+              "oid": "842b8881e0694de6",
+              "score": 0.068,
+              "label": "phone"
             },
             {
               "rank": 5,
-              "oid": "11bcec3b8c164ef1",
-              "score": 0.079,
-              "label": "laptop"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0672,
+              "label": "monitor"
             }
           ]
         }
       },
       "summary": {
-        "found": 4,
+        "found": 5,
         "total": 6,
-        "in_top1": 2,
-        "in_top3": 3,
+        "in_top1": 3,
+        "in_top3": 4,
         "mean_rank": 2.0,
-        "mean_target_score": 0.0914,
-        "top1_rate": "2/6",
-        "top3_rate": "3/6"
+        "mean_target_score": 0.0907,
+        "top1_rate": "3/6",
+        "top3_rate": "4/6"
       }
     },
     {
@@ -579,89 +579,89 @@
       "targets": {
         "TV": {
           "query": "a cropped photo of a TV",
-          "rank": null,
-          "matched_oid": null,
-          "target_score": null,
-          "top1_score": 0.0965,
-          "top1_label": "album",
-          "top1_oid": "b6ecf1a7145a41e6",
-          "score_spread": 0.0448,
-          "score_margin_1_2": 0.0037,
+          "rank": 1,
+          "matched_oid": "ec98dcd38f2641fd",
+          "target_score": 0.0847,
+          "top1_score": 0.0847,
+          "top1_label": "monitor",
+          "top1_oid": "ec98dcd38f2641fd",
+          "score_spread": 0.0452,
+          "score_margin_1_2": 0.0051,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "b6ecf1a7145a41e6",
-              "score": 0.0965,
-              "label": "album"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0847,
+              "label": "monitor"
             },
             {
               "rank": 2,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0928,
-              "label": "keycard"
+              "oid": "44c4569bda7341db",
+              "score": 0.0796,
+              "label": "sheet"
             },
             {
               "rank": 3,
-              "oid": "81b0abedd8794940",
-              "score": 0.065,
-              "label": "drawer"
+              "oid": "2ba8726b621b414f",
+              "score": 0.0794,
+              "label": "folder"
             },
             {
               "rank": 4,
-              "oid": "18e6eb7046de4d9c",
-              "score": 0.0611,
-              "label": "night light"
+              "oid": "842b8881e0694de6",
+              "score": 0.0714,
+              "label": "phone"
             },
             {
               "rank": 5,
-              "oid": "31ca287f7fb64eca",
-              "score": 0.0583,
-              "label": "zoom lens"
+              "oid": "6056623f08f34811",
+              "score": 0.0607,
+              "label": "folder"
             }
           ]
         },
         "pillow": {
           "query": "a cropped photo of a pillow",
-          "rank": 4,
-          "matched_oid": "4ca30a916d504fba",
-          "target_score": 0.0961,
-          "top1_score": 0.1004,
-          "top1_label": "paper towel",
-          "top1_oid": "e4000a22b1c04b87",
-          "score_spread": 0.0138,
+          "rank": 3,
+          "matched_oid": "647d95bb4c154455",
+          "target_score": 0.084,
+          "top1_score": 0.0886,
+          "top1_label": "cushion",
+          "top1_oid": "f1c7b1787ef14e45",
+          "score_spread": 0.0232,
           "score_margin_1_2": 0.0029,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "e4000a22b1c04b87",
-              "score": 0.1004,
-              "label": "paper towel"
+              "oid": "f1c7b1787ef14e45",
+              "score": 0.0886,
+              "label": "cushion"
             },
             {
               "rank": 2,
-              "oid": "4b4f66233e0a4559",
-              "score": 0.0975,
-              "label": "sheet"
+              "oid": "1369ceedd83f4c60",
+              "score": 0.0857,
+              "label": "sofa"
             },
             {
               "rank": 3,
-              "oid": "c37ae07d4f30470f",
-              "score": 0.0971,
-              "label": "blanket"
-            },
-            {
-              "rank": 4,
-              "oid": "4ca30a916d504fba",
-              "score": 0.0961,
+              "oid": "647d95bb4c154455",
+              "score": 0.084,
               "label": "pillow"
             },
             {
+              "rank": 4,
+              "oid": "1922ecca8dcc4880",
+              "score": 0.0774,
+              "label": "mattress"
+            },
+            {
               "rank": 5,
-              "oid": "d204699c5cbd4689",
-              "score": 0.0951,
-              "label": "bag"
+              "oid": "bd0f18d93ab64897",
+              "score": 0.0727,
+              "label": "thermos"
             }
           ]
         },
@@ -670,187 +670,187 @@
           "rank": null,
           "matched_oid": null,
           "target_score": null,
-          "top1_score": 0.0604,
-          "top1_label": "bichon",
-          "top1_oid": "8b25b04881c24063",
-          "score_spread": 0.0111,
-          "score_margin_1_2": 0.0013,
+          "top1_score": 0.0502,
+          "top1_label": "shoe",
+          "top1_oid": "d03f516408ca4a45",
+          "score_spread": 0.0277,
+          "score_margin_1_2": 0.0059,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "8b25b04881c24063",
-              "score": 0.0604,
-              "label": "bichon"
+              "oid": "d03f516408ca4a45",
+              "score": 0.0502,
+              "label": "shoe"
             },
             {
               "rank": 2,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0591,
-              "label": "keycard"
+              "oid": "bb77302ef487438f",
+              "score": 0.0443,
+              "label": "bottle"
             },
             {
               "rank": 3,
-              "oid": "2404948d52e4440e",
-              "score": 0.0588,
-              "label": "gear"
+              "oid": "f62a9e29f5cb4330",
+              "score": 0.0386,
+              "label": "bottle"
             },
             {
               "rank": 4,
-              "oid": "e98ba05be3a74cda",
-              "score": 0.0557,
-              "label": "sew"
+              "oid": "bd0f18d93ab64897",
+              "score": 0.0343,
+              "label": "thermos"
             },
             {
               "rank": 5,
-              "oid": "e6be8b9f62aa41b3",
-              "score": 0.0553,
-              "label": "coin"
+              "oid": "3a329563d7fb48b2",
+              "score": 0.031,
+              "label": "headphones"
             }
           ]
         },
         "air conditioner": {
           "query": "a cropped photo of a air conditioner",
-          "rank": 2,
-          "matched_oid": "9d2eaf3851b54f0b",
-          "target_score": 0.0909,
-          "top1_score": 0.1165,
-          "top1_label": "printer",
-          "top1_oid": "a6c27062acab4905",
-          "score_spread": 0.0615,
-          "score_margin_1_2": 0.0256,
+          "rank": 1,
+          "matched_oid": "7c2192665a134d0e",
+          "target_score": 0.106,
+          "top1_score": 0.106,
+          "top1_label": "portable air conditioner",
+          "top1_oid": "7c2192665a134d0e",
+          "score_spread": 0.0625,
+          "score_margin_1_2": 0.0257,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "a6c27062acab4905",
-              "score": 0.1165,
-              "label": "printer"
+              "oid": "7c2192665a134d0e",
+              "score": 0.106,
+              "label": "portable air conditioner"
             },
             {
               "rank": 2,
-              "oid": "9d2eaf3851b54f0b",
-              "score": 0.0909,
-              "label": "air conditioner"
+              "oid": "c8f449e3e4174e75",
+              "score": 0.0803,
+              "label": "dehumidifier"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.0871,
-              "label": "fax"
+              "oid": "2989e7dcbe304bac",
+              "score": 0.058,
+              "label": "stapler"
             },
             {
               "rank": 4,
-              "oid": "d842138c46884371",
-              "score": 0.0778,
-              "label": "solar battery"
+              "oid": "e0cf26443a1c43cf",
+              "score": 0.0562,
+              "label": "soap"
             },
             {
               "rank": 5,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0725,
-              "label": "keycard"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0509,
+              "label": "monitor"
             }
           ]
         },
         "speaker": {
           "query": "a cropped photo of a speaker",
           "rank": 1,
-          "matched_oid": "2e1dacc4f8d74ae7",
-          "target_score": 0.11,
-          "top1_score": 0.11,
+          "matched_oid": "4905c564e38d455d",
+          "target_score": 0.0983,
+          "top1_score": 0.0983,
           "top1_label": "speaker",
-          "top1_oid": "2e1dacc4f8d74ae7",
-          "score_spread": 0.0496,
-          "score_margin_1_2": 0.034,
+          "top1_oid": "4905c564e38d455d",
+          "score_spread": 0.0454,
+          "score_margin_1_2": 0.0291,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "2e1dacc4f8d74ae7",
-              "score": 0.11,
+              "oid": "4905c564e38d455d",
+              "score": 0.0983,
               "label": "speaker"
             },
             {
               "rank": 2,
-              "oid": "16407ade9f3b4caa",
-              "score": 0.076,
-              "label": "flip"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0692,
+              "label": "suitcase"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.0754,
-              "label": "fax"
+              "oid": "3a329563d7fb48b2",
+              "score": 0.0641,
+              "label": "headphones"
             },
             {
               "rank": 4,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0735,
-              "label": "keycard"
+              "oid": "7d489ac1b5e14bca",
+              "score": 0.0595,
+              "label": "heater"
             },
             {
               "rank": 5,
-              "oid": "a6c27062acab4905",
-              "score": 0.0649,
-              "label": "printer"
+              "oid": "2989e7dcbe304bac",
+              "score": 0.0579,
+              "label": "stapler"
             }
           ]
         },
         "laptop": {
           "query": "a cropped photo of a laptop",
-          "rank": 1,
-          "matched_oid": "8b140e20efb24b31",
-          "target_score": 0.0805,
-          "top1_score": 0.0805,
-          "top1_label": "computer box",
-          "top1_oid": "8b140e20efb24b31",
-          "score_spread": 0.0271,
-          "score_margin_1_2": 0.0004,
+          "rank": 2,
+          "matched_oid": "ce2c9ea8221c4cf9",
+          "target_score": 0.0707,
+          "top1_score": 0.0741,
+          "top1_label": "tablet",
+          "top1_oid": "03d9867553314cfe",
+          "score_spread": 0.0256,
+          "score_margin_1_2": 0.0034,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "8b140e20efb24b31",
-              "score": 0.0805,
-              "label": "computer box"
+              "oid": "03d9867553314cfe",
+              "score": 0.0741,
+              "label": "tablet"
             },
             {
               "rank": 2,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0801,
-              "label": "keycard"
+              "oid": "ce2c9ea8221c4cf9",
+              "score": 0.0707,
+              "label": "laptop"
             },
             {
               "rank": 3,
-              "oid": "adc5aaa3e794437d",
-              "score": 0.0798,
-              "label": "laptop"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0706,
+              "label": "suitcase"
             },
             {
               "rank": 4,
-              "oid": "fff57f65701145d2",
-              "score": 0.0765,
-              "label": "computer box"
+              "oid": "2ba8726b621b414f",
+              "score": 0.0672,
+              "label": "folder"
             },
             {
               "rank": 5,
-              "oid": "df829bba254040fd",
-              "score": 0.072,
-              "label": "laptop"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0635,
+              "label": "monitor"
             }
           ]
         }
       },
       "summary": {
-        "found": 4,
+        "found": 5,
         "total": 6,
-        "in_top1": 2,
-        "in_top3": 3,
-        "mean_rank": 2.0,
-        "mean_target_score": 0.0944,
-        "top1_rate": "2/6",
-        "top3_rate": "3/6"
+        "in_top1": 3,
+        "in_top3": 5,
+        "mean_rank": 1.6,
+        "mean_target_score": 0.0887,
+        "top1_rate": "3/6",
+        "top3_rate": "5/6"
       }
     },
     {
@@ -859,89 +859,89 @@
       "targets": {
         "TV": {
           "query": "a close-up photo of a TV",
-          "rank": null,
-          "matched_oid": null,
-          "target_score": null,
-          "top1_score": 0.0903,
-          "top1_label": "album",
-          "top1_oid": "b6ecf1a7145a41e6",
-          "score_spread": 0.0384,
-          "score_margin_1_2": 0.0066,
+          "rank": 3,
+          "matched_oid": "ec98dcd38f2641fd",
+          "target_score": 0.0776,
+          "top1_score": 0.0802,
+          "top1_label": "folder",
+          "top1_oid": "2ba8726b621b414f",
+          "score_spread": 0.0405,
+          "score_margin_1_2": 0.001,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "b6ecf1a7145a41e6",
-              "score": 0.0903,
-              "label": "album"
+              "oid": "2ba8726b621b414f",
+              "score": 0.0802,
+              "label": "folder"
             },
             {
               "rank": 2,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0837,
-              "label": "keycard"
+              "oid": "44c4569bda7341db",
+              "score": 0.0792,
+              "label": "sheet"
             },
             {
               "rank": 3,
-              "oid": "81b0abedd8794940",
-              "score": 0.0641,
-              "label": "drawer"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0776,
+              "label": "monitor"
             },
             {
               "rank": 4,
-              "oid": "18e6eb7046de4d9c",
-              "score": 0.0612,
-              "label": "night light"
+              "oid": "842b8881e0694de6",
+              "score": 0.0646,
+              "label": "phone"
             },
             {
               "rank": 5,
-              "oid": "31ca287f7fb64eca",
+              "oid": "6056623f08f34811",
               "score": 0.0584,
-              "label": "zoom lens"
+              "label": "folder"
             }
           ]
         },
         "pillow": {
           "query": "a close-up photo of a pillow",
-          "rank": 2,
-          "matched_oid": "4ca30a916d504fba",
-          "target_score": 0.0971,
-          "top1_score": 0.1018,
-          "top1_label": "paper towel",
-          "top1_oid": "e4000a22b1c04b87",
-          "score_spread": 0.0196,
-          "score_margin_1_2": 0.0047,
+          "rank": 3,
+          "matched_oid": "647d95bb4c154455",
+          "target_score": 0.0789,
+          "top1_score": 0.0858,
+          "top1_label": "cushion",
+          "top1_oid": "f1c7b1787ef14e45",
+          "score_spread": 0.0214,
+          "score_margin_1_2": 0.0025,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "e4000a22b1c04b87",
-              "score": 0.1018,
-              "label": "paper towel"
+              "oid": "f1c7b1787ef14e45",
+              "score": 0.0858,
+              "label": "cushion"
             },
             {
               "rank": 2,
-              "oid": "4ca30a916d504fba",
-              "score": 0.0971,
-              "label": "pillow"
+              "oid": "1369ceedd83f4c60",
+              "score": 0.0833,
+              "label": "sofa"
             },
             {
               "rank": 3,
-              "oid": "4b4f66233e0a4559",
-              "score": 0.0931,
-              "label": "sheet"
+              "oid": "647d95bb4c154455",
+              "score": 0.0789,
+              "label": "pillow"
             },
             {
               "rank": 4,
-              "oid": "c37ae07d4f30470f",
-              "score": 0.0906,
-              "label": "blanket"
+              "oid": "1922ecca8dcc4880",
+              "score": 0.0742,
+              "label": "mattress"
             },
             {
               "rank": 5,
-              "oid": "e6be8b9f62aa41b3",
-              "score": 0.0906,
-              "label": "coin"
+              "oid": "44c4569bda7341db",
+              "score": 0.073,
+              "label": "sheet"
             }
           ]
         },
@@ -950,187 +950,187 @@
           "rank": null,
           "matched_oid": null,
           "target_score": null,
-          "top1_score": 0.0561,
-          "top1_label": "gear",
-          "top1_oid": "2404948d52e4440e",
-          "score_spread": 0.0122,
-          "score_margin_1_2": 0.0063,
+          "top1_score": 0.0389,
+          "top1_label": "shoe",
+          "top1_oid": "d03f516408ca4a45",
+          "score_spread": 0.0236,
+          "score_margin_1_2": 0.0049,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "2404948d52e4440e",
-              "score": 0.0561,
-              "label": "gear"
+              "oid": "d03f516408ca4a45",
+              "score": 0.0389,
+              "label": "shoe"
             },
             {
               "rank": 2,
-              "oid": "b08cc5d387e24879",
-              "score": 0.0498,
-              "label": "pillow"
+              "oid": "3a329563d7fb48b2",
+              "score": 0.034,
+              "label": "headphones"
             },
             {
               "rank": 3,
-              "oid": "2e1dacc4f8d74ae7",
-              "score": 0.0497,
-              "label": "speaker"
+              "oid": "0bf4add0ce3c4110",
+              "score": 0.0328,
+              "label": "night light"
             },
             {
               "rank": 4,
-              "oid": "8b25b04881c24063",
-              "score": 0.0487,
-              "label": "bichon"
+              "oid": "bb77302ef487438f",
+              "score": 0.0324,
+              "label": "bottle"
             },
             {
               "rank": 5,
-              "oid": "6249be3bc6fc4401",
-              "score": 0.0484,
-              "label": "lamp"
+              "oid": "b4293844bc4345c2",
+              "score": 0.0316,
+              "label": "night light"
             }
           ]
         },
         "air conditioner": {
           "query": "a close-up photo of a air conditioner",
-          "rank": 2,
-          "matched_oid": "9d2eaf3851b54f0b",
-          "target_score": 0.0893,
-          "top1_score": 0.1063,
-          "top1_label": "printer",
-          "top1_oid": "a6c27062acab4905",
-          "score_spread": 0.0517,
-          "score_margin_1_2": 0.017,
+          "rank": 1,
+          "matched_oid": "7c2192665a134d0e",
+          "target_score": 0.0912,
+          "top1_score": 0.0912,
+          "top1_label": "portable air conditioner",
+          "top1_oid": "7c2192665a134d0e",
+          "score_spread": 0.0561,
+          "score_margin_1_2": 0.0188,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "a6c27062acab4905",
-              "score": 0.1063,
-              "label": "printer"
+              "oid": "7c2192665a134d0e",
+              "score": 0.0912,
+              "label": "portable air conditioner"
             },
             {
               "rank": 2,
-              "oid": "9d2eaf3851b54f0b",
-              "score": 0.0893,
-              "label": "air conditioner"
+              "oid": "c8f449e3e4174e75",
+              "score": 0.0724,
+              "label": "dehumidifier"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.0801,
-              "label": "fax"
+              "oid": "e0cf26443a1c43cf",
+              "score": 0.0561,
+              "label": "soap"
             },
             {
               "rank": 4,
-              "oid": "18e6eb7046de4d9c",
-              "score": 0.0685,
-              "label": "night light"
+              "oid": "7d489ac1b5e14bca",
+              "score": 0.0467,
+              "label": "heater"
             },
             {
               "rank": 5,
-              "oid": "cadd9b54cf2843d8",
-              "score": 0.0682,
-              "label": "knife"
+              "oid": "2989e7dcbe304bac",
+              "score": 0.0462,
+              "label": "stapler"
             }
           ]
         },
         "speaker": {
           "query": "a close-up photo of a speaker",
           "rank": 1,
-          "matched_oid": "2e1dacc4f8d74ae7",
-          "target_score": 0.1064,
-          "top1_score": 0.1064,
+          "matched_oid": "4905c564e38d455d",
+          "target_score": 0.0929,
+          "top1_score": 0.0929,
           "top1_label": "speaker",
-          "top1_oid": "2e1dacc4f8d74ae7",
-          "score_spread": 0.0577,
-          "score_margin_1_2": 0.0432,
+          "top1_oid": "4905c564e38d455d",
+          "score_spread": 0.0524,
+          "score_margin_1_2": 0.0346,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "2e1dacc4f8d74ae7",
-              "score": 0.1064,
+              "oid": "4905c564e38d455d",
+              "score": 0.0929,
               "label": "speaker"
             },
             {
               "rank": 2,
-              "oid": "16407ade9f3b4caa",
-              "score": 0.0632,
-              "label": "flip"
+              "oid": "825c01ade0b44fd0",
+              "score": 0.0583,
+              "label": "light switch"
             },
             {
               "rank": 3,
-              "oid": "31ca287f7fb64eca",
-              "score": 0.0583,
-              "label": "zoom lens"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0564,
+              "label": "suitcase"
             },
             {
               "rank": 4,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.058,
-              "label": "keycard"
+              "oid": "ff28df27ec2c4da5",
+              "score": 0.0508,
+              "label": "cushion"
             },
             {
               "rank": 5,
-              "oid": "d0a6b6ca18b94d91",
-              "score": 0.0573,
-              "label": "soap bubble"
+              "oid": "2ba8726b621b414f",
+              "score": 0.0495,
+              "label": "folder"
             }
           ]
         },
         "laptop": {
           "query": "a close-up photo of a laptop",
           "rank": 1,
-          "matched_oid": "adc5aaa3e794437d",
-          "target_score": 0.0812,
-          "top1_score": 0.0812,
+          "matched_oid": "ce2c9ea8221c4cf9",
+          "target_score": 0.0704,
+          "top1_score": 0.0704,
           "top1_label": "laptop",
-          "top1_oid": "adc5aaa3e794437d",
-          "score_spread": 0.0272,
-          "score_margin_1_2": 0.0008,
+          "top1_oid": "ce2c9ea8221c4cf9",
+          "score_spread": 0.0239,
+          "score_margin_1_2": 0.0003,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "adc5aaa3e794437d",
-              "score": 0.0812,
+              "oid": "ce2c9ea8221c4cf9",
+              "score": 0.0704,
               "label": "laptop"
             },
             {
               "rank": 2,
-              "oid": "8b140e20efb24b31",
-              "score": 0.0804,
-              "label": "computer box"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0701,
+              "label": "suitcase"
             },
             {
               "rank": 3,
-              "oid": "fff57f65701145d2",
-              "score": 0.0731,
-              "label": "computer box"
+              "oid": "2ba8726b621b414f",
+              "score": 0.07,
+              "label": "folder"
             },
             {
               "rank": 4,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0717,
-              "label": "keycard"
+              "oid": "03d9867553314cfe",
+              "score": 0.0697,
+              "label": "tablet"
             },
             {
               "rank": 5,
-              "oid": "df829bba254040fd",
-              "score": 0.0648,
-              "label": "laptop"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0591,
+              "label": "monitor"
             }
           ]
         }
       },
       "summary": {
-        "found": 4,
+        "found": 5,
         "total": 6,
-        "in_top1": 2,
-        "in_top3": 4,
-        "mean_rank": 1.5,
-        "mean_target_score": 0.0935,
-        "top1_rate": "2/6",
-        "top3_rate": "4/6"
+        "in_top1": 3,
+        "in_top3": 5,
+        "mean_rank": 1.8,
+        "mean_target_score": 0.0822,
+        "top1_rate": "3/6",
+        "top3_rate": "5/6"
       }
     },
     {
@@ -1139,89 +1139,89 @@
       "targets": {
         "TV": {
           "query": "an indoor photo of a TV",
-          "rank": null,
-          "matched_oid": null,
-          "target_score": null,
-          "top1_score": 0.08,
-          "top1_label": "album",
-          "top1_oid": "b6ecf1a7145a41e6",
-          "score_spread": 0.0458,
-          "score_margin_1_2": 0.0127,
+          "rank": 1,
+          "matched_oid": "ec98dcd38f2641fd",
+          "target_score": 0.0771,
+          "top1_score": 0.0771,
+          "top1_label": "monitor",
+          "top1_oid": "ec98dcd38f2641fd",
+          "score_spread": 0.0484,
+          "score_margin_1_2": 0.0073,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "b6ecf1a7145a41e6",
-              "score": 0.08,
-              "label": "album"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0771,
+              "label": "monitor"
             },
             {
               "rank": 2,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0673,
-              "label": "keycard"
+              "oid": "842b8881e0694de6",
+              "score": 0.0698,
+              "label": "phone"
             },
             {
               "rank": 3,
-              "oid": "81b0abedd8794940",
-              "score": 0.0539,
-              "label": "drawer"
+              "oid": "44c4569bda7341db",
+              "score": 0.0628,
+              "label": "sheet"
             },
             {
               "rank": 4,
-              "oid": "a6c27062acab4905",
-              "score": 0.0531,
-              "label": "printer"
+              "oid": "02d55d7ac3414139",
+              "score": 0.0617,
+              "label": "cabinet"
             },
             {
               "rank": 5,
-              "oid": "15508e4eea1f46e2",
-              "score": 0.0507,
-              "label": "book"
+              "oid": "2ba8726b621b414f",
+              "score": 0.0564,
+              "label": "folder"
             }
           ]
         },
         "pillow": {
           "query": "an indoor photo of a pillow",
-          "rank": 3,
-          "matched_oid": "4ca30a916d504fba",
-          "target_score": 0.0799,
-          "top1_score": 0.0843,
-          "top1_label": "connector",
-          "top1_oid": "9c1be793786c42a2",
-          "score_spread": 0.0149,
-          "score_margin_1_2": 0.0006,
+          "rank": 10,
+          "matched_oid": "647d95bb4c154455",
+          "target_score": 0.0566,
+          "top1_score": 0.0869,
+          "top1_label": "cushion",
+          "top1_oid": "f1c7b1787ef14e45",
+          "score_spread": 0.0303,
+          "score_margin_1_2": 0.0051,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "9c1be793786c42a2",
-              "score": 0.0843,
-              "label": "connector"
+              "oid": "f1c7b1787ef14e45",
+              "score": 0.0869,
+              "label": "cushion"
             },
             {
               "rank": 2,
-              "oid": "e4000a22b1c04b87",
-              "score": 0.0837,
-              "label": "paper towel"
+              "oid": "1369ceedd83f4c60",
+              "score": 0.0818,
+              "label": "sofa"
             },
             {
               "rank": 3,
-              "oid": "4ca30a916d504fba",
-              "score": 0.0799,
-              "label": "pillow"
+              "oid": "d61fe61d8b834157",
+              "score": 0.069,
+              "label": "towel"
             },
             {
               "rank": 4,
-              "oid": "d204699c5cbd4689",
-              "score": 0.0786,
-              "label": "bag"
+              "oid": "44c4569bda7341db",
+              "score": 0.0654,
+              "label": "sheet"
             },
             {
               "rank": 5,
-              "oid": "329ecd7a38194266",
-              "score": 0.0781,
-              "label": "tube"
+              "oid": "b8a8210fc923489e",
+              "score": 0.0642,
+              "label": "snack bag"
             }
           ]
         },
@@ -1230,186 +1230,186 @@
           "rank": null,
           "matched_oid": null,
           "target_score": null,
-          "top1_score": 0.0378,
-          "top1_label": "drawer",
-          "top1_oid": "81b0abedd8794940",
-          "score_spread": 0.0106,
-          "score_margin_1_2": 0.0006,
+          "top1_score": 0.0389,
+          "top1_label": "cabinet",
+          "top1_oid": "02d55d7ac3414139",
+          "score_spread": 0.0278,
+          "score_margin_1_2": 0.0009,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "81b0abedd8794940",
-              "score": 0.0378,
-              "label": "drawer"
+              "oid": "02d55d7ac3414139",
+              "score": 0.0389,
+              "label": "cabinet"
             },
             {
               "rank": 2,
-              "oid": "b6ecf1a7145a41e6",
-              "score": 0.0372,
-              "label": "album"
+              "oid": "d03f516408ca4a45",
+              "score": 0.038,
+              "label": "shoe"
             },
             {
               "rank": 3,
-              "oid": "8a0daec3256a4d04",
-              "score": 0.0351,
-              "label": "person"
+              "oid": "842b8881e0694de6",
+              "score": 0.0261,
+              "label": "phone"
             },
             {
               "rank": 4,
-              "oid": "2404948d52e4440e",
-              "score": 0.0334,
-              "label": "gear"
+              "oid": "f62a9e29f5cb4330",
+              "score": 0.0215,
+              "label": "bottle"
             },
             {
               "rank": 5,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0318,
-              "label": "keycard"
+              "oid": "bd0f18d93ab64897",
+              "score": 0.0191,
+              "label": "thermos"
             }
           ]
         },
         "air conditioner": {
           "query": "an indoor photo of a air conditioner",
-          "rank": 2,
-          "matched_oid": "9d2eaf3851b54f0b",
-          "target_score": 0.0669,
-          "top1_score": 0.1078,
-          "top1_label": "printer",
-          "top1_oid": "a6c27062acab4905",
-          "score_spread": 0.069,
-          "score_margin_1_2": 0.0409,
+          "rank": 1,
+          "matched_oid": "7c2192665a134d0e",
+          "target_score": 0.0959,
+          "top1_score": 0.0959,
+          "top1_label": "portable air conditioner",
+          "top1_oid": "7c2192665a134d0e",
+          "score_spread": 0.0704,
+          "score_margin_1_2": 0.0244,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "a6c27062acab4905",
-              "score": 0.1078,
-              "label": "printer"
+              "oid": "7c2192665a134d0e",
+              "score": 0.0959,
+              "label": "portable air conditioner"
             },
             {
               "rank": 2,
-              "oid": "9d2eaf3851b54f0b",
-              "score": 0.0669,
-              "label": "air conditioner"
+              "oid": "c8f449e3e4174e75",
+              "score": 0.0715,
+              "label": "dehumidifier"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.0617,
-              "label": "fax"
+              "oid": "2989e7dcbe304bac",
+              "score": 0.0421,
+              "label": "stapler"
             },
             {
               "rank": 4,
-              "oid": "d842138c46884371",
-              "score": 0.0581,
-              "label": "solar battery"
+              "oid": "842b8881e0694de6",
+              "score": 0.0417,
+              "label": "phone"
             },
             {
               "rank": 5,
-              "oid": "cadd9b54cf2843d8",
-              "score": 0.0525,
-              "label": "knife"
+              "oid": "02d55d7ac3414139",
+              "score": 0.0383,
+              "label": "cabinet"
             }
           ]
         },
         "speaker": {
           "query": "an indoor photo of a speaker",
           "rank": 1,
-          "matched_oid": "2e1dacc4f8d74ae7",
-          "target_score": 0.0846,
-          "top1_score": 0.0846,
+          "matched_oid": "4905c564e38d455d",
+          "target_score": 0.0913,
+          "top1_score": 0.0913,
           "top1_label": "speaker",
-          "top1_oid": "2e1dacc4f8d74ae7",
-          "score_spread": 0.037,
-          "score_margin_1_2": 0.0069,
+          "top1_oid": "4905c564e38d455d",
+          "score_spread": 0.04,
+          "score_margin_1_2": 0.0205,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "2e1dacc4f8d74ae7",
-              "score": 0.0846,
+              "oid": "4905c564e38d455d",
+              "score": 0.0913,
               "label": "speaker"
             },
             {
               "rank": 2,
-              "oid": "a6c27062acab4905",
-              "score": 0.0777,
-              "label": "printer"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.0708,
+              "label": "suitcase"
             },
             {
               "rank": 3,
-              "oid": "39e0d52bca294707",
-              "score": 0.0691,
-              "label": "fax"
+              "oid": "825c01ade0b44fd0",
+              "score": 0.0628,
+              "label": "light switch"
             },
             {
               "rank": 4,
-              "oid": "81b0abedd8794940",
-              "score": 0.0623,
-              "label": "drawer"
+              "oid": "7c2192665a134d0e",
+              "score": 0.0608,
+              "label": "portable air conditioner"
             },
             {
               "rank": 5,
-              "oid": "98e47144e8b64ee8",
-              "score": 0.0606,
-              "label": "keycard"
+              "oid": "842b8881e0694de6",
+              "score": 0.0607,
+              "label": "phone"
             }
           ]
         },
         "laptop": {
           "query": "an indoor photo of a laptop",
-          "rank": 1,
-          "matched_oid": "8b140e20efb24b31",
-          "target_score": 0.0871,
-          "top1_score": 0.0871,
-          "top1_label": "computer box",
-          "top1_oid": "8b140e20efb24b31",
-          "score_spread": 0.0353,
-          "score_margin_1_2": 0.0045,
+          "rank": 3,
+          "matched_oid": "ce2c9ea8221c4cf9",
+          "target_score": 0.0735,
+          "top1_score": 0.0757,
+          "top1_label": "phone",
+          "top1_oid": "842b8881e0694de6",
+          "score_spread": 0.0223,
+          "score_margin_1_2": 0.0009,
           "num_results": 10,
           "all_results": [
             {
               "rank": 1,
-              "oid": "8b140e20efb24b31",
-              "score": 0.0871,
-              "label": "computer box"
+              "oid": "842b8881e0694de6",
+              "score": 0.0757,
+              "label": "phone"
             },
             {
               "rank": 2,
-              "oid": "fff57f65701145d2",
-              "score": 0.0826,
-              "label": "computer box"
+              "oid": "03d9867553314cfe",
+              "score": 0.0748,
+              "label": "tablet"
             },
             {
               "rank": 3,
-              "oid": "adc5aaa3e794437d",
-              "score": 0.0788,
+              "oid": "ce2c9ea8221c4cf9",
+              "score": 0.0735,
               "label": "laptop"
             },
             {
               "rank": 4,
-              "oid": "df829bba254040fd",
-              "score": 0.0768,
-              "label": "laptop"
+              "oid": "ec98dcd38f2641fd",
+              "score": 0.0721,
+              "label": "monitor"
             },
             {
               "rank": 5,
-              "oid": "11bcec3b8c164ef1",
-              "score": 0.0754,
-              "label": "laptop"
+              "oid": "1617d34bc82a4c26",
+              "score": 0.072,
+              "label": "suitcase"
             }
           ]
         }
       },
       "summary": {
-        "found": 4,
+        "found": 5,
         "total": 6,
-        "in_top1": 2,
+        "in_top1": 3,
         "in_top3": 4,
-        "mean_rank": 1.75,
-        "mean_target_score": 0.0796,
-        "top1_rate": "2/6",
+        "mean_rank": 3.2,
+        "mean_target_score": 0.0789,
+        "top1_rate": "3/6",
         "top3_rate": "4/6"
       }
     }

@@ -14,7 +14,7 @@ pip install "rtsm[gpu]" --extra-index-url https://download.pytorch.org/whl/cu128
 rtsm demo
 ```
 
-**210 ms/frame** · **60+ objects tracked** · **Apache 2.0** · Python 3.12+ · RTX 3080–5090
+**246 ms/frame** · **74 objects tracked** · **Apache 2.0** · Python 3.12+ · RTX 3080–5090
 
 **[Demo Video](https://youtu.be/abhXsbvOLQg)** · **[Docs](https://calabi-inc.github.io/rtsm)** · **[PyPI](https://pypi.org/project/rtsm/)**
 
@@ -240,11 +240,11 @@ RTSM supports multiple segmentation backends via `segmentation.backend` in `conf
 
 | Backend | License | Description | Seg time* | Pipeline total* | Labels |
 |---------|---------|-------------|-----------|-----------------|--------|
-| `grounded_sam2` | Apache 2.0 | Grounding DINO detect + SAM2 segment | 222 ms | 510 ms | Open-vocab (text-prompted) |
+| `grounded_sam2` | Apache 2.0 | Grounding DINO detect + SAM2 segment | 217 ms | 531 ms | Open-vocab (text-prompted) |
 | `sam2` | Apache 2.0 | SAM2 auto-mask (segment everything) | ~860 ms | ~1000 ms | None (class-agnostic) |
 | `fastsam` | AGPL-3.0 | FastSAM (segment everything) | ~50 ms | ~200 ms | None (class-agnostic) |
 | `yoloe` | AGPL-3.0 | YOLOE detection + segmentation | ~60 ms | ~210 ms | Open-vocab / 1200+ built-in |
-| `dual` | AGPL-3.0 | FastSAM + YOLOE with IoU merge | 116 ms | 210 ms | Dual-confirmed labels |
+| `dual` | AGPL-3.0 | FastSAM + YOLOE with IoU merge | 100 ms | 246 ms | Dual-confirmed labels |
 
 *Mean on RTX 5090, 640x480 input.*
 
@@ -261,16 +261,16 @@ segmentation:
 
 ## Performance
 
-Benchmarked on RTX 5090 (32 GB), iPhone ARKit recording (162 frames, 458s indoor scene), 640x480 RGB input.
+Benchmarked on RTX 5090 (32 GB), iPhone ARKit recording (240 frames, 76s indoor scene), 640x480 RGB input.
 
 | Metric | dual (FastSAM + YOLOE) | grounded_sam2 (GDINO + SAM2) |
 |--------|------------------------|------------------------------|
-| **Mean latency** | **210 ms** | **510 ms** |
-| P50 latency | 170 ms | 502 ms |
-| P95 latency | 509 ms | 721 ms |
-| Masks/frame | 28.8 | 13.4 |
-| Objects confirmed | 60 | 35 |
-| Confirmation rate | 52.2% | 45.5% |
+| **Mean latency** | **246 ms** | **531 ms** |
+| P50 latency | 213 ms | 486 ms |
+| P95 latency | 604 ms | 942 ms |
+| Masks/frame | 25.7 | 11.3 |
+| Objects confirmed | 74 | 42 |
+| Confirmation rate | 65.4% | 59.2% |
 | License | AGPL-3.0 | Apache-2.0 |
 
 > Full breakdown: **[Benchmarks](https://calabi-inc.github.io/rtsm/benchmarks/)** | [`reports/backend_comparison.md`](reports/backend_comparison.md)

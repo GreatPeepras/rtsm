@@ -1,6 +1,6 @@
 # RTSM Backend Comparison Report
 
-**Generated:** 2026-04-06 22:15:04
+**Generated:** 2026-04-14 01:02:40
 **System:** chifeng5090 / Windows 11
 **GPU:** NVIDIA GeForce RTX 5090, 32607 MiB
 **Python:** 3.12.10
@@ -13,11 +13,11 @@
 |---|---|
 | Recording | `recordings/session1` |
 | Device | iPhone |
-| Total binary frames | 162 |
-| Recording duration | 458.9 s |
+| Total binary frames | 240 |
+| Recording duration | 75.8 s |
 | RGB resolution | 640x480 |
 | Replay rate | Real-time (original recording rate) |
-| CLIP model | ViT-B/32 (OpenAI) |
+| CLIP model | ViT-B-16-SigLIP (webli) |
 | Mask resolution | 640x640 (`retina_masks: false`) |
 | Top-K pre-CLIP | 15 |
 | Association `cos_min` | 0.90 |
@@ -46,39 +46,39 @@
 
 | Metric | A: dual | B: grounded_sam2 | Delta (B-A) |
 |---|---|---|---|
-| **Mean** | 210.0 | 510.4 | +300.4 |
-| **P50 (median)** | 170.3 | 501.6 | +331.3 |
-| **P95** | 508.7 | 721.4 | +212.7 |
-| **Max** | 538.5 | 830.2 | +291.7 |
+| **Mean** | 246.0 | 530.9 | +284.9 |
+| **P50 (median)** | 208.8 | 492.6 | +283.8 |
+| **P95** | 603.7 | 942.2 | +338.5 |
+| **Max** | 676.5 | 971.2 | +294.7 |
 
 ### 2.2 Per-Stage Breakdown — Mean (ms)
 
 | Stage | A: dual | B: grounded_sam2 | Delta (B-A) | % of A total | % of B total |
 |---|---|---|---|---|---|
-| Segmentation | 115.5 | 222.0 | +106.5 | 55.0% | 43.5% |
-| Heuristics | 60.2 | 238.8 | +178.6 | 28.7% | 46.8% |
+| Segmentation | 104.3 | 215.1 | +110.8 | 42.4% | 40.5% |
+| Heuristics | 61.9 | 260.5 | +198.6 | 25.2% | 49.1% |
 | Scoring | 0.2 | 0.2 | 0.0 | 0.1% | 0.0% |
-| CLIP | 22.7 | 23.7 | +1.0 | 10.8% | 4.6% |
-| Association | 6.1 | 4.0 | -2.1 | 2.9% | 0.8% |
-| **Total** | **210.0** | **510.4** | **+300.4** | 100% | 100% |
+| CLIP | 46.5 | 31.0 | -15.5 | 18.9% | 5.8% |
+| Association | 6.7 | 4.1 | -2.6 | 2.7% | 0.8% |
+| **Total** | **246.0** | **530.9** | **+284.9** | 100% | 100% |
 
 ### 2.3 Per-Stage Breakdown — P95 (ms)
 
 | Stage | A: dual | B: grounded_sam2 |
 |---|---|---|
-| Segmentation | 394.3 | 433.2 |
-| Heuristics | 84.5 | 367.0 |
-| Scoring | 0.4 | 0.3 |
-| CLIP | 30.1 | 28.7 |
-| Association | 8.2 | 6.5 |
-| **Total** | **508.7** | **721.4** |
+| Segmentation | 341.3 | 258.3 |
+| Heuristics | 82.9 | 482.8 |
+| Scoring | 0.3 | 0.2 |
+| CLIP | 70.7 | 48.7 |
+| Association | 8.8 | 6.4 |
+| **Total** | **603.7** | **942.2** |
 
 ### 2.4 Segmentation as % of Total Pipeline
 
 | Backend | Seg % of total (mean) |
 |---|---|
-| A: dual | 55.0% |
-| B: grounded_sam2 | 43.5% |
+| A: dual | 42.4% |
+| B: grounded_sam2 | 40.5% |
 
 ---
 
@@ -86,10 +86,10 @@
 
 | Metric | A: dual | B: grounded_sam2 |
 |---|---|---|
-| Frames processed | 38 | 38 |
-| Window duration (s) | 33.7 | 33.7 |
-| Processing Hz | 1.13 | 1.13 |
-| Mean queue depth | 0.1 | 0.3 |
+| Frames processed | 54 | 54 |
+| Window duration (s) | 48.2 | 48.3 |
+| Processing Hz | 1.12 | 1.12 |
+| Mean queue depth | 0.1 | 0.4 |
 | Warmup frames skipped | 5 | 5 |
 
 ---
@@ -99,26 +99,26 @@
 | Metric | A: dual | B: grounded_sam2 |
 |---|---|---|
 | Backend | dual | grounded_sam2 |
-| Mean masks/frame (post-merge) | 28.8 | 13.4 |
-| Mean raw FastSAM masks/frame | 24.2 | 0.0 |
-| Mean raw YOLOE masks/frame | 11.1 | 0.0 |
-| Staged survival rate | 61.7% | N/A |
+| Mean masks/frame (post-merge) | 25.7 | 11.3 |
+| Mean raw FastSAM masks/frame | 22.2 | 0.0 |
+| Mean raw YOLOE masks/frame | 10.4 | 0.0 |
+| Staged survival rate | 59.5% | N/A |
 
 ### 4.1 Confirmation Source Breakdown (dual backend)
 
 | Source | Rate |
 |---|---|
-| Dual-confirmed (FastSAM + YOLOE IoU match) | 22.4% |
-| FastSAM-only | 61.4% |
-| YOLOE-only | 16.1% |
+| Dual-confirmed (FastSAM + YOLOE IoU match) | 26.9% |
+| FastSAM-only | 59.7% |
+| YOLOE-only | 13.4% |
 
 ### 4.2 Selected Masks by Source (dual backend, top-K)
 
 | Source | Selection rate |
 |---|---|
-| Dual-confirmed | 32.8% |
-| FastSAM-only | 58.1% |
-| YOLOE-only | 9.1% |
+| Dual-confirmed | 31.7% |
+| FastSAM-only | 60.6% |
+| YOLOE-only | 7.6% |
 
 ---
 
@@ -126,11 +126,11 @@
 
 | Stage | A: dual | B: grounded_sam2 |
 |---|---|---|
-| Raw masks/frame (model output) | 28.8 | 13.4 |
-| Into heuristics | 28.8 | 13.4 |
-| Staged survival | 61.7% | N/A |
-| Top-K candidates (CLIP input) | 13.6 | 9.0 |
-| Overall mask survival (cand/raw) | 47.0% | 66.9% |
+| Raw masks/frame (model output) | 25.7 | 11.3 |
+| Into heuristics | 25.7 | 11.3 |
+| Staged survival | 59.5% | N/A |
+| Top-K candidates (CLIP input) | 13.1 | 7.9 |
+| Overall mask survival (cand/raw) | 50.9% | 69.8% |
 
 ---
 
@@ -140,17 +140,17 @@
 
 | Metric | A: dual | B: grounded_sam2 |
 |---|---|---|
-| Total objects | 115 | 77 |
-| Confirmed | 60 | 35 |
-| Proto (unconfirmed) | 55 | 42 |
-| Avg hits/object | 3.0 | 2.8 |
+| Total objects | 111 | 71 |
+| Confirmed | 74 | 42 |
+| Proto (unconfirmed) | 37 | 29 |
+| Avg hits/object | 4.5 | 3.8 |
 
 ### 6.2 Object Confirmation Rate
 
 | Metric | A: dual | B: grounded_sam2 |
 |---|---|---|
-| Confirmation rate | 52.2% | 45.5% |
-| Avg observations/object | 3.0 | 2.8 |
+| Confirmation rate | 66.7% | 59.2% |
+| Avg observations/object | 4.5 | 3.8 |
 
 ---
 
@@ -159,11 +159,11 @@
 | Dimension | A: dual (FastSAM+YOLOE) | B: grounded_sam2 (GDINO+SAM2) |
 |---|---|---|
 | **License** | AGPL-3.0 | Apache-2.0 |
-| **Mean latency** | 210.0 ms | 510.4 ms |
-| **P95 latency** | 508.7 ms | 721.4 ms |
-| **Masks/frame** | 28.8 | 13.4 |
-| **Objects discovered** | 115 | 77 |
-| **Objects confirmed** | 60 | 35 |
+| **Mean latency** | 246.0 ms | 530.9 ms |
+| **P95 latency** | 603.7 ms | 942.2 ms |
+| **Masks/frame** | 25.7 | 11.3 |
+| **Objects discovered** | 111 | 71 |
+| **Objects confirmed** | 74 | 42 |
 | **Vocabulary** | 1200+ LVIS (prompt-free) | 30-class indoor (text-prompted) |
 | **Mask consensus** | Dual-model IoU validation | Single-model (SAM2 quality) |
 
@@ -171,4 +171,4 @@
 
 *Report generated by `scripts/benchmark_backends.py`*
 *RTSM — Real-Time Spatio-Semantic Memory*
-*Recording: session1 (162 frames, 458.9s)*
+*Recording: session1 (240 frames, 75.8s)*

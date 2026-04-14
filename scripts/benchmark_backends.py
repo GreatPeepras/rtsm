@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional
 # ── Paths ──
 ROOT = Path(__file__).resolve().parent.parent
 RECORDING = ROOT / "recordings" / "session1"
-CONFIG_PATH = ROOT / "config" / "rtsm.yaml"
+CONFIG_PATH = ROOT / "rtsm" / "cfg" / "rtsm.yaml"
 REPORT_DIR = ROOT / "reports"
 
 API_PORT = 8002
@@ -353,6 +353,15 @@ def generate_report(results: List[Dict[str, Any]]) -> str:
     rec_cfg = meta.get("rtsm_config_snapshot", {})
     cam = rec_cfg.get("camera", {})
 
+    # CLIP model from config
+    import yaml
+    with open(CONFIG_PATH, "r") as f:
+        _cfg = yaml.safe_load(f)
+    clip_cfg = _cfg.get("clip", {})
+    clip_model_name = clip_cfg.get("model", "unknown")
+    clip_pretrained = clip_cfg.get("pretrained", "")
+    clip_model = f"{clip_model_name} ({clip_pretrained})" if clip_pretrained else clip_model_name
+
     # Hourly time-series summary (for variance / jitter analysis)
     h_a = r_a.get("latency_hourly", [])
     h_b = r_b.get("latency_hourly", [])
@@ -418,7 +427,7 @@ def generate_report(results: List[Dict[str, Any]]) -> str:
 | Recording duration | {duration:.1f} s |
 | RGB resolution | {cam_res} |
 | Replay rate | Real-time (original recording rate) |
-| CLIP model | ViT-B/32 (OpenAI) |
+| CLIP model | {clip_model} |
 | Mask resolution | 640x640 (`retina_masks: false`) |
 | Top-K pre-CLIP | 15 |
 | Association `cos_min` | 0.90 |
