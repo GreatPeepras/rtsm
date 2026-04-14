@@ -35,4 +35,4 @@ RUN python3 -m pip install --break-system-packages \
 EXPOSE 8002
 
 # Run demo (models will auto-download on first run)
-CMD ["python3", "-m", "rtsm.run", "demo"]
+CMD ["python3", "-m", "rtsm", "demo", "--no-viz"]
