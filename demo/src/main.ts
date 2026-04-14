@@ -945,6 +945,7 @@ panelFilter?.addEventListener('click', () => {
 // Semantic search button and elements
 const searchBtn = document.getElementById('search-btn')
 const showAllBtn = document.getElementById('show-all-btn')
+const searchThresholdInput = document.getElementById('search-threshold') as HTMLInputElement
 
 // Perform semantic search via CLIP + FAISS
 async function performSemanticSearch() {
@@ -955,11 +956,12 @@ async function performSemanticSearch() {
     return
   }
 
+  const threshold = parseFloat(searchThresholdInput?.value || '0.0') || 0.0
   searchQuery = query
-  console.log(`[semantic-search] Searching for: "${query}"`)
+  console.log(`[semantic-search] Searching for: "${query}" (threshold=${threshold})`)
 
   try {
-    const resp = await fetch(`${RTSM_API_BASE}/search/semantic?query=${encodeURIComponent(query)}&top_k=10&threshold=0.0`)
+    const resp = await fetch(`${RTSM_API_BASE}/search/semantic?query=${encodeURIComponent(query)}&top_k=10&threshold=${threshold}`)
     const data = await resp.json()
     console.log('[semantic-search] API response:', data)
 
@@ -1092,6 +1094,44 @@ function selectObject(id: string) {
 galleryClose?.addEventListener('click', () => {
   snapshotGallery?.classList.remove('visible')
 })
+
+// Make snapshot gallery draggable by its header
+{
+  const header = document.getElementById('gallery-header')
+  const panel = snapshotGallery
+  if (header && panel) {
+    let isDragging = false
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0
+
+    header.addEventListener('mousedown', (e: MouseEvent) => {
+      if ((e.target as HTMLElement).tagName === 'BUTTON' || (e.target as HTMLElement).tagName === 'SELECT') return
+      isDragging = true
+      const rect = panel.getBoundingClientRect()
+      startX = e.clientX
+      startY = e.clientY
+      startLeft = rect.left
+      startTop = rect.top
+      // Switch from fixed bottom/right to fixed top/left positioning
+      panel.style.left = rect.left + 'px'
+      panel.style.top = rect.top + 'px'
+      panel.style.right = 'auto'
+      panel.style.bottom = 'auto'
+      e.preventDefault()
+    })
+
+    document.addEventListener('mousemove', (e: MouseEvent) => {
+      if (!isDragging) return
+      const dx = e.clientX - startX
+      const dy = e.clientY - startY
+      panel.style.left = (startLeft + dx) + 'px'
+      panel.style.top = (startTop + dy) + 'px'
+    })
+
+    document.addEventListener('mouseup', () => {
+      isDragging = false
+    })
+  }
+}
 
 // Load snapshots for an object
 async function loadObjectSnapshots(objectId: string) {
