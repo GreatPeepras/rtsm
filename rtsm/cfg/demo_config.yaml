@@ -47,9 +47,49 @@ segmentation:
     gdino_model_id: IDEA-Research/grounding-dino-tiny
     sam2_model_id: null
     device: cuda
-    box_threshold: 0.25
-    text_threshold: 0.2
-    vocab: null
+    box_threshold: 0.18                # DEMO: lower to catch dolls, small items
+    text_threshold: 0.12               # DEMO: lower text matching
+    vocab:
+      - chair
+      - table
+      - desk
+      - couch
+      - bed
+      - shelf
+      - cabinet
+      - monitor
+      - laptop
+      - keyboard
+      - mouse
+      - phone
+      - tv
+      - speaker
+      - bottle
+      - cup
+      - mug
+      - book
+      - bag
+      - backpack
+      - plant
+      - lamp
+      - pillow
+      - cushion
+      - blanket
+      - doll
+      - stuffed animal
+      - toy
+      - figurine
+      - plush
+      - tissue box
+      - remote
+      - headphones
+      - charger
+      - box
+      - bin
+      - basket
+      - clock
+      - picture frame
+      - curtain
 
 clip:
   model: ViT-B-16-SigLIP
@@ -88,7 +128,7 @@ masks:
   max_border_fraction: 0.15
 
 filters:
-  min_area_px: 600                   # DEMO: filter smaller noise
+  min_area_px: 400                   # DEMO: lower to catch smaller objects (dolls, toys)
   aspect_ratio: [0.2, 5.0]
   solidity_min: 0.3
   border_touch_max_pct: 0.15
@@ -121,7 +161,7 @@ staging:
   centroid_min_valid: 0.05
   depth_valid_min: 0.02
   depth_erode_px: 1
-  topk_preclip: 8                    # DEMO: fewer CLIP candidates = faster
+  topk_preclip: 12                   # DEMO: more candidates to catch small objects
   crop_pad_px: 6
   clip_input: 224
 
@@ -147,10 +187,10 @@ staging:
   struct_extent_hi: 0.35
 
   dedup_use_mask: false
-  dedup_centroid_px: 50.0
-  dedup_area_ratio_min: 0.4
-  dedup_bbox_iou_thr: 0.50
-  dedup_iou_thr: 0.80
+  dedup_centroid_px: 35.0              # DEMO: tighter dedup to reduce duplicates
+  dedup_area_ratio_min: 0.3
+  dedup_bbox_iou_thr: 0.40             # DEMO: tighter bbox overlap for dedup
+  dedup_iou_thr: 0.60                  # DEMO: tighter mask iou for dedup
 
 # -------------------- Spatial Memory --------------------
 sweep_cache:
@@ -180,11 +220,11 @@ io_sweep:
 
 assoc:
   rings: 1
-  nearest_m_for_cos: 8
+  nearest_m_for_cos: 5
   use_embeddings: true
   cos_min: 0.90
-  gate_dist_base_m: 0.50
-  gate_reproj_px: 60
+  gate_dist_base_m: 0.35              # DEMO: balanced — merge same object across views but not neighbors
+  gate_reproj_px: 35                  # DEMO: balanced — allow some viewpoint variation
   fallback_all_when_empty: true
   debug_positions: false
 
