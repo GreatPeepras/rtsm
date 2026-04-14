@@ -41,6 +41,9 @@ rtsm demo --no-viz     # headless — API only at localhost:8002
 
 No hardware needed — replay uses a bundled recording.
 
+**Try searching for these objects** (type in the search bar or use the API):
+`tissue box` · `doll` · `laptop` · `pillow` · `curtain` · `lamp` · `humidifier`
+
 **[Watch the full demo on YouTube](https://youtu.be/abhXsbvOLQg)**
 
 ---
