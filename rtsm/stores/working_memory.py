@@ -492,10 +492,15 @@ class WorkingMemory:
                 )
                 heapq.heappush(self._ltm_heap, (_now_mono(), oid))
 
-    def collect_ready_for_upsert(self) -> List[Dict[str, Any]]:
+    def collect_ready_for_upsert(self, force_all: bool = False) -> List[Dict[str, Any]]:
         """Collect confirmed objects that should be (re)upserted to LTM now.
         Returns a list of dict payloads; caller performs the actual DB write.
         Uses a due-time heap (monotonic seconds) to avoid scanning the entire map each time.
+
+        Args:
+            force_all: If True, skip all timing/change checks and upsert ALL
+                       confirmed objects. Used by demo mode to ensure all
+                       confirmed objects are searchable after replay completes.
         """
         out: List[Dict[str, Any]] = []
         m_now = _now_mono()
@@ -508,6 +513,30 @@ class WorkingMemory:
             heapq.heappush(self._ltm_heap, (next_regular, o.id))
 
         with self._lock:
+            # Force-flush: upsert ALL confirmed objects, skip timing/change checks
+            if force_all:
+                for o in self._map.values():
+                    if not o.confirmed or o.emb_mean is None:
+                        continue
+                    label_topk = sorted(o.label_scores.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                    out.append({
+                        "object_id": o.id,
+                        "emb": o.emb_mean.astype(np.float32),
+                        "xyz": o.xyz_world.astype(np.float32),
+                        "label_primary": o.label_primary,
+                        "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
+                        "label_topk": [k for k, _ in label_topk],
+                        "label_scores": [float(v) for _, v in label_topk],
+                        "stability": float(o.stability),
+                        "created_at": o.created_wall_utc,
+                        "created_mono": o.created_mono,
+                    })
+                    o.last_upsert_mono = m_now
+                    o.last_upsert_emb = o.emb_mean.copy()
+                    o.last_upsert_xyz = o.xyz_world.copy()
+                    self._upsert_count_total += 1
+                return out
+
             # Drain heap for entries due now (lazy duplicates tolerated)
             while self._ltm_heap and self._ltm_heap[0][0] <= m_now:
                 _, oid = heapq.heappop(self._ltm_heap)

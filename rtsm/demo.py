@@ -297,6 +297,31 @@ def run_demo(argv: list[str] | None = None) -> None:
         url = f"http://localhost:{port}"
         threading.Timer(1.5, open_browser, args=[url]).start()
 
+    # Force-flush all confirmed objects to FAISS after replay completes.
+    # Without this, only ~4 of ~20 confirmed objects get upserted because
+    # the flush timer doesn't trigger fast enough for a short demo clip.
+    def _flush_after_replay():
+        replay.wait()  # block until all frames replayed
+        # Wait for pipeline to drain the queue
+        import time as _time
+        for _ in range(60):  # max 30 seconds
+            if ingest_q.qsize() == 0:
+                _time.sleep(2.0)  # let last frame finish processing
+                break
+            _time.sleep(0.5)
+        # Force flush ALL confirmed objects to vector store
+        if vectors is not None:
+            ready = wm.collect_ready_for_upsert(force_all=True)
+            if ready:
+                try:
+                    vectors.upsert_batch(ready)
+                    logger.info(f"[demo] Force-flushed {len(ready)} objects to vector store after replay")
+                except Exception as e:
+                    logger.warning(f"[demo] Force flush failed: {e}")
+
+    flush_thread = threading.Thread(target=_flush_after_replay, daemon=True, name="demo-flush")
+    flush_thread.start()
+
     try:
         pipe.run_forever()
     except KeyboardInterrupt:
