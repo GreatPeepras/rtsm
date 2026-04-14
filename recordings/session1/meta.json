@@ -1,22 +1,22 @@
 {
   "format_version": 1,
-  "session_id": "3859B358-E447-48FB-8B26-92A6EF8F01C0",
+  "session_id": "4F4E55A3-9132-49DD-B11A-37DC06FD1881",
   "device_name": "iPhone",
   "hello": {
     "protocol_version": 1,
     "device_name": "iPhone",
     "type": "hello",
-    "session_id": "3859B358-E447-48FB-8B26-92A6EF8F01C0"
+    "session_id": "4F4E55A3-9132-49DD-B11A-37DC06FD1881"
   },
   "ack": {
     "type": "hello_ack",
     "status": "ok",
     "protocol_version": 1,
     "server": "rtsm",
-    "session_id": "3859B358-E447-48FB-8B26-92A6EF8F01C0"
+    "session_id": "4F4E55A3-9132-49DD-B11A-37DC06FD1881"
   },
-  "total_binary_messages": 162,
-  "duration_s": 458.933,
+  "total_binary_messages": 240,
+  "duration_s": 75.815,
   "rtsm_config_snapshot": {
     "camera": {
       "model": "D435i",
@@ -29,21 +29,41 @@
       "cy": 259.239777
     },
     "segmentation": {
-      "backend": "dual",
-      "retina_masks": true,
+      "backend": "grounded_sam2",
+      "retina_masks": false,
       "fastsam": {
         "model_path": "model_store/fastsam/FastSAM-x.pt",
         "device": "cuda",
         "imgsz": 640,
-        "conf": 0.4,
-        "iou": 0.9
+        "conf": 0.6,
+        "iou": 0.7,
+        "max_det": 100
       },
       "yoloe": {
-        "model_path": "model_store/yolo/yoloe-26s-seg.pt",
+        "model_path": "model_store/yolo/yoloe-26s-seg-pf.pt",
         "device": "cuda",
         "imgsz": 640,
         "conf": 0.25,
-        "iou": 0.7,
+        "iou": 0.5,
+        "max_det": 100,
+        "vocab": null
+      },
+      "sam2": {
+        "model_id": "facebook/sam2.1-hiera-small",
+        "device": "cuda",
+        "points_per_side": 32,
+        "points_per_batch": 64,
+        "pred_iou_thresh": 0.7,
+        "stability_score_thresh": 0.92,
+        "box_nms_thresh": 0.7,
+        "min_mask_region_area": 100
+      },
+      "grounded_sam2": {
+        "gdino_model_id": "IDEA-Research/grounding-dino-tiny",
+        "sam2_model_id": null,
+        "device": "cuda",
+        "box_threshold": 0.25,
+        "text_threshold": 0.2,
         "vocab": null
       },
       "dual": {
@@ -54,8 +74,8 @@
       }
     },
     "clip": {
-      "model": "ViT-B-32",
-      "pretrained": "openai",
+      "model": "ViT-B-16-SigLIP",
+      "pretrained": "webli",
       "local_dir": "model_store/clip"
     },
     "io": {
@@ -131,6 +151,7 @@
       "topk_preclip": 15,
       "crop_pad_px": 6,
       "clip_input": 224,
+      "bg_fill": "mean",
       "w_coverage": 1.0,
       "w_border_fraction": -1.0,
       "w_depth_valid": 1.0,
@@ -148,7 +169,12 @@
       "struct_geom_rms_inv_scale_m": 0.005,
       "struct_geom_rms_hi_m": 0.02,
       "struct_extent_lo": 0.1,
-      "struct_extent_hi": 0.35
+      "struct_extent_hi": 0.35,
+      "dedup_use_mask": false,
+      "dedup_centroid_px": 50.0,
+      "dedup_area_ratio_min": 0.4,
+      "dedup_bbox_iou_thr": 0.5,
+      "dedup_iou_thr": 0.8
     },
     "sweep_cache": {
       "grid_size_m": 0.25,
@@ -199,7 +225,7 @@
     "vectors": {
       "enable": true,
       "backend": "faiss",
-      "dim": 512,
+      "dim": 768,
       "faiss": {
         "index_path": "model_store/faiss/index.flatip"
       },
@@ -208,7 +234,7 @@
     "visualization": {
       "enable": true,
       "host": "0.0.0.0",
-      "port": 8081,
+      "port": 8083,
       "apply_camera_flip": true,
       "depth": {
         "min_m": 0.1,
@@ -228,12 +254,28 @@
       "objects": {
         "push_interval_ms": 200,
         "include_proto": true
+      },
+      "analytics": {
+        "push_interval_ms": 1000,
+        "full_sync_interval_s": 30
       }
     },
     "slam": {
       "log_pose_source": true,
       "accept_pose_corrections": true,
       "correct_working_memory": true
+    },
+    "api": {
+      "host": "0.0.0.0",
+      "port": 8002
+    },
+    "mcp": {
+      "enable": true
+    },
+    "analytics": {
+      "enable": true,
+      "retention_s": 3600,
+      "buffer_frames": 300
     },
     "logging": {
       "periodic_summary": true,
