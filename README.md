@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/rtsm)](https://pypi.org/project/rtsm/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
-[![Python](https://img.shields.io/pypi/pyversions/rtsm)](https://pypi.org/project/rtsm/)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://pypi.org/project/rtsm/)
 
 <!-- TODO: Replace background.jpg with demo GIF (repo_media/demo.gif) -->
 ![RTSM](repo_media/background.jpg)
