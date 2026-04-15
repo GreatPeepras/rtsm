@@ -400,6 +400,30 @@ def main():
         url = f"http://localhost:{port}"
         threading.Timer(1.5, open_browser, args=[url]).start()
 
+    # Force-flush all confirmed objects to FAISS after replay completes.
+    # Without this, most confirmed objects aren't upserted because the
+    # flush timer can't keep up with the replay speed.
+    if args.replay and vectors is not None:
+        def _flush_after_replay():
+            replay_receiver.wait()
+            import time as _time
+            # Wait for pipeline to drain queue + finish processing last frames
+            for _ in range(120):
+                if ingest_q.qsize() == 0:
+                    _time.sleep(5.0)  # wait 5s after queue empty for pipeline to finish
+                    break
+                _time.sleep(0.5)
+            ready = wm.collect_ready_for_upsert(force_all=True)
+            if ready:
+                try:
+                    vectors.upsert_batch(ready)
+                    logger.info(f"[run] Force-flushed {len(ready)} objects to vector store after replay")
+                except Exception as e:
+                    logger.warning(f"[run] Force flush failed: {e}")
+
+        flush_thread = threading.Thread(target=_flush_after_replay, daemon=True, name="replay-flush")
+        flush_thread.start()
+
     try:
         pipe.run_forever()
     except KeyboardInterrupt:

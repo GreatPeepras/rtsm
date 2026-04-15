@@ -4,8 +4,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://pypi.org/project/rtsm/)
 
-<!-- TODO: Replace background.jpg with demo GIF (repo_media/demo.gif) -->
-![RTSM](repo_media/background.jpg)
+![RTSM Demo](repo_media/rtsm-demo-gif.gif)
 
 Turns RGB-D streams into a **persistent, queryable 3D object map** — objects get stable IDs, 3D positions, CLIP embeddings, and semantic labels, updated in real time.
 
@@ -43,6 +42,8 @@ No hardware needed — replay uses a bundled recording.
 
 **Try searching for these objects** (type in the search bar or use the API):
 `tissue box` · `doll` · `laptop` · `pillow` · `curtain` · `lamp` · `humidifier`
+
+> `rtsm demo` runs a short 50-frame clip. For the full room sweep (240 frames), clone the repo with `git lfs install && git clone` then run `rtsm --replay recordings/session1`.
 
 **[Watch the full demo on YouTube](https://youtu.be/abhXsbvOLQg)**
 
