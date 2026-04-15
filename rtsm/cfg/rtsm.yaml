@@ -57,9 +57,9 @@ segmentation:
     gdino_model_id: IDEA-Research/grounding-dino-tiny
     sam2_model_id: null              # null = use sam2.model_id above
     device: cuda
-    box_threshold: 0.25              # GDINO detection confidence threshold
-    text_threshold: 0.2              # GDINO text matching threshold
-    vocab: null                      # null = use default 30-class indoor vocab
+    box_threshold: 0.20              # GDINO detection confidence threshold
+    text_threshold: 0.15             # GDINO text matching threshold
+    vocab: null                      # null = use default indoor vocab (40+ classes)
 
   # Dual-confirmation settings (only used when backend: dual)
   dual:

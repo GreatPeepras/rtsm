@@ -60,12 +60,22 @@ class GroundedSAM2Segmenter(SegmentationAdapter):
 
     @staticmethod
     def _default_indoor_vocab() -> List[str]:
-        """Default vocabulary for indoor/warehouse scenarios."""
+        """Default vocabulary for indoor/warehouse/home scenarios."""
         return [
+            # Furniture
             "chair", "table", "desk", "couch", "sofa", "bed", "shelf", "cabinet",
+            # Electronics
             "monitor", "laptop", "keyboard", "mouse", "phone", "tv", "speaker",
+            "tablet", "remote", "headphones", "charger",
+            # Containers
             "box", "cardboard box", "bin", "basket", "crate", "pallet",
+            "tissue box", "storage box",
+            # Home objects
             "bottle", "cup", "mug", "book", "bag", "backpack", "plant", "lamp",
+            "pillow", "cushion", "blanket", "curtain", "clock", "picture frame",
+            # Toys / plush
+            "doll", "stuffed animal", "toy", "figurine", "plush",
+            # People / vehicles
             "person", "forklift",
         ]
 
