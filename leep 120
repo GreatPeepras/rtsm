@@ -1,0 +1,1382 @@
+[1mdiff --git a/rtsm/core/pipeline.py b/rtsm/core/pipeline.py[m
+[1mindex b2ea632..939f111 100644[m
+[1m--- a/rtsm/core/pipeline.py[m
+[1m+++ b/rtsm/core/pipeline.py[m
+[36m@@ -1,886 +1,892 @@[m
+[31m-from __future__ import annotations[m
+[31m-from dataclasses import dataclass[m
+[31m-import logging[m
+[31m-from typing import List, Optional, Dict, Any, Tuple[m
+[31m-import time[m
+[31m-import numpy as np[m
+[31m-import torch[m
+[31m-import cv2[m
+[31m-from PIL import Image[m
+[31m-[m
+[31m-from rtsm.utils.mask_staging import run_heuristics, MaskStats[m
+[31m-from rtsm.utils.prepare_ann import prepare_ann[m
+[31m-from rtsm.utils.periodic_logger import PeriodicLogger[m
+[31m-from rtsm.models.segmentation import SegmentationAdapter, SegmentationResult[m
+[31m-from rtsm.models.clip.adapter import CLIPAdapter[m
+[31m-from rtsm.models.clip.vocab_classifier import ClipVocabClassifier[m
+[31m-from rtsm.stores.working_memory import WorkingMemory[m
+[31m-from rtsm.stores.proximity_index import ProximityIndex[m
+[31m-from rtsm.core.association import Associator[m
+[31m-from rtsm.core.ingest_gate import IngestGate[m
+[31m-from rtsm.stores.sweep_cache import SweepCache[m
+[31m-from rtsm.io.ingest_queue import IngestQueue[m
+[31m-from rtsm.core.datamodel import FramePacket[m
+[31m-[m
+[31m-logger = logging.getLogger(__name__)[m
+[31m-[m
+[31m-@dataclass[m
+[31m-class Snapshot:[m
+[31m-    rgb: np.ndarray               # HxWx3 uint8[m
+[31m-    depth_m: Optional[np.ndarray] # HxW float32 (NaN for invalid)[m
+[31m-    intrinsics: Dict[str,float]   # {fx,fy,cx,cy}[m
+[31m-    pose_cam_T_world: Optional[np.ndarray]  # 4x4 float32[m
+[31m-[m
+[31m-@dataclass[m
+[31m-class Candidate:[m
+[31m-    idx: int[m
+[31m-    mask: torch.Tensor            # [H,W] bool[m
+[31m-    stats: MaskStats[m
+[31m-    priority: float               # computed priority score[m
+[31m-    crop: Optional[np.ndarray] = None    # 224x224x3 uint8 after pre-clip[m
+[31m-    emb_vis: Optional[np.ndarray] = None # CLIP visual embedding (L2-normalized)[m
+[31m-[m
+[31m-class Pipeline:[m
+[31m-    def __init__([m
+[31m-        self,[m
+[31m-        cfg: Dict[str,Any],[m
+[31m-        segmenter: SegmentationAdapter,[m
+[31m-        clip: CLIPAdapter,[m
+[31m-        working_mem: WorkingMemory,[m
+[31m-        proximity_index: ProximityIndex,[m
+[31m-        associator: Associator,[m
+[31m-        ingest_gate: IngestGate,[m
+[31m-        vocab_clf: Optional[ClipVocabClassifier] = None,[m
+[31m-        vectors: Optional[Any] = None,[m
+[31m-        ingest_q: Optional[IngestQueue] = None,[m
+[31m-        sweep_cache: Optional[SweepCache] = None,[m
+[31m-        seg_analytics: Optional[Any] = None,[m
+[31m-        latency_analytics: Optional[Any] = None,[m
+[31m-    ):[m
+[31m-        self.cfg = cfg[m
+[31m-        self.segmenter = segmenter[m
+[31m-        self.clip = clip[m
+[31m-        self.working_mem = working_mem[m
+[31m-        self.proximity_index = proximity_index[m
+[31m-        self.associator = associator[m
+[31m-        self.ingest_gate = ingest_gate[m
+[31m-        self.vocab_clf = vocab_clf[m
+[31m-        self.vectors = vectors  # generic vector store client (FAISS or Milvus)[m
+[31m-        self._running = False[m
+[31m-        self._last_flush_ts = 0.0[m
+[31m-        self.ingest_q = ingest_q[m
+[31m-        self.sweep_cache = sweep_cache or SweepCache()[m
+[31m-        self._seg_analytics = seg_analytics[m
+[31m-        self._latency_analytics = latency_analytics[m
+[31m-[m
+[31m-        # Periodic summary logger[m
+[31m-        log_cfg = cfg.get("logging", {})[m
+[31m-        self._periodic_logger = PeriodicLogger([m
+[31m-            interval_s=float(log_cfg.get("summary_interval_s", 5.0)),[m
+[31m-            enabled=bool(log_cfg.get("periodic_summary", True)),[m
+[31m-        )[m
+[31m-[m
+[31m-    # -------- public entrypoints --------[m
+[31m-    def run_forever(self):[m
+[31m-        logger.info(f"--------------------------------")[m
+[31m-        logger.info(f"Pipeline started")[m
+[31m-        logger.info(f"--------------------------------")[m
+[31m-        self._running = True[m
+[31m-        try:[m
+[31m-            while self._running:[m
+[31m-                self.run_one_step()[m
+[31m-        except KeyboardInterrupt:[m
+[31m-            pass[m
+[31m-        finally:[m
+[31m-            self.shutdown()[m
+[31m-[m
+[31m-    def stop(self):[m
+[31m-        self._running = False[m
+[31m-        [m
+[31m-    # -------- single step (one snapshot) --------[m
+[31m-    @torch.no_grad()[m
+[31m-    def run_one_step(self):[m
+[31m-        """[m
+[31m-        Main processing loop for a single pipeline step:[m
+[31m-        1. Grab the next available snapshot (RGB, depth, intrinsics, pose) from sensors.[m
+[31m-        2. Run FastSAM segmentation on the RGB image to get instance masks.[m
+[31m-        3. Convert segmentation output to boolean mask tensor [N,H,W].[m
+[31m-        4. Apply mask heuristics (area, border, depth, planarity, etc.) to filter and annotate masks.[m
+[31m-        5. Score and select the top-K mask candidates for further processing.[m
+[31m-        6. For each candidate, crop the corresponding region from the RGB image for CLIP.[m
+[31m-        7. Batch-encode crops with CLIP to obtain visual embeddings.[m
+[31m-        8. If associator, working memory, and index are present, update them with the new candidates.[m
+[31m-        9. Periodically flush new vectors to Milvus (if configured).[m
+[31m-        This function is called repeatedly in the main loop to process incoming frames.[m
+[31m-        """[m
+[31m-        snap, pkt = self._get_snapshot_via_queue()[m
+[31m-        if snap is None:[m
+[31m-            time.sleep(0.01)[m
+[31m-            return[m
+[31m-[m
+[31m-        # Ingest gate: accept keyframes unconditionally, gate non-KFs with policy[m
+[31m-        accept = True[m
+[31m-        try:[m
+[31m-            if pkt is not None and pkt.pose is not None:[m
+[31m-                # compute cell/vbin from pose[m
+[31m-                twc = pkt.pose.t_wc.astype(np.float32)[m
+[31m-                q = pkt.pose.q_wc_xyzw.astype(np.float32)[m
+[31m-                cell, vbin, fwd = self.sweep_cache.cell_and_vbin_from_pose(twc_xyz=twc, q_wc_xyzw=q)[m
+[31m-                H, W = snap.rgb.shape[:2][m
+[31m-                Z = None[m
+[31m-                if snap.depth_m is not None:[m
+[31m-                    dH, dW = snap.depth_m.shape[:2][m
+[31m-                    zc = float(snap.depth_m[dH//2, dW//2])[m
+[31m-                    if np.isfinite(zc) and zc > 0:[m
+[31m-                        Z = zc[m
+[31m-                ts_ns = int(pkt.time.t_sensor_ns or 0)[m
+[31m-                if pkt.is_keyframe:[m
+[31m-                    # Update gate's keyframe arrival bookkeeping (grace window) but always accept[m
+[31m-                    _ = self.ingest_gate.should_accept([m
+[31m-                        is_keyframe=True,[m
+[31m-                        ts_ns=ts_ns,[m
+[31m-                        sweep_cache=self.sweep_cache,[m
+[31m-                        cell=cell,[m
+[31m-                        vbin=vbin,[m
+[31m-                        cam_pos=twc,[m
+[31m-                        fwd_unit=fwd,[m
+[31m-                        Z=Z,[m
+[31m-                        look_cell=None,[m
+[31m-                        now_mono=time.monotonic(),[m
+[31m-                    )[m
+[31m-                    accept = True[m
+[31m-                else:[m
+[31m-                    dec = self.ingest_gate.should_accept([m
+[31m-                        is_keyframe=False,[m
+[31m-                        ts_ns=ts_ns,[m
+[31m-                        sweep_cache=self.sweep_cache,[m
+[31m-                        cell=cell,[m
+[31m-                        vbin=vbin,[m
+[31m-                        cam_pos=twc,[m
+[31m-                        fwd_unit=fwd,[m
+[31m-                        Z=Z,[m
+[31m-                        look_cell=None,[m
+[31m-                        now_mono=time.monotonic(),[m
+[31m-                    )[m
+[31m-                    accept = bool(getattr(dec, 'accept', True))[m
+[31m-            else:[m
+[31m-                accept = True[m
+[31m-        except Exception as e:[m
+[31m-            logger.warning(f"ingest gate error; proceeding: {e}")[m
+[31m-            accept = True[m
+[31m-        if not accept:[m
+[31m-            if self._latency_analytics:[m
+[31m-                try:[m
+[31m-                    self._latency_analytics.record_gate_rejection()[m
+[31m-                except Exception:[m
+[31m-                    pass[m
+[31m-            return[m
+[31m-[m
+[31m-        t_step_start = time.perf_counter()[m
+[31m-[m
+[31m-        # 1) segmentation -> masks[m
+[31m-        pil_img = Image.fromarray(snap.rgb) if isinstance(snap.rgb, np.ndarray) else snap.rgb[m
+[31m-[m
+[31m-        # Get segmentation vocab from config (for open-vocab models)[m
+[31m-        seg_cfg = self.cfg.get("segmentation", {})[m
+[31m-        backend = seg_cfg.get("backend", "fastsam")[m
+[31m-        if backend == "dual":[m
+[31m-            vocab = seg_cfg.get("yoloe", {}).get("vocab", None)[m
+[31m-        elif backend == "yoloe":[m
+[31m-            vocab = seg_cfg.get("yoloe", {}).get("vocab", None)[m
+[31m-        elif backend == "grounded_sam2":[m
+[31m-            vocab = seg_cfg.get("grounded_sam2", {}).get("vocab", None)[m
+[31m-        else:[m
+[31m-            vocab = None[m
+[31m-[m
+[31m-        # Run segmentation[m
+[31m-        t_seg_start = time.perf_counter()[m
+[31m-        seg_result = self.segmenter.segment(pil_img, vocab=vocab)[m
+[31m-        t_seg_end = time.perf_counter()[m
+[31m-        # Store for downstream priority boost and label propagation[m
+[31m-        self._last_seg_result = seg_result[m
+[31m-[m
+[31m-        # Extract masks - use prepare_ann for consistency with existing pipeline[m
+[31m-        if seg_result.has_masks:[m
+[31m-            ann_bool = prepare_ann(seg_result.masks)  # [N,H,W] bool CPU[m
+[31m-        else:[m
+[31m-            # Fallback for detection-only models (no masks)[m
+[31m-            ann_bool = torch.empty(0, pil_img.height, pil_img.width, dtype=torch.bool)[m
+[31m-[m
+[31m-        n_masks = int(ann_bool.shape[0]) if hasattr(ann_bool, 'shape') else 0[m
+[31m-[m
+[31m-        # 2) heuristics -> keep + stats[m
+[31m-        #    Overlay per-frame intrinsics so mask staging uses the actual camera,[m
+[31m-        #    not the static YAML defaults (critical for WebSocket/ARKit path).[m
+[31m-        heur_cfg = self.cfg[m
+[31m-        if snap.intrinsics:[m
+[31m-            heur_cfg = {**self.cfg, "camera": {**self.cfg.get("camera", {}), **snap.intrinsics}}[m
+[31m-            # Also propagate width/height from the actual frame[m
+[31m-            h_frame, w_frame = snap.rgb.shape[:2][m
+[31m-            heur_cfg["camera"]["width"] = w_frame[m
+[31m-            heur_cfg["camera"]["height"] = h_frame[m
+[31m-        # Safety: if mask resolution differs from RGB (e.g. retina_masks=False[m
+[31m-        # or a different segmentation backend), scale intrinsics to mask space[m
+[31m-        # so _centroid_cam back-projects with consistent coordinates.[m
+[31m-        mask_hw = None[m
+[31m-        if ann_bool.shape[0] > 0:[m
+[31m-            mask_h, mask_w = ann_bool.shape[1], ann_bool.shape[2][m
+[31m-            rgb_h_frame, rgb_w_frame = snap.rgb.shape[:2][m
+[31m-            if mask_h != rgb_h_frame or mask_w != rgb_w_frame:[m
+[31m-                mask_hw = (mask_h, mask_w)[m
+[31m-                sx = mask_w / rgb_w_frame[m
+[31m-                sy = mask_h / rgb_h_frame[m
+[31m-                cam = heur_cfg.get("camera", {})[m
+[31m-                heur_cfg = {**heur_cfg, "camera": {[m
+[31m-                    **cam,[m
+[31m-                    "fx": float(cam.get("fx", 0)) * sx,[m
+[31m-                    "fy": float(cam.get("fy", 0)) * sy,[m
+[31m-                    "cx": float(cam.get("cx", 0)) * sx,[m
+[31m-                    "cy": float(cam.get("cy", 0)) * sy,[m
+[31m-                    "width": mask_w,[m
+[31m-                    "height": mask_h,[m
+[31m-                }}[m
+[31m-                logger.debug([m
+[31m-                    f"mask/RGB resolution mismatch ({mask_w}x{mask_h} vs "[m
+[31m-                    f"{rgb_w_frame}x{rgb_h_frame}), scaled intrinsics to mask space"[m
+[31m-                )[m
+[31m-[m
+[31m-        # Compute mask→RGB scale factors for downstream coordinate conversion.[m
+[31m-        # MaskStats (bbox, centroid_px) are in mask space; crop extraction and[m
+[31m-        # association reprojection need RGB-space coordinates.[m
+[31m-        mask_to_rgb_sx = 1.0[m
+[31m-        mask_to_rgb_sy = 1.0[m
+[31m-        if mask_hw is not None:[m
+[31m-            rgb_h_frame, rgb_w_frame = snap.rgb.shape[:2][m
+[31m-            mask_to_rgb_sx = rgb_w_frame / mask_hw[1]  # width[m
+[31m-            mask_to_rgb_sy = rgb_h_frame / mask_hw[0]  # height[m
+[31m-[m
+[31m-        t_heur_start = time.perf_counter()[m
+[31m-        kept_masks, stats = run_heuristics([m
+[31m-            ann_bool,[m
+[31m-            snap.depth_m,[m
+[31m-            cfg=heur_cfg,[m
+[31m-        )[m
+[31m-        t_heur_end = time.perf_counter()[m
+[31m-        logger.debug(f"staging: kept {len(kept_masks)}/{n_masks} masks after heuristics")[m
+[31m-[m
+[31m-        # Scale centroid_px from mask space to RGB space for downstream consumers[m
+[31m-        # (association reprojection gate, dedup centroid distance).[m
+[31m-        # MaskStats are ephemeral per-frame, safe to mutate.[m
+[31m-        if mask_to_rgb_sx != 1.0 or mask_to_rgb_sy != 1.0:[m
+[31m-            for s in stats:[m
+[31m-                cpx = getattr(s, 'centroid_px', None)[m
+[31m-                if cpx is not None:[m
+[31m-                    s.centroid_px = (cpx[0] * mask_to_rgb_sx, cpx[1] * mask_to_rgb_sy)[m
+[31m-[m
+[31m-        # 3) compute priorities (soft-features) and pick top-K[m
+[31m-        #    Use mask resolution for frame_hw when masks differ from RGB[m
+[31m-        select_hw = mask_hw if mask_hw else snap.rgb.shape[:2][m
+[31m-        t_score_start = time.perf_counter()[m
+[31m-        cands = self._score_and_select(kept_masks, stats, frame_hw=select_hw)[m
+[31m-        t_score_end = time.perf_counter()[m
+[31m-[m
+[31m-        # 4) pre-CLIP crop only top-K, then batch encode[m
+[31m-        t_clip_start = time.perf_counter()[m
+[31m-        self._make_crops_inplace(cands, snap.rgb, mask_to_rgb_sx, mask_to_rgb_sy)[m
+[31m-        self._clip_batch_inplace(cands)[m
+[31m-        t_clip_end = time.perf_counter()[m
+[31m-[m
+[31m-        # 5) associate and update memory/index (if components provided)[m
+[31m-        t_assoc_start = time.perf_counter()[m
+[31m-        m, c = 0, 0[m
+[31m-        is_kf = bool(pkt.is_keyframe) if pkt is not None else False[m
+[31m-        # Build frame_id for WM pose correction tracking (matches vis server mesh_id)[m
+[31m-        frame_id = None[m
+[31m-        if pkt is not None and pkt.time.seq is not None:[m
+[31m-            frame_id = f"ws_{pkt.time.seq}"[m
+[31m-        if self.associator is not None and self.working_mem is not None and self.proximity_index is not None:[m
+[31m-            stats_assoc = self.associator.update_with_candidates(cands, snap, self.working_mem, self.proximity_index, is_keyframe=is_kf, frame_id=frame_id)[m
+[31m-            try:[m
+[31m-                if isinstance(stats_assoc, dict):[m
+[31m-                    m = int(stats_assoc.get("matched", 0))[m
+[31m-                    c = int(stats_assoc.get("created", 0))[m
+[31m-                    logger.debug(f"assoc: matched={m} created={c}")[m
+[31m-            except Exception:[m
+[31m-                pass[m
+[31m-[m
+[31m-        t_assoc_end = time.perf_counter()[m
+[31m-[m
+[31m-        # ---- Analytics collection (never kills pipeline) ----[m
+[31m-        try:[m
+[31m-            if self._latency_analytics:[m
+[31m-                from rtsm.analytics.latency_analytics import FrameTimingStats[m
+[31m-                self._latency_analytics.append(FrameTimingStats([m
+[31m-                    timestamp=t_step_start,[m
+[31m-                    frame_seq=int(pkt.time.seq or 0) if pkt else 0,[m
+[31m-                    is_keyframe=is_kf,[m
+[31m-                    t_segmentation=t_seg_end - t_seg_start,[m
+[31m-                    t_heuristics=t_heur_end - t_heur_start,[m
+[31m-                    t_scoring=t_score_end - t_score_start,[m
+[31m-                    t_clip=t_clip_end - t_clip_start,[m
+[31m-                    t_association=t_assoc_end - t_assoc_start,[m
+[31m-                    t_total=t_assoc_end - t_step_start,[m
+[31m-                    queue_depth=self.ingest_q.qsize() if self.ingest_q else 0,[m
+[31m-                    n_masks_in=n_masks,[m
+[31m-                    n_masks_staged=len(kept_masks),[m
+[31m-                    n_candidates=len(cands),[m
+[31m-                    assoc_matched=m,[m
+[31m-                    assoc_created=c,[m
+[31m-                ))[m
+[31m-            if self._seg_analytics:[m
+[31m-                from rtsm.analytics.seg_analytics import SegFrameStats[m
+[31m-                seg_cfg = self.cfg.get("segmentation", {})[m
+[31m-                backend = seg_cfg.get("backend", "fastsam")[m
+[31m-                cs = seg_result.confirmation_source[m
+[31m-                if cs is not None:[m
+[31m-                    seg_entry = SegFrameStats([m
+[31m-                        timestamp=t_step_start,[m
+[31m-                        frame_seq=int(pkt.time.seq or 0) if pkt else 0,[m
+[31m-                        backend=backend,[m
+[31m-                        n_dual=sum(1 for s in cs if s == "dual"),[m
+[31m-                        n_fastsam_only=sum(1 for s in cs if s == "fastsam_only"),[m
+[31m-                        n_yoloe_only=sum(1 for s in cs if s == "yoloe_only"),[m
+[31m-                        n_total=len(cs),[m
+[31m-                        n_fastsam_raw=seg_result.fastsam_raw_count or 0,[m
+[31m-                        n_yoloe_raw=seg_result.yoloe_raw_count or 0,[m
+[31m-                    )[m
+[31m-                else:[m
+[31m-                    n = seg_result.count[m
+[31m-                    seg_entry = SegFrameStats([m
+[31m-                        timestamp=t_step_start,[m
+[31m-                        frame_seq=int(pkt.time.seq or 0) if pkt else 0,[m
+[31m-                        backend=backend,[m
+[31m-                        n_fastsam_only=n if backend in ("fastsam", "sam2") else 0,[m
+[31m-                        n_yoloe_only=n if backend in ("yoloe", "grounded_sam2") else 0,[m
+[31m-                        n_total=n,[m
+[31m-                    )[m
+[31m-                # Fill staged/selected counts by confirmation source[m
+[31m-                if cs is not None:[m
+[31m-                    for s in stats:[m
+[31m-                        if s.idx < len(cs):[m
+[31m-                            src = cs[s.idx][m
+[31m-                            if src == "dual": seg_entry.staged_dual += 1[m
+[31m-                            elif src == "fastsam_only": seg_entry.staged_fastsam_only += 1[m
+[31m-                            elif src == "yoloe_only": seg_entry.staged_yoloe_only += 1[m
+[31m-                    for cd in cands:[m
+[31m-                        if cd.stats.idx < len(cs):[m
+[31m-                            src = cs[cd.stats.idx][m
+[31m-                            if src == "dual": seg_entry.selected_dual += 1[m
+[31m-                            elif src == "fastsam_only": seg_entry.selected_fastsam_only += 1[m
+[31m-                            elif src == "yoloe_only": seg_entry.selected_yoloe_only += 1[m
+[31m-                self._seg_analytics.append(seg_entry)[m
+[31m-        except Exception:[m
+[31m-            logger.debug("analytics collection error", exc_info=True)[m
+[31m-[m
+[31m-        # Update periodic logger with this frame's stats[m
+[31m-        self._periodic_logger.tick(matched=m, created=c, masks=len(kept_masks))[m
+[31m-[m
+[31m-        # 6) expire stale proto-objects past their TTL[m
+[31m-        if self.working_mem is not None:[m
+[31m-            expired = self.working_mem.expire_timeouts()[m
+[31m-            if expired:[m
+[31m-                logger.debug(f"expired {len(expired)} proto-objects: {expired}")[m
+[31m-[m
+[31m-        # 7) periodic flush/upsert to vector store (if configured)[m
+[31m-        self._maybe_flush_vectors()[m
+[31m-[m
+[31m-        # 8) periodic summary log[m
+[31m-        if self.working_mem is not None:[m
+[31m-            queue_size = self.ingest_q.qsize() if self.ingest_q else 0[m
+[31m-            self._periodic_logger.maybe_log([m
+[31m-                wm_stats=self.working_mem.stats(),[m
+[31m-                queue_size=queue_size,[m
+[31m-            )[m
+[31m-[m
+[31m-        # Ingest bookkeeping after heavy processing[m
+[31m-        try:[m
+[31m-            if pkt is not None and pkt.pose is not None:[m
+[31m-                twc = pkt.pose.t_wc.astype(np.float32)[m
+[31m-                q = pkt.pose.q_wc_xyzw.astype(np.float32)[m
+[31m-                cell, vbin, fwd = self.sweep_cache.cell_and_vbin_from_pose(twc_xyz=twc, q_wc_xyzw=q)[m
+[31m-                ts_ns = int(pkt.time.t_sensor_ns or 0)[m
+[31m-                self.ingest_gate.record_processed([m
+[31m-                    is_keyframe=bool(pkt.is_keyframe),[m
+[31m-                    ts_ns=ts_ns,[m
+[31m-                    sweep_cache=self.sweep_cache,[m
+[31m-                    cell=cell,[m
+[31m-                    vbin=vbin,[m
+[31m-                    cam_pos=twc,[m
+[31m-                    look_cell=None,[m
+[31m-                    now_mono=time.monotonic(),[m
+[31m-                )[m
+[31m-                # Store latest robot pose for API queries[m
+[31m-                timestamp = float(pkt.time.t_wall_utc_s or pkt.time.t_mono_s or 0.0)[m
+[31m-                self.working_mem.update_robot_pose(twc, q, timestamp)[m
+[31m-        except Exception:[m
+[31m-            pass[m
+[31m-[m
+[31m-    # -------- internals --------[m
+[31m-    def _get_snapshot_via_queue(self) -> Tuple[Optional[Snapshot], Optional[FramePacket]]:[m
+[31m-        if self.ingest_q is None:[m
+[31m-            return None, None[m
+[31m-        pkt = self.ingest_q.get(timeout=0.0)[m
+[31m-        if pkt is None:[m
+[31m-            return None, None[m
+[31m-        rgb = pkt.rgb[m
+[31m-        depth_m = pkt.depth_m[m
+[31m-        intr = None[m
+[31m-        if pkt.intr is not None:[m
+[31m-            intr = {"fx": float(pkt.intr.fx), "fy": float(pkt.intr.fy), "cx": float(pkt.intr.cx), "cy": float(pkt.intr.cy)}[m
+[31m-        # Convert pose to T_cam_world if available[m
+[31m-        T = None[m
+[31m-        try:[m
+[31m-            if pkt.pose is not None:[m
+[31m-                T_wc = pkt.pose.T_wc()[m
+[31m-                # Note: ARKit→OpenCV camera flip is applied at ingestion[m
+[31m-                # (WebSocketReceiver) so T_wc is already in OpenCV convention.[m
+[31m-                # Debug: log T_wc (periodically)[m
+[31m-                if not hasattr(self, '_pipe_pose_log_count'):[m
+[31m-                    self._pipe_pose_log_count = 0[m
+[31m-                self._pipe_pose_log_count += 1[m
+[31m-                if self._pipe_pose_log_count % 30 == 1:[m
+[31m-                    t_raw = pkt.pose.t_wc[m
+[31m-                    t_from_matrix = T_wc[:3, 3][m
+[31m-                    logger.debug(f"[pipeline] pkt.pose.t_wc={t_raw}, T_wc[:3,3]={t_from_matrix}")[m
+[31m-                # inverse to get T_cam_world (maps world → OpenCV camera frame)[m
+[31m-                R = T_wc[:3, :3][m
+[31m-                t = T_wc[:3, 3][m
+[31m-                T = np.eye(4, dtype=np.float32)[m
+[31m-                T[:3, :3] = R.T[m
+[31m-                T[:3, 3] = (-R.T @ t)[m
+[31m-        except Exception:[m
+[31m-            T = None[m
+[31m-        return Snapshot(rgb=rgb, depth_m=depth_m, intrinsics=intr, pose_cam_T_world=T), pkt[m
+[31m-[m
+[31m-    def _score_and_select([m
+[31m-        self, masks: List[torch.Tensor], stats: List[MaskStats],[m
+[31m-        frame_hw: Optional[Tuple[int, int]] = None,[m
+[31m-    ) -> List[Candidate]:[m
+[31m-        """[m
+[31m-        This function takes a list of candidate masks and their computed statistics,[m
+[31m-        and assigns a "priority" score to each candidate based on a weighted sum of features.[m
+[31m-        The features include:[m
+[31m-          - coverage: fraction of image covered by the mask (higher is better, up to a soft cap)[m
+[31m-          - border_fraction: fraction of mask pixels on the image border (lower is better)[m
+[31m-          - depth_valid: fraction of mask pixels with valid depth (higher is better)[m
+[31m-          - depth_spread: spread (p90-p10) of depth values within the mask (lower is better)[m
+[31m-          - bbox_area: area of the mask's bounding box, normalized by image area (moderate is better)[m
+[31m-          - planarity/structure: geometric planarity features (optional, if available)[m
+[31m-        The weights and thresholds for these features are configurable via self.cfg.[m
+[31m-        Oversized masks (too large coverage or bbox) are penalized.[m
+[31m-        The function returns the top-K candidates (by priority), where K is configurable.[m
+[31m-[m
+[31m-        Compute priority for each candidate and store as .priority[m
+[31m-        (The actual calculation is performed in the loop below.)[m
+[31m-[m
+[31m-        After all candidates are scored, select the top-K by priority.[m
+[31m-        If there are fewer than K candidates, return all.[m
+[31m-        The returned list is sorted in descending order of priority.[m
+[31m-        """[m
+[31m-        [m
+[31m-        if frame_hw is not None:[m
+[31m-            H, W = frame_hw[m
+[31m-        else:[m
+[31m-            H, W = self.cfg.get("camera",{}).get("height"), self.cfg.get("camera",{}).get("width")[m
+[31m-        # weights from cfg with safe defaults[m
+[31m-        w_cov   = float(self.cfg.get("staging",{}).get("w_coverage", 1.0))[m
+[31m-        w_edge  = float(self.cfg.get("staging",{}).get("w_border_fraction", -2.0))[m
+[31m-        w_valid = float(self.cfg.get("staging",{}).get("w_depth_valid", 1.0))[m
+[31m-        w_spread= float(self.cfg.get("staging",{}).get("w_depth_spread", -1.0))[m
+[31m-        bias_big_bbox = float(self.cfg.get("staging",{}).get("w_bbox_area", 0.5))[m
+[31m-        w_struct = float(self.cfg.get("staging",{}).get("w_struct", 0.4))  # penalty[m
+[31m-        # soft-cap thresholds and oversize penalties[m
+[31m-        cov_cap = float(self.cfg.get("staging",{}).get("coverage_soft_cap", 0.30))[m
+[31m-        bbox_cap = float(self.cfg.get("staging",{}).get("bbox_soft_cap", 0.30))[m
+[31m-        w_cov_over = float(self.cfg.get("staging",{}).get("w_coverage_oversize", -2.0))[m
+[31m-        w_bbox_over = float(self.cfg.get("staging",{}).get("w_bbox_oversize", -1.0))[m
+[31m-        topK   = int(self.cfg.get("staging",{}).get("topk_preclip", 5))[m
+[31m-[m
+[31m-        # structure score knobs (soft bias)[m
+[31m-        a = float(self.cfg.get("staging",{}).get("struct_a", 0.6))[m
+[31m-        b = float(self.cfg.get("staging",{}).get("struct_b", 0.3))  # CLIP term (unavailable pre-CLIP)[m
+[31m-        c = float(self.cfg.get("staging",{}).get("struct_c", 0.1))[m
+[31m-        inlier_min = float(self.cfg.get("staging",{}).get("struct_geom_inlier_pct_min", 0.80))[m
+[31m-        rms_inv_scale = float(self.cfg.get("staging",{}).get("struct_geom_rms_inv_scale_m", 0.005))[m
+[31m-        rms_smooth_hi = float(self.cfg.get("staging",{}).get("struct_geom_rms_hi_m", 0.02))[m
+[31m-        extent_lo = float(self.cfg.get("staging",{}).get("struct_extent_lo", 0.10))[m
+[31m-        extent_hi = float(self.cfg.get("staging",{}).get("struct_extent_hi", 0.35))[m
+[31m-[m
+[31m-        def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:[m
+[31m-            return max(lo, min(hi, x))[m
+[31m-[m
+[31m-        def _smoothstep(edge0: float, edge1: float, x: float) -> float:[m
+[31m-            if edge1 == edge0:[m
+[31m-                return 1.0 if x >= edge1 else 0.0[m
+[31m-            t = _clamp((x - edge0) / (edge1 - edge0))[m
+[31m-            return t * t * (3.0 - 2.0 * t)[m
+[31m-[m
+[31m-        cands: List[Candidate] = [][m
+[31m-        img_area = float(H * W)[m
+[31m-        for i, (m, s) in enumerate(zip(masks, stats)):[m
+[31m-            x0,y0,x1,y1 = s.bbox[m
+[31m-            bbox_area = max(0, (x1-x0)) * max(0, (y1-y0))[m
+[31m-            # normalize features[m
+[31m-            cov = s.coverage                        # 0..1[m
+[31m-            edge = s.border_fraction                # 0..1 (lower better)[m
+[31m-            vld = s.depth_valid                     # 0..1[m
+[31m-            spr = 0.0 if s.depth_spread is None else float(s.depth_spread)  # meters, ~[0..1+][m
+[31m-            spr_n = max(0.0, min(1.0, spr))         # clamp[m
+[31m-            bbox_n = min(1.0, bbox_area / img_area)[m
+[31m-            # oversize penalties[m
+[31m-            oversize_cov = max(0.0, cov - cov_cap)[m
+[31m-            oversize_bbox = max(0.0, bbox_n - bbox_cap)[m
+[31m-[m
+[31m-            # soft structure score (pre-CLIP: geom + extent; semantic term deferred)[m
+[31m-            s_geom = 0.0[m
+[31m-            if s.planar_inlier_pct is not None and s.planar_rms_m is not None:[m
+[31m-                if float(s.planar_inlier_pct) >= inlier_min:[m
+[31m-                    inv = rms_inv_scale / (float(s.planar_rms_m) + 1e-6)[m
+[31m-                    s_geom = _smoothstep(0.0, rms_smooth_hi, inv)[m
+[31m-            s_extent = _smoothstep(extent_lo, extent_hi, cov)[m
+[31m-            s_sem = 0.0  # no CLIP pre-topK[m
+[31m-            structure_score = _clamp(a * s_geom + b * s_sem + c * s_extent)[m
+[31m-[m
+[31m-            score = ([m
+[31m-                (w_cov*cov) + (w_edge*edge) + (w_valid*vld) + (w_spread*spr_n)[m
+[31m-                + (bias_big_bbox*bbox_n)[m
+[31m-                + (w_cov_over*oversize_cov) + (w_bbox_over*oversize_bbox)[m
+[31m-                - (w_struct * structure_score)[m
+[31m-            )[m
+[31m-[m
+[31m-            # Dual-confirmation priority adjustment: boost dual-confirmed,[m
+[31m-            # penalize YOLOE-only (no FastSAM confirmation)[m
+[31m-            seg = getattr(self, '_last_seg_result', None)[m
+[31m-            if seg is not None and seg.confirmation_source is not None:[m
+[31m-                dual_cfg = self.cfg.get("segmentation", {}).get("dual", {})[m
+[31m-                src_idx = s.idx  # original mask index from segmentation output[m
+[31m-                if src_idx < len(seg.confirmation_source):[m
+[31m-                    src = seg.confirmation_source[src_idx][m
+[31m-                    if src == "dual":[m
+[31m-                        score += float(dual_cfg.get("priority_boost_dual", 0.3))[m
+[31m-                    elif src == "yoloe_only":[m
+[31m-                        score += float(dual_cfg.get("priority_penalty_yoloe_only", -0.1))[m
+[31m-[m
+[31m-            cands.append(Candidate(idx=i, mask=m, stats=s, priority=float(score)))[m
+[31m-[m
+[31m-        # pick top-K by priority[m
+[31m-        cands.sort(key=lambda c: c.priority, reverse=True)[m
+[31m-[m
+[31m-        # Scoring diagnostics: log all candidates ranked by priority[m
+[31m-        if cands:[m
+[31m-            logger.info([m
+[31m-                f"[scoring] {len(cands)} candidates ranked "[m
+[31m-                f"(top={cands[0].priority:.3f}, bottom={cands[-1].priority:.3f})"[m
+[31m-            )[m
+[31m-            for rank, cd in enumerate(cands):[m
+[31m-                s = cd.stats[m
+[31m-                cov = s.coverage[m
+[31m-                edge = s.border_fraction[m
+[31m-                vld = s.depth_valid[m
+[31m-                spr = 0.0 if s.depth_spread is None else float(s.depth_spread)[m
+[31m-                bbox_n = min(1.0, (max(0, s.bbox[2]-s.bbox[0]) * max(0, s.bbox[3]-s.bbox[1])) / img_area)[m
+[31m-                oc = max(0.0, cov - cov_cap)[m
+[31m-                ob = max(0.0, bbox_n - bbox_cap)[m
+[31m-                # recompute structure for log[m
+[31m-                sg = 0.0[m
+[31m-                if s.planar_inlier_pct is not None and s.planar_rms_m is not None:[m
+[31m-                    if float(s.planar_inlier_pct) >= inlier_min:[m
+[31m-                        sg = _smoothstep(0.0, rms_smooth_hi, rms_inv_scale / (float(s.planar_rms_m) + 1e-6))[m
+[31m-                se = _smoothstep(extent_lo, extent_hi, cov)[m
+[31m-                ss = _clamp(a * sg + b * 0.0 + c * se)[m
+[31m-                logger.debug([m
+[31m-                    f"  #{rank} mask={s.idx} score={cd.priority:.3f} | "[m
+[31m-                    f"cov={cov:.1%} edge={edge:.1%} depth_vld={vld:.1%} "[m
+[31m-                    f"spread={spr:.3f}m bbox={bbox_n:.1%} | "[m
+[31m-                    f"penalties: oversize_cov={w_cov_over*oc:+.3f} oversize_bbox={w_bbox_over*ob:+.3f} "[m
+[31m-                    f"struct={-w_struct*ss:+.3f} (geom={sg:.2f} extent={se:.2f})"[m
+[31m-                )[m
+[31m-[m
+[31m-        # ----------------------------------------------------------------[m
+[31m-        # same-frame dedup: greedy suppression to ensure top-K are distinct objects[m
+[31m-        #[m
+[31m-        # Purpose: prevent duplicate masks of the same object (e.g., FastSAM and[m
+[31m-        # YOLOE both segment the same chair) from consuming the CLIP budget.[m
+[31m-        # Association handles duplicates gracefully (both match the same WM object),[m
+[31m-        # so this is purely a top-K budget optimization — we want K distinct objects[m
+[31m-        # in the CLIP batch, not 3 copies of the chair.[m
+[31m-        # ----------------------------------------------------------------[m
+[31m-[m
+[31m-        def _centroid_dist_px(sa: MaskStats, sb: MaskStats) -> float:[m
+[31m-            ca = getattr(sa, 'centroid_px', None)[m
+[31m-            cb = getattr(sb, 'centroid_px', None)[m
+[31m-            if ca is None or cb is None:[m
+[31m-                return 1e9[m
+[31m-            dx = float(ca[0]) - float(cb[0])[m
+[31m-            dy = float(ca[1]) - float(cb[1])[m
+[31m-            return float((dx*dx + dy*dy) ** 0.5)[m
+[31m-[m
+[31m-        def _area_ratio(sa: MaskStats, sb: MaskStats) -> float:[m
+[31m-            """Ratio of smaller to larger area (1.0 = identical size, 0.0 = vastly different)."""[m
+[31m-            a = max(1, getattr(sa, 'area_px', 0))[m
+[31m-            b = max(1, getattr(sb, 'area_px', 0))[m
+[31m-            return min(a, b) / max(a, b)[m
+[31m-[m
+[31m-        def _bbox_iou(a: Tuple[int,int,int,int], b: Tuple[int,int,int,int]) -> float:[m
+[31m-            ax0, ay0, ax1, ay1 = a[m
+[31m-            bx0, by0, bx1, by1 = b[m
+[31m-            ix0 = max(ax0, bx0); iy0 = max(ay0, by0)[m
+[31m-            ix1 = min(ax1, bx1); iy1 = min(ay1, by1)[m
+[31m-            iw = max(0, ix1 - ix0); ih = max(0, iy1 - iy0)[m
+[31m-            inter = iw * ih[m
+[31m-            area_a = max(0, ax1 - ax0) * max(0, ay1 - ay0)[m
+[31m-            area_b = max(0, bx1 - bx0) * max(0, by1 - by0)[m
+[31m-            union = max(1, area_a + area_b - inter)[m
+[31m-            return float(inter) / float(union)[m
+[31m-[m
+[31m-        # TODO: performance test — compare mask IoU dedup vs lightweight dedup.[m
+[31m-        #[m
+[31m-        # Original approach: pixel-wise mask IoU on full-resolution boolean tensors.[m
+[31m-        # Precise but O(N² × H × W) — with retina_masks=true at 1920x1440 and ~30[m
+[31m-        # candidates, this takes ~1s per frame (1.2B boolean ops). The precision[m
+[31m-        # is overkill for dedup since association already handles duplicate matches[m
+[31m-        # gracefully (both masks update the same WM object). Dedup only needs to[m
+[31m-        # ensure the top-K CLIP batch contains distinct objects.[m
+[31m-        #[m
+[31m-        # When to re-enable: if the lightweight dedup below produces measurably[m
+[31m-        # worse object tracking (e.g., CLIP batch wastes slots on duplicates that[m
+[31m-        # should have been suppressed), switch back by setting:[m
+[31m-        #   staging.dedup_use_mask: true[m
+[31m-        # in rtsm.yaml. Consider also downsampling masks to 64x64 before IoU[m
+[31m-        # as a middle ground (~700x cheaper than full-resolution).[m
+[31m-        def _mask_iou(ma: torch.Tensor, mb: torch.Tensor) -> float:[m
+[31m-            """Pixel-wise mask IoU — expensive at high resolution. See TODO above."""[m
+[31m-            ia = (ma & mb).sum().item()[m
+[31m-            ua = (ma | mb).sum().item()[m
+[31m-            if ua <= 0:[m
+[31m-                return 0.0[m
+[31m-            return float(ia) / float(ua)[m
+[31m-[m
+[31m-        # Lightweight dedup: centroid proximity + area similarity + bbox IoU.[m
+[31m-        # All features from MaskStats (pure float math, zero tensor ops).[m
+[31m-        # Runs in microseconds regardless of mask resolution.[m
+[31m-        def _is_duplicate_lightweight(sa: MaskStats, sb: MaskStats) -> bool:[m
+[31m-            # Quick reject: if centroids are far apart, definitely different objects[m
+[31m-            dist = _centroid_dist_px(sa, sb)[m
+[31m-            if dist > dedup_centroid_thr:[m
+[31m-                return False[m
+[31m-            # Area check: if sizes differ a lot, different objects at same location[m
+[31m-            if _area_ratio(sa, sb) < dedup_area_ratio_min:[m
+[31m-                return False[m
+[31m-            # Confirm with bbox IoU (cheap integer math)[m
+[31m-            return _bbox_iou(sa.bbox, sb.bbox) >= dedup_bbox_iou_thr[m
+[31m-[m
+[31m-        # Config — lightweight thresholds (intentionally permissive to start)[m
+[31m-        dedup_centroid_thr = float(self.cfg.get("staging",{}).get("dedup_centroid_px", 50.0))[m
+[31m-        dedup_area_ratio_min = float(self.cfg.get("staging",{}).get("dedup_area_ratio_min", 0.4))[m
+[31m-        dedup_bbox_iou_thr = float(self.cfg.get("staging",{}).get("dedup_bbox_iou_thr", 0.50))[m
+[31m-[m
+[31m-        # Legacy config for mask IoU path[m
+[31m-        iou_thr = float(self.cfg.get("staging",{}).get("dedup_iou_thr", 0.80))[m
+[31m-        use_mask_iou = bool(self.cfg.get("staging",{}).get("dedup_use_mask", False))  # off by default now[m
+[31m-[m
+[31m-        kept: List[Candidate] = [][m
+[31m-        for c in cands:[m
+[31m-            suppress = False[m
+[31m-            for k in kept:[m
+[31m-                if use_mask_iou:[m
+[31m-                    # Legacy path: pixel-wise mask IoU (expensive, see TODO above)[m
+[31m-                    iou = _mask_iou(c.mask, k.mask)[m
+[31m-                    if iou >= iou_thr:[m
+[31m-                        suppress = True[m
+[31m-                        break[m
+[31m-                else:[m
+[31m-                    # Lightweight path: centroid + area + bbox (default)[m
+[31m-                    if _is_duplicate_lightweight(c.stats, k.stats):[m
+[31m-                        suppress = True[m
+[31m-                        break[m
+[31m-            if not suppress:[m
+[31m-                kept.append(c)[m
+[31m-[m
+[31m-        return kept[:topK][m
+[31m-[m
+[31m-    def _make_crops_inplace(self, cands: List[Candidate], rgb: np.ndarray,[m
+[31m-                            mask_to_rgb_sx: float = 1.0, mask_to_rgb_sy: float = 1.0):[m
+[31m-        pad = int(self.cfg.get("staging",{}).get("crop_pad_px", 6))[m
+[31m-        size = int(self.cfg.get("staging",{}).get("clip_input", 224))[m
+[31m-        H, W, _ = rgb.shape[m
+[31m-[m
+[31m-        for c in cands:[m
+[31m-            x0, y0, x1, y1 = c.stats.bbox  # in mask space[m
+[31m-[m
+[31m-            # Scale bbox from mask space to RGB space (no-op when retina_masks=true)[m
+[31m-            x0 = int(x0 * mask_to_rgb_sx)[m
+[31m-            y0 = int(y0 * mask_to_rgb_sy)[m
+[31m-            x1 = int(x1 * mask_to_rgb_sx)[m
+[31m-            y1 = int(y1 * mask_to_rgb_sy)[m
+[31m-[m
+[31m-            # pad & clamp to the *image* bounds[m
+[31m-            x0 = max(0, x0 - pad);  y0 = max(0, y0 - pad)[m
+[31m-            x1 = min(W, x1 + pad); y1 = min(H, y1 + pad)[m
+[31m-[m
+[31m-            # guard for degenerate boxes[m
+[31m-            if x1 <= x0 or y1 <= y0:[m
+[31m-                c.crop = None[m
+[31m-                continue[m
+[31m-[m
+[31m-            crop = rgb[y0:y1, x0:x1].copy()    # copy needed for masking[m
+[31m-            if crop.size == 0:[m
+[31m-                c.crop = None[m
+[31m-                continue[m
+[31m-[m
+[31m-            # Apply segmentation mask to suppress background —[m
+[31m-            # CLIP embeds the full crop; without masking, background dominates[m
+[31m-            # and all objects converge to similar embeddings.[m
+[31m-            if c.mask is not None:[m
+[31m-                # Scale mask region to match RGB crop bounds[m
+[31m-                mask_region = c.mask[[m
+[31m-                    int(y0 / mask_to_rgb_sy) : int(y1 / mask_to_rgb_sy),[m
+[31m-                    int(x0 / mask_to_rgb_sx) : int(x1 / mask_to_rgb_sx),[m
+[31m-                ][m
+[31m-                if mask_region.numel() > 0:[m
+[31m-                    mask_np = mask_region.cpu().numpy().astype(np.uint8)[m
+[31m-                    mask_resized = cv2.resize([m
+[31m-                        mask_np, (crop.shape[1], crop.shape[0]),[m
+[31m-                        interpolation=cv2.INTER_NEAREST,[m
+[31m-                    )[m
+[31m-                    # Suppress background pixels using configured fill strategy[m
+[31m-                    bg_fill = self.cfg.get("staging", {}).get("bg_fill", "mean")[m
+[31m-                    if bg_fill == "white":[m
+[31m-                        crop[mask_resized == 0] = 255[m
+[31m-                    elif bg_fill == "black":[m
+[31m-                        crop[mask_resized == 0] = 0[m
+[31m-                    elif bg_fill == "blur":[m
+[31m-                        blurred = cv2.GaussianBlur(crop, (31, 31), 0)[m
+[31m-                        crop[mask_resized == 0] = blurred[mask_resized == 0][m
+[31m-                    else:  # "mean" (default)[m
+[31m-                        bg_color = crop.mean(axis=(0, 1)).astype(np.uint8)[m
+[31m-                        crop[mask_resized == 0] = bg_color[m
+[31m-[m
+[31m-            crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_LINEAR)[m
+[31m-            c.crop = crop[m
+[31m-[m
+[31m-    @torch.no_grad()[m
+[31m-    def _clip_batch_inplace(self, cands: List[Candidate]):[m
+[31m-        imgs = [][m
+[31m-        idxs = [][m
+[31m-        for i, c in enumerate(cands):[m
+[31m-            if c.crop is None:[m
+[31m-                continue[m
+[31m-            # ensure RGB PIL for preprocess; if your crop is BGR, swap channels here once:[m
+[31m-            # crop = c.crop[..., ::-1][m
+[31m-            crop = c.crop[m
+[31m-            imgs.append(Image.fromarray(crop))  # already 224x224 uint8[m
+[31m-            idxs.append(i)[m
+[31m-        if not imgs:[m
+[31m-            return[m
+[31m-        batch_size = int(self.cfg.get("clip", {}).get("batch_size", 16))[m
+[31m-        embs = self.clip.encode_images_batch(imgs, batch_size=batch_size)  # [N,D] torch (GPU if available)[m
+[31m-[m
+[31m-        if self.vocab_clf is not None and embs.numel() > 0:[m
+[31m-            self.vocab_clf.ensure_text_on_device()[m
+[31m-            k = int(self.cfg.get("clip", {}).get("vocab_topk", 5))[m
+[31m-            cls = self.vocab_clf.classify_feats(embs, return_topk=k)[m
+[31m-            for row, i in enumerate(idxs):[m
+[31m-                if row < len(cls):[m
+[31m-                    # topk always contains candidate labels with scores, even if primary is "unknown"[m
+[31m-                    label, tv, class_idx, topk = cls[row][m
+[31m-                    # Always store top-K labels with scores (frontend will pick best for display)[m
+[31m-                    setattr(cands[i], 'label_topk', [(cid, float(sc)) for (cid, sc, _j) in topk])[m
+[31m-        # Merge YOLOE detection labels with CLIP vocab labels.[m
+[31m-        # For dual-confirmed masks, prepend the YOLOE label (higher specificity[m
+[31m-        # from detection head) ahead of CLIP's vocab-classifier labels.[m
+[31m-        seg = getattr(self, '_last_seg_result', None)[m
+[31m-        if seg is not None and seg.detection_labels is not None:[m
+[31m-            det_labels = seg.detection_labels[m
+[31m-            det_conf = seg.label_confidence[m
+[31m-            for i, c in enumerate(cands):[m
+[31m-                src_idx = c.stats.idx  # original mask index from segmentation output[m
+[31m-                if src_idx < len(det_labels) and det_labels[src_idx]:[m
+[31m-                    yoloe_label = det_labels[src_idx][m
+[31m-                    yoloe_score = float(det_conf[src_idx]) if det_conf and src_idx < len(det_conf) else 0.5[m
+[31m-                    existing = getattr(c, 'label_topk', None) or [][m
+[31m-                    # Merge: YOLOE label first (if not already present), then CLIP labels[m
+[31m-                    merged = [(yoloe_label, yoloe_score)][m
+[31m-                    for lbl, sc in existing:[m
+[31m-                        if lbl != yoloe_label:[m
+[31m-                            merged.append((lbl, sc))[m
+[31m-                    c.label_topk = merged[:5][m
+[31m-[m
+[31m-        # Single boundary cast: move whole batch to CPU numpy float32 for association/WM[m
+[31m-        try:[m
+[31m-            embs_np = embs.detach().to(device="cpu", dtype=torch.float32).numpy()[m
+[31m-        except Exception:[m
+[31m-            # If already on CPU, ensure float32 numpy[m
+[31m-            embs_np = np.asarray(embs, dtype=np.float32)[m
+[31m-        # assign back per candidate[m
+[31m-        for row, i in enumerate(idxs):[m
+[31m-            cands[i].emb_vis = embs_np[row][m
+[31m-[m
+[31m-    def _maybe_flush_vectors(self):[m
+[31m-        if self.vectors is None or self.working_mem is None:[m
+[31m-            return[m
+[31m-        flush_every_s = float(self.cfg.get("vectors",{}).get("flush_period_s", 5.0))[m
+[31m-        now = time.monotonic()[m
+[31m-        if (now - self._last_flush_ts) < flush_every_s:[m
+[31m-            return[m
+[31m-        self._last_flush_ts = now[m
+[31m-        # Let associator (or WM) provide a list of “ready” objects to upsert[m
+[31m-        ready = self.working_mem.collect_ready_for_upsert()[m
+[31m-        if not ready:[m
+[31m-            return[m
+[31m-        try:[m
+[31m-            self.vectors.upsert_batch(ready)  # implementation behind your interface[m
+[31m-        except Exception as e:[m
+[31m-            logger.warning(f"vectors upsert failed: {e}")[m
+[31m-        st = self.working_mem.stats()[m
+[31m-        logger.info(f"[PIPE] flushed {len(ready)} upserts; wm_confirmed={st.get('confirmed',0)} upserts_total={st.get('upserts_total',0)}")[m
+[31m-[m
+[31m-[m
+[31m-    # -------- teardown --------[m
+[31m-    def shutdown(self):[m
+[31m-        # free heavy models if desired[m
+[31m-        try:[m
+[31m-            self.segmenter.close()[m
+[31m-        except Exception:[m
+[31m-            pass[m
+[31m-        try:[m
+[31m-            self.clip.close()[m
+[31m-        except Exception:[m
+[31m-            pass[m
+[31m-[m
+[31m-    # -------- single test  step (hardcoded import) --------[m
+[31m-    @torch.no_grad()[m
+[31m-    def test_step(self):[m
+[31m-        from rtsm.utils.load_depth_png_as_meters import load_depth_png_as_meters[m
+[31m-        from PIL import Image[m
+[31m-        print("--------------------------------")[m
+[31m-        print("running test_step")[m
+[31m-        print("--------------------------------")[m
+[31m-        # image_path = "test_dataset/rgb/1754989062.627478.png"[m
+[31m-        image_path = "test_dataset/simple_room.png"[m
+[31m-        pil = Image.open(image_path).convert("RGB")[m
+[31m-        rgb = np.array(pil)[m
+[31m-        seg_result = self.segmenter.segment(pil)[m
+[31m-        ann_bool = prepare_ann(seg_result.masks) if seg_result.has_masks else torch.empty(0, pil.height, pil.width, dtype=torch.bool)[m
+[31m-        depth_m = load_depth_png_as_meters("test_dataset/depth/1754989062.627478.png")[m
+[31m-        kept_masks, stats = run_heuristics([m
+[31m-            ann_bool,[m
+[31m-            depth_m,[m
+[31m-            cfg=self.cfg,[m
+[31m-        )[m
+[31m-        cands = self._score_and_select(kept_masks, stats)[m
+[31m-[m
+[31m-        self._make_crops_inplace(cands, rgb)[m
+[31m-        self._clip_batch_inplace(cands)[m
+[31m-        # Print total number of candidates[m
+[31m-        print(f"Total candidates: {len(cands)}")[m
+[31m-        # Print only candidate's idx, its stats, and priority (not the entire ndarray)[m
+[31m-        for cand in cands:[m
+[31m-            print(f"Candidate idx: {cand.idx}")[m
+[31m-            print(f"  Stats: area_px={cand.stats.area_px}, bbox={cand.stats.bbox}, "[m
+[31m-                f"coverage={cand.stats.coverage:.4f}, border_fraction={cand.stats.border_fraction:.4f}, "[m
+[31m-                f"depth_valid={cand.stats.depth_valid:.4f}, depth_p50={cand.stats.depth_p50}, "[m
+[31m-                f"depth_spread={cand.stats.depth_spread}, centroid_px={cand.stats.centroid_px}")[m
+[31m-            print(f"  Priority: {cand.priority:.4f}")[m
+[31m-        return cands.copy()[m
+[31m-[m
+[32m+[m[32mfrom __future__ import annotations[m
+[32m+[m[32mfrom dataclasses import dataclass[m
+[32m+[m[32mimport logging[m
+[32m+[m[32mfrom typing import List, Optional, Dict, Any, Tuple[m
+[32m+[m[32mimport time[m
+[32m+[m[32mimport numpy as np[m
+[32m+[m[32mimport torch[m
+[32m+[m[32mimport cv2[m
+[32m+[m[32mfrom PIL import Image[m
+[32m+[m
+[32m+[m[32mfrom rtsm.utils.mask_staging import run_heuristics, MaskStats[m
+[32m+[m[32mfrom rtsm.utils.prepare_ann import prepare_ann[m
+[32m+[m[32mfrom rtsm.utils.periodic_logger import PeriodicLogger[m
+[32m+[m[32mfrom rtsm.models.segmentation import SegmentationAdapter, SegmentationResult[m
+[32m+[m[32mfrom rtsm.models.clip.adapter import CLIPAdapter[m
+[32m+[m[32mfrom rtsm.models.clip.vocab_classifier import ClipVocabClassifier[m
+[32m+[m[32mfrom rtsm.stores.working_memory import WorkingMemory[m
+[32m+[m[32mfrom rtsm.stores.proximity_index import ProximityIndex[m
+[32m+[m[32mfrom rtsm.core.association import Associator[m
+[32m+[m[32mfrom rtsm.core.ingest_gate import IngestGate[m
+[32m+[m[32mfrom rtsm.stores.sweep_cache import SweepCache[m
+[32m+[m[32mfrom rtsm.io.ingest_queue import IngestQueue[m
+[32m+[m[32mfrom rtsm.core.datamodel import FramePacket[m
+[32m+[m
+[32m+[m[32mlogger = logging.getLogger(__name__)[m
+[32m+[m
+[32m+[m[32m@dataclass[m
+[32m+[m[32mclass Snapshot:[m
+[32m+[m[32m    rgb: np.ndarray               # HxWx3 uint8[m
+[32m+[m[32m    depth_m: Optional[np.ndarray] # HxW float32 (NaN for invalid)[m
+[32m+[m[32m    intrinsics: Dict[str,float]   # {fx,fy,cx,cy}[m
+[32m+[m[32m    pose_cam_T_world: Optional[np.ndarray]  # 4x4 float32[m
+[32m+[m
+[32m+[m[32m@dataclass[m
+[32m+[m[32mclass Candidate:[m
+[32m+[m[32m    idx: int[m
+[32m+[m[32m    mask: torch.Tensor            # [H,W] bool[m
+[32m+[m[32m    stats: MaskStats[m
+[32m+[m[32m    priority: float               # computed priority score[m
+[32m+[m[32m    crop: Optional[np.ndarray] = None    # 224x224x3 uint8 after pre-clip[m
+[32m+[m[32m    emb_vis: Optional[np.ndarray] = None # CLIP visual embedding (L2-normalized)[m
+[32m+[m
+[32m+[m[32mclass Pipeline:[m
+[32m+[m[32m    def __init__([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        cfg: Dict[str,Any],[m
+[32m+[m[32m        segmenter: SegmentationAdapter,[m
+[32m+[m[32m        clip: CLIPAdapter,[m
+[32m+[m[32m        working_mem: WorkingMemory,[m
+[32m+[m[32m        proximity_index: ProximityIndex,[m
+[32m+[m[32m        associator: Associator,[m
+[32m+[m[32m        ingest_gate: IngestGate,[m
+[32m+[m[32m        vocab_clf: Optional[ClipVocabClassifier] = None,[m
+[32m+[m[32m        vectors: Optional[Any] = None,[m
+[32m+[m[32m        ingest_q: Optional[IngestQueue] = None,[m
+[32m+[m[32m        sweep_cache: Optional[SweepCache] = None,[m
+[32m+[m[32m        seg_analytics: Optional[Any] = None,[m
+[32m+[m[32m        latency_analytics: Optional[Any] = None,[m
+[32m+[m[32m    ):[m
+[32m+[m[32m        self.cfg = cfg[m
+[32m+[m[32m        self.segmenter = segmenter[m
+[32m+[m[32m        self.clip = clip[m
+[32m+[m[32m        self.working_mem = working_mem[m
+[32m+[m[32m        self.proximity_index = proximity_index[m
+[32m+[m[32m        self.associator = associator[m
+[32m+[m[32m        self.ingest_gate = ingest_gate[m
+[32m+[m[32m        self.vocab_clf = vocab_clf[m
+[32m+[m[32m        self.vectors = vectors  # generic vector store client (FAISS or Milvus)[m
+[32m+[m[32m        self._running = False[m
+[32m+[m[32m        self._last_flush_ts = 0.0[m
+[32m+[m[32m        self.ingest_q = ingest_q[m
+[32m+[m[32m        self.sweep_cache = sweep_cache or SweepCache()[m
+[32m+[m[32m        self._seg_analytics = seg_analytics[m
+[32m+[m[32m        self._latency_analytics = latency_analytics[m
+[32m+[m
+[32m+[m[32m        # Periodic summary logger[m
+[32m+[m[32m        log_cfg = cfg.get("logging", {})[m
+[32m+[m[32m        self._periodic_logger = PeriodicLogger([m
+[32m+[m[32m            interval_s=float(log_cfg.get("summary_interval_s", 5.0)),[m
+[32m+[m[32m            enabled=bool(log_cfg.get("periodic_summary", True)),[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    # -------- public entrypoints --------[m
+[32m+[m[32m    def run_forever(self):[m
+[32m+[m[32m        logger.info(f"--------------------------------")[m
+[32m+[m[32m        logger.info(f"Pipeline started")[m
+[32m+[m[32m        logger.info(f"--------------------------------")[m
+[32m+[m[32m        self._running = True[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            while self._running:[m
+[32m+[m[32m                self.run_one_step()[m
+[32m+[m[32m        except KeyboardInterrupt:[m
+[32m+[m[32m            pass[m
+[32m+[m[32m        finally:[m
+[32m+[m[32m            self.shutdown()[m
+[32m+[m
+[32m+[m[32m    def stop(self):[m
+[32m+[m[32m        self._running = False[m
+[32m+[m[41m        [m
+[32m+[m[32m    # -------- single step (one snapshot) --------[m
+[32m+[m[32m    @torch.no_grad()[m
+[32m+[m[32m    def run_one_step(self):[m
+[32m+[m[32m        """[m
+[32m+[m[32m        Main processing loop for a single pipeline step:[m
+[32m+[m[32m        1. Grab the next available snapshot (RGB, depth, intrinsics, pose) from sensors.[m
+[32m+[m[32m        2. Run FastSAM segmentation on the RGB image to get instance masks.[m
+[32m+[m[32m        3. Convert segmentation output to boolean mask tensor [N,H,W].[m
+[32m+[m[32m        4. Apply mask heuristics (area, border, depth, planarity, etc.) to filter and annotate masks.[m
+[32m+[m[32m        5. Score and select the top-K mask candidates for further processing.[m
+[32m+[m[32m        6. For each candidate, crop the corresponding region from the RGB image for CLIP.[m
+[32m+[m[32m        7. Batch-encode crops with CLIP to obtain visual embeddings.[m
+[32m+[m[32m        8. If associator, working memory, and index are present, update them with the new candidates.[m
+[32m+[m[32m        9. Periodically flush new vectors to Milvus (if configured).[m
+[32m+[m[32m        This function is called repeatedly in the main loop to process incoming frames.[m
+[32m+[m[32m        """[m
+[32m+[m[32m        snap, pkt = self._get_snapshot_via_queue()[m
+[32m+[m[32m        if snap is None:[m
+[32m+[m[32m            time.sleep(0.01)[m
+[32m+[m[32m            return[m
+[32m+[m
+[32m+[m[32m        # Ingest gate: accept keyframes unconditionally, gate non-KFs with policy[m
+[32m+[m[32m        accept = True[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            if pkt is not None and pkt.pose is not None:[m
+[32m+[m[32m                # compute cell/vbin from pose[m
+[32m+[m[32m                twc = pkt.pose.t_wc.astype(np.float32)[m
+[32m+[m[32m                q = pkt.pose.q_wc_xyzw.astype(np.float32)[m
+[32m+[m[32m                cell, vbin, fwd = self.sweep_cache.cell_and_vbin_from_pose(twc_xyz=twc, q_wc_xyzw=q)[m
+[32m+[m[32m                H, W = snap.rgb.shape[:2][m
+[32m+[m[32m                Z = None[m
+[32m+[m[32m                if snap.depth_m is not None:[m
+[32m+[m[32m                    dH, dW = snap.depth_m.shape[:2][m
+[32m+[m[32m                    zc = float(snap.depth_m[dH//2, dW//2])[m
+[32m+[m[32m                    if np.isfinite(zc) and zc > 0:[m
+[32m+[m[32m                        Z = zc[m
+[32m+[m[32m                ts_ns = int(pkt.time.t_sensor_ns or 0)[m
+[32m+[m[32m                if pkt.is_keyframe:[m
+[32m+[m[32m                    # Update gate's keyframe arrival bookkeeping (grace window) but always accept[m
+[32m+[m[32m                    _ = self.ingest_gate.should_accept([m
+[32m+[m[32m                        is_keyframe=True,[m
+[32m+[m[32m                        ts_ns=ts_ns,[m
+[32m+[m[32m                        sweep_cache=self.sweep_cache,[m
+[32m+[m[32m                        cell=cell,[m
+[32m+[m[32m                        vbin=vbin,[m
+[32m+[m[32m                        cam_pos=twc,[m
+[32m+[m[32m                        fwd_unit=fwd,[m
+[32m+[m[32m                        Z=Z,[m
+[32m+[m[32m                        look_cell=None,[m
+[32m+[m[32m                        now_mono=time.monotonic(),[m
+[32m+[m[32m                    )[m
+[32m+[m[32m                    accept = True[m
+[32m+[m[32m                else:[m
+[32m+[m[32m                    dec = self.ingest_gate.should_accept([m
+[32m+[m[32m                        is_keyframe=False,[m
+[32m+[m[32m                        ts_ns=ts_ns,[m
+[32m+[m[32m                        sweep_cache=self.sweep_cache,[m
+[32m+[m[32m                        cell=cell,[m
+[32m+[m[32m                        vbin=vbin,[m
+[32m+[m[32m                        cam_pos=twc,[m
+[32m+[m[32m                        fwd_unit=fwd,[m
+[32m+[m[32m                        Z=Z,[m
+[32m+[m[32m                        look_cell=None,[m
+[32m+[m[32m                        now_mono=time.monotonic(),[m
+[32m+[m[32m                    )[m
+[32m+[m[32m                    accept = bool(getattr(dec, 'accept', True))[m
+[32m+[m[32m            else:[m
+[32m+[m[32m                accept = True[m
+[32m+[m[32m        except Exception as e:[m
+[32m+[m[32m            logger.warning(f"ingest gate error; proceeding: {e}")[m
+[32m+[m[32m            accept = True[m
+[32m+[m[32m        if not accept:[m
+[32m+[m[32m            if self._latency_analytics:[m
+[32m+[m[32m                try:[m
+[32m+[m[32m                    self._latency_analytics.record_gate_rejection()[m
+[32m+[m[32m                except Exception:[m
+[32m+[m[32m                    pass[m
+[32m+[m[32m            return[m
+[32m+[m
+[32m+[m[32m        t_step_start = time.perf_counter()[m
+[32m+[m
+[32m+[m[32m        # 1) segmentation -> masks[m
+[32m+[m[32m        pil_img = Image.fromarray(snap.rgb) if isinstance(snap.rgb, np.ndarray) else snap.rgb[m
+[32m+[m
+[32m+[m[32m        # Get segmentation vocab from config (for open-vocab models)[m
+[32m+[m[32m        seg_cfg = self.cfg.get("segmentation", {})[m
+[32m+[m[32m        backend = seg_cfg.get("backend", "fastsam")[m
+[32m+[m[32m        if backend == "dual":[m
+[32m+[m[32m            vocab = seg_cfg.get("yoloe", {}).get("vocab", None)[m
+[32m+[m[32m        elif backend == "yoloe":[m
+[32m+[m[32m            vocab = seg_cfg.get("yoloe", {}).get("vocab", None)[m
+[32m+[m[32m        elif backend == "grounded_sam2":[m
+[32m+[m[32m            vocab = seg_cfg.get("grounded_sam2", {}).get("vocab", None)[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            vocab = None[m
+[32m+[m
+[32m+[m[32m        # Run segmentation[m
+[32m+[m[32m        t_seg_start = time.perf_counter()[m
+[32m+[m[32m        seg_result = self.segmenter.segment(pil_img, vocab=vocab)[m
+[32m+[m[32m        t_seg_end = time.perf_counter()[m
+[32m+[m[32m        # Store for downstream priority boost and label propagation[m
+[32m+[m[32m        self._last_seg_result = seg_result[m
+[32m+[m
+[32m+[m[32m        # Extract masks - use prepare_ann for consistency with existing pipeline[m
+[32m+[m[32m        if seg_result.has_masks:[m
+[32m+[m[32m            ann_bool = prepare_ann(seg_result.masks)  # [N,H,W] bool CPU[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            # Fallback for detection-only models (no masks)[m
+[32m+[m[32m            ann_bool = torch.empty(0, pil_img.height, pil_img.width, dtype=torch.bool)[m
+[32m+[m
+[32m+[m[32m        n_masks = int(ann_bool.shape[0]) if hasattr(ann_bool, 'shape') else 0[m
+[32m+[m
+[32m+[m[32m        # 2) heuristics -> keep + stats[m
+[32m+[m[32m        #    Overlay per-frame intrinsics so mask staging uses the actual camera,[m
+[32m+[m[32m        #    not the static YAML defaults (critical for WebSocket/ARKit path).[m
+[32m+[m[32m        heur_cfg = self.cfg[m
+[32m+[m[32m        if snap.intrinsics:[m
+[32m+[m[32m            heur_cfg = {**self.cfg, "camera": {**self.cfg.get("camera", {}), **snap.intrinsics}}[m
+[32m+[m[32m            # Also propagate width/height from the actual frame[m
+[32m+[m[32m            h_frame, w_frame = snap.rgb.shape[:2][m
+[32m+[m[32m            heur_cfg["camera"]["width"] = w_frame[m
+[32m+[m[32m            heur_cfg["camera"]["height"] = h_frame[m
+[32m+[m[32m        # Safety: if mask resolution differs from RGB (e.g. retina_masks=False[m
+[32m+[m[32m        # or a different segmentation backend), scale intrinsics to mask space[m
+[32m+[m[32m        # so _centroid_cam back-projects with consistent coordinates.[m
+[32m+[m[32m        mask_hw = None[m
+[32m+[m[32m        if ann_bool.shape[0] > 0:[m
+[32m+[m[32m            mask_h, mask_w = ann_bool.shape[1], ann_bool.shape[2][m
+[32m+[m[32m            rgb_h_frame, rgb_w_frame = snap.rgb.shape[:2][m
+[32m+[m[32m            if mask_h != rgb_h_frame or mask_w != rgb_w_frame:[m
+[32m+[m[32m                mask_hw = (mask_h, mask_w)[m
+[32m+[m[32m                sx = mask_w / rgb_w_frame[m
+[32m+[m[32m                sy = mask_h / rgb_h_frame[m
+[32m+[m[32m                cam = heur_cfg.get("camera", {})[m
+[32m+[m[32m                heur_cfg = {**heur_cfg, "camera": {[m
+[32m+[m[32m                    **cam,[m
+[32m+[m[32m                    "fx": float(cam.get("fx", 0)) * sx,[m
+[32m+[m[32m                    "fy": float(cam.get("fy", 0)) * sy,[m
+[32m+[m[32m                    "cx": float(cam.get("cx", 0)) * sx,[m
+[32m+[m[32m                    "cy": float(cam.get("cy", 0)) * sy,[m
+[32m+[m[32m                    "width": mask_w,[m
+[32m+[m[32m                    "height": mask_h,[m
+[32m+[m[32m                }}[m
+[32m+[m[32m                logger.debug([m
+[32m+[m[32m                    f"mask/RGB resolution mismatch ({mask_w}x{mask_h} vs "[m
+[32m+[m[32m                    f"{rgb_w_frame}x{rgb_h_frame}), scaled intrinsics to mask space"[m
+[32m+[m[32m                )[m
+[32m+[m
+[32m+[m[32m        # Compute mask→RGB scale factors for downstream coordinate conversion.[m
+[32m+[m[32m        # MaskStats (bbox, centroid_px) are in mask space; crop extraction and[m
+[32m+[m[32m        # association reprojection need RGB-space coordinates.[m
+[32m+[m[32m        mask_to_rgb_sx = 1.0[m
+[32m+[m[32m        mask_to_rgb_sy = 1.0[m
+[32m+[m[32m        if mask_hw is not None:[m
+[32m+[m[32m            rgb_h_frame, rgb_w_frame = snap.rgb.shape[:2][m
+[32m+[m[32m            mask_to_rgb_sx = rgb_w_frame / mask_hw[1]  # width[m
+[32m+[m[32m            mask_to_rgb_sy = rgb_h_frame / mask_hw[0]  # height[m
+[32m+[m
+[32m+[m[32m        t_heur_start = time.perf_counter()[m
+[32m+[m[32m        kept_masks, stats = run_heuristics([m
+[32m+[m[32m            ann_bool,[m
+[32m+[m[32m            snap.depth_m,[m
+[32m+[m[32m            cfg=heur_cfg,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        t_heur_end = time.perf_counter()[m
+[32m+[m[32m        logger.debug(f"staging: kept {len(kept_masks)}/{n_masks} masks after heuristics")[m
+[32m+[m
+[32m+[m[32m        # Scale centroid_px from mask space to RGB space for downstream consumers[m
+[32m+[m[32m        # (association reprojection gate, dedup centroid distance).[m
+[32m+[m[32m        # MaskStats are ephemeral per-frame, safe to mutate.[m
+[32m+[m[32m        if mask_to_rgb_sx != 1.0 or mask_to_rgb_sy != 1.0:[m
+[32m+[m[32m            for s in stats:[m
+[32m+[m[32m                cpx = getattr(s, 'centroid_px', None)[m
+[32m+[m[32m                if cpx is not None:[m
+[32m+[m[32m                    s.centroid_px = (cpx[0] * mask_to_rgb_sx, cpx[1] * mask_to_rgb_sy)[m
+[32m+[m
+[32m+[m[32m        # 3) compute priorities (soft-features) and pick top-K[m
+[32m+[m[32m        #    Use mask resolution for frame_hw when masks differ from RGB[m
+[32m+[m[32m        select_hw = mask_hw if mask_hw else snap.rgb.shape[:2][m
+[32m+[m[32m        t_score_start = time.perf_counter()[m
+[32m+[m[32m        cands = self._score_and_select(kept_masks, stats, frame_hw=select_hw)[m
+[32m+[m[32m        t_score_end = time.perf_counter()[m
+[32m+[m
+[32m+[m[32m        # 4) pre-CLIP crop only top-K, then batch encode[m
+[32m+[m[32m        t_clip_start = time.perf_counter()[m
+[32m+[m[32m        self._make_crops_inplace(cands, snap.rgb, mask_to_rgb_sx, mask_to_rgb_sy)[m
+[32m+[m[32m        self._clip_batch_inplace(cands)[m
+[32m+[m[32m        t_clip_end = time.perf_counter()[m
+[32m+[m
+[32m+[m[32m        # 5) associate and update memory/index (if components provided)[m
+[32m+[m[32m        t_assoc_start = time.perf_counter()[m
+[32m+[m[32m        m, c = 0, 0[m
+[32m+[m[32m        is_kf = bool(pkt.is_keyframe) if pkt is not None else False[m
+[32m+[m[32m        # Build frame_id for WM pose correction tracking (matches vis server mesh_id)[m
+[32m+[m[32m        frame_id = None[m
+[32m+[m[32m        if pkt is not None and pkt.time.seq is not None:[m
+[32m+[m[32m            frame_id = f"ws_{pkt.time.seq}"[m
+[32m+[m[32m        if self.associator is not None and self.working_mem is not None and self.proximity_index is not None:[m
+[32m+[m[32m            stats_assoc = self.associator.update_with_candidates(cands, snap, self.working_mem, self.proximity_index, is_keyframe=is_kf, frame_id=frame_id)[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                if isinstance(stats_assoc, dict):[m
+[32m+[m[32m                    m = int(stats_assoc.get("matched", 0))[m
+[32m+[m[32m                    c = int(stats_assoc.get("created", 0))[m
+[32m+[m[32m                    logger.debug(f"assoc: matched={m} created={c}")[m
+[32m+[m[32m            except Exception:[m
+[32m+[m[32m                pass[m
+[32m+[m
+[32m+[m[32m        t_assoc_end = time.perf_counter()[m
+[32m+[m
+[32m+[m[32m        # ---- Analytics collection (never kills pipeline) ----[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            if self._latency_analytics:[m
+[32m+[m[32m                from rtsm.analytics.latency_analytics import FrameTimingStats[m
+[32m+[m[32m                self._latency_analytics.append(FrameTimingStats([m
+[32m+[m[32m                    timestamp=t_step_start,[m
+[32m+[m[32m                    frame_seq=int(pkt.time.seq or 0) if pkt else 0,[m
+[32m+[m[32m                    is_keyframe=is_kf,[m
+[32m+[m[32m                    t_segmentation=t_seg_end - t_seg_start,[m
+[32m+[m[32m                    t_heuristics=t_heur_end - t_heur_start,[m
+[32m+[m[32m                    t_scoring=t_score_end - t_score_start,[m
+[32m+[m[32m                    t_clip=t_clip_end - t_clip_start,[m
+[32m+[m[32m                    t_association=t_assoc_end - t_assoc_start,[m
+[32m+[m[32m                    t_total=t_assoc_end - t_step_start,[m
+[32m+[m[32m                    queue_depth=self.ingest_q.qsize() if self.ingest_q else 0,[m
+[32m+[m[32m                    n_masks_in=n_masks,[m
+[32m+[m[32m                    n_masks_staged=len(kept_masks),[m
+[32m+[m[32m                    n_candidates=len(cands),[m
+[32m+[m[32m                    assoc_matched=m,[m
+[32m+[m[32m                    assoc_created=c,[m
+[32m+[m[32m                ))[m
+[32m+[m[32m            if self._seg_analytics:[m
+[32m+[m[32m                from rtsm.analytics.seg_analytics import SegFrameStats[m
+[32m+[m[32m                seg_cfg = self.cfg.get("segmentation", {})[m
+[32m+[m[32m                backend = seg_cfg.get("backend", "fastsam")[m
+[32m+[m[32m                cs = seg_result.confirmation_source[m
+[32m+[m[32m                if cs is not None:[m
+[32m+[m[32m                    seg_entry = SegFrameStats([m
+[32m+[m[32m                        timestamp=t_step_start,[m
+[32m+[m[32m                        frame_seq=int(pkt.time.seq or 0) if pkt else 0,[m
+[32m+[m[32m                        backend=backend,[m
+[32m+[m[32m                        n_dual=sum(1 for s in cs if s == "dual"),[m
+[32m+[m[32m                        n_fastsam_only=sum(1 for s in cs if s == "fastsam_only"),[m
+[32m+[m[32m                        n_yoloe_only=sum(1 for s in cs if s == "yoloe_only"),[m
+[32m+[m[32m                        n_total=len(cs),[m
+[32m+[m[32m                        n_fastsam_raw=seg_result.fastsam_raw_count or 0,[m
+[32m+[m[32m                        n_yoloe_raw=seg_result.yoloe_raw_count or 0,[m
+[32m+[m[32m                    )[m
+[32m+[m[32m                else:[m
+[32m+[m[32m                    n = seg_result.count[m
+[32m+[m[32m                    seg_entry = SegFrameStats([m
+[32m+[m[32m                        timestamp=t_step_start,[m
+[32m+[m[32m                        frame_seq=int(pkt.time.seq or 0) if pkt else 0,[m
+[32m+[m[32m                        backend=backend,[m
+[32m+[m[32m                        n_fastsam_only=n if backend in ("fastsam", "sam2") else 0,[m
+[32m+[m[32m                        n_yoloe_only=n if backend in ("yoloe", "grounded_sam2") else 0,[m
+[32m+[m[32m                        n_total=n,[m
+[32m+[m[32m                    )[m
+[32m+[m[32m                # Fill staged/selected counts by confirmation source[m
+[32m+[m[32m                if cs is not None:[m
+[32m+[m[32m                    for s in stats:[m
+[32m+[m[32m                        if s.idx < len(cs):[m
+[32m+[m[32m                            src = cs[s.idx][m
+[32m+[m[32m                            if src == "dual": seg_entry.staged_dual += 1[m
+[32m+[m[32m                            elif src == "fastsam_only": seg_entry.staged_fastsam_only += 1[m
+[32m+[m[32m                            elif src == "yoloe_only": seg_entry.staged_yoloe_only += 1[m
+[32m+[m[32m                    for cd in cands:[m
+[32m+[m[32m                        if cd.stats.idx < len(cs):[m
+[32m+[m[32m                            src = cs[cd.stats.idx][m
+[32m+[m[32m                            if src == "dual": seg_entry.selected_dual += 1[m
+[32m+[m[32m                            elif src == "fastsam_only": seg_entry.selected_fastsam_only += 1[m
+[32m+[m[32m                            elif src == "yoloe_only": seg_entry.selected_yoloe_only += 1[m
+[32m+[m[32m                self._seg_analytics.append(seg_entry)[m
+[32m+[m[32m        except Exception:[m
+[32m+[m[32m            logger.debug("analytics collection error", exc_info=True)[m
+[32m+[m
+[32m+[m[32m        # Update periodic logger with this frame's stats[m
+[32m+[m[32m        self._periodic_logger.tick(matched=m, created=c, masks=len(kept_masks))[m
+[32m+[m
+[32m+[m[32m        # 6) expire stale proto-objects past their TTL[m
+[32m+[m[32m        if self.working_mem is not None:[m
+[32m+[m[32m            expired = self.working_mem.expire_timeouts()[m
+[32m+[m[32m            if expired:[m
+[32m+[m[32m                logger.debug(f"expired {len(expired)} proto-objects: {expired}")[m
+[32m+[m
+[32m+[m[32m        # 7) periodic flush/upsert to vector store (if configured)[m
+[32m+[m[32m        self._maybe_flush_vectors()[m
+[32m+[m
+[32m+[m[32m        # 8) periodic summary log[m
+[32m+[m[32m        if self.working_mem is not None:[m
+[32m+[m[32m            queue_size = self.ingest_q.qsize() if self.ingest_q else 0[m
+[32m+[m[32m            self._periodic_logger.maybe_log([m
+[32m+[m[32m                wm_stats=self.working_mem.stats(),[m
+[32m+[m[32m                queue_size=queue_size,[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        # Ingest bookkeeping after heavy processing[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            if pkt is not None and pkt.pose is not None:[m
+[32m+[m[32m                twc = pkt.pose.t_wc.astype(np.float32)[m
+[32m+[m[32m                q = pkt.pose.q_wc_xyzw.astype(np.float32)[m
+[32m+[m[32m                cell, vbin, fwd = self.sweep_cache.cell_and_vbin_from_pose(twc_xyz=twc, q_wc_xyzw=q)[m
+[32m+[m[32m                ts_ns = int(pkt.time.t_sensor_ns or 0)[m
+[32m+[m[32m                self.ingest_gate.record_processed([m
+[32m+[m[32m                    is_keyframe=bool(pkt.is_keyframe),[m
+[32m+[m[32m                    ts_ns=ts_ns,[m
+[32m+[m[32m                    sweep_cache=self.sweep_cache,[m
+[32m+[m[32m                    cell=cell,[m
+[32m+[m[32m                    vbin=vbin,[m
+[32m+[m[32m                    cam_pos=twc,[m
+[32m+[m[32m                    look_cell=None,[m
+[32m+[m[32m                    now_mono=time.monotonic(),[m
+[32m+[m[32m                )[m
+[32m+[m[32m                # Store latest robot pose for API queries[m
+[32m+[m[32m                timestamp = float(pkt.time.t_wall_utc_s or pkt.time.t_mono_s or 0.0)[m
+[32m+[m[32m                self.working_mem.update_robot_pose(twc, q, timestamp)[m
+[32m+[m[32m        except Exception:[m
+[32m+[m[32m            pass[m
+[32m+[m
+[32m+[m[32m    # -------- internals --------[m
+[32m+[m[32m    def _get_snapshot_via_queue(self) -> Tuple[Optional[Snapshot], Optional[FramePacket]]:[m
+[32m+[m[32m        if self.ingest_q is None:[m
+[32m+[m[32m            return None, None[m
+[32m+[m[32m        pkt = self.ingest_q.get(timeout=0.0)[m
+[32m+[m[32m        if pkt is None:[m
+[32m+[m[32m            return None, None[m
+[32m+[m[32m        rgb = pkt.rgb[m
+[32m+[m[32m        depth_m = pkt.depth_m[m
+[32m+[m[32m        intr = None[m
+[32m+[m[32m        if pkt.intr is not None:[m
+[32m+[m[32m            intr = {"fx": float(pkt.intr.fx), "fy": float(pkt.intr.fy), "cx": float(pkt.intr.cx), "cy": float(pkt.intr.cy)}[m
+[32m+[m[32m        # Convert pose to T_cam_world if available[m
+[32m+[m[32m        T = None[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            if pkt.pose is not None:[m
+[32m+[m[32m                T_wc = pkt.pose.T_wc()[m
+[32m+[m[32m                # Note: ARKit→OpenCV camera flip is applied at ingestion[m
+[32m+[m[32m                # (WebSocketReceiver) so T_wc is already in OpenCV convention.[m
+[32m+[m[32m                # Debug: log T_wc (periodically)[m
+[32m+[m[32m                if not hasattr(self, '_pipe_pose_log_count'):[m
+[32m+[m[32m                    self._pipe_pose_log_count = 0[m
+[32m+[m[32m                self._pipe_pose_log_count += 1[m
+[32m+[m[32m                if self._pipe_pose_log_count % 30 == 1:[m
+[32m+[m[32m                    t_raw = pkt.pose.t_wc[m
+[32m+[m[32m                    t_from_matrix = T_wc[:3, 3][m
+[32m+[m[32m                    logger.debug(f"[pipeline] pkt.pose.t_wc={t_raw}, T_wc[:3,3]={t_from_matrix}")[m
+[32m+[m[32m                # inverse to get T_cam_world (maps world → OpenCV camera frame)[m
+[32m+[m[32m                R = T_wc[:3, :3][m
+[32m+[m[32m                t = T_wc[:3, 3][m
+[32m+[m[32m                T = np.eye(4, dtype=np.float32)[m
+[32m+[m[32m                T[:3, :3] = R.T[m
+[32m+[m[32m                T[:3, 3] = (-R.T @ t)[m
+[32m+[m[32m        except Exception:[m
+[32m+[m[32m            T = None[m
+[32m+[m[32m        return Snapshot(rgb=rgb, depth_m=depth_m, intrinsics=intr, pose_cam_T_world=T), pkt[m
+[32m+[m
+[32m+[m[32m    def _score_and_select([m
+[32m+[m[32m        self, masks: List[torch.Tensor], stats: List[MaskStats],[m
+[32m+[m[32m        frame_hw: Optional[Tuple[int, int]] = None,[m
+[32m+[m[32m    ) -> List[Candidate]:[m
+[32m+[m[32m        """[m
+[32m+[m[32m        This function takes a list of candidate masks and their computed statistics,[m
+[32m+[m[32m        and assigns a "priority" score to each candidate based on a weighted sum of features.[m
+[32m+[m[32m        The features include:[m
+[32m+[m[32m          - coverage: fraction of image covered by the mask (higher is better, up to a soft cap)[m
+[32m+[m[32m          - border_fraction: fraction of mask pixels on the image border (lower is better)[m
+[32m+[m[32m          - depth_valid: fraction of mask pixels with valid depth (higher is better)[m
+[32m+[m[32m          - depth_spread: spread (p90-p10) of depth values within the mask (lower is better)[m
+[32m+[m[32m          - bbox_area: area of the mask's bounding box, normalized by image area (moderate is better)[m
+[32m+[m[32m          - planarity/structure: geometric planarity features (optional, if available)[m
+[32m+[m[32m        The weights and thresholds for these features are configurable via self.cfg.[m
+[32m+[m[32m        Oversized masks (too large coverage or bbox) are penalized.[m
+[32m+[m[32m        The function returns the top-K candidates (by priority), where K is configurable.[m
+[32m+[m
+[32m+[m[32m        Compute priority for each candidate and store as .priority[m
+[32m+[m[32m        (The actual calculation is performed in the loop below.)[m
+[32m+[m
+[32m+[m[32m        After all candidates are scored, select the top-K by priority.[m
+[32m+[m[32m        If there are fewer than K candidates, return all.[m
+[32m+[m[32m        The returned list is sorted in descending order of priority.[m
+[32m+[m[32m        """[m
+[32m+[m[41m        [m
+[32m+[m[32m        if frame_hw is not None:[m
+[32m+[m[32m            H, W = frame_hw[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            H, W = self.cfg.get("camera",{}).get("height"), self.cfg.get("camera",{}).get("width")[m
+[32m+[m[32m        # weights from cfg with safe defaults[m
+[32m+[m[32m        w_cov   = float(self.cfg.get("staging",{}).get("w_coverage", 1.0))[m
+[32m+[m[32m        w_edge  = float(self.cfg.get("staging",{}).get("w_border_fraction", -2.0))[m
+[32m+[m[32m        w_valid = float(self.cfg.get("staging",{}).get("w_depth_valid", 1.0))[m
+[32m+[m[32m        w_spread= float(self.cfg.get("staging",{}).get("w_depth_spread", -1.0))[m
+[32m+[m[32m        bias_big_bbox = float(self.cfg.get("staging",{}).get("w_bbox_area", 0.5))[m
+[32m+[m[32m        w_struct = float(self.cfg.get("staging",{})

@@ -1,0 +1,15 @@
+services:
+  rtsm-dev:
+    image: rtsm-dev:gpu-working
+    container_name: rtsm-dev
+    runtime: nvidia
+    restart: unless-stopped
+    working_dir: /workspace/rtsm
+    command: sleep infinity
+    ports:
+      - "8002:8002"
+    volumes:
+      - /home/peep/rtsm:/workspace/rtsm
+      - /mnt/rtsm-data/model_store:/mnt/rtsm-data/model_store
+      - /mnt/rtsm-data/cache:/root/.cache
+      - /mnt/rtsm-data/rtsm-workdir:/workspace/workdir

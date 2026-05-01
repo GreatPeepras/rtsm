@@ -18,8 +18,11 @@ def _to_pil_rgb(x: ImageLike) -> Image.Image:
     if arr.dtype != np.uint8:
         # assume [0,1] float -> uint8
         arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
-    # assume already RGB; if you know it's BGR, swap here:
-    # arr = arr[..., ::-1]  # uncomment if your crops are BGR
+    # Crops enter this function as BGR (the WebSocket reader at
+    # rtsm/io/websocket.py emits BGR from both the BGRA and NV12/YUV paths,
+    # and the upstream pipeline does not convert). Swap to RGB before handing
+    # to CLIP, whose vision tower was trained exclusively on RGB photographs.
+    arr = arr[..., ::-1].copy()  # BGR -> RGB
     return Image.fromarray(arr, mode="RGB")
 
 @torch.no_grad()

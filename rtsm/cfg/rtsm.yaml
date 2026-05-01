@@ -1,5 +1,20 @@
 # ============================================================
-# RTSM Configuration - Real-Time Spatio-Semantic Memory
+# RTSM Demo Config — Speed-focused, works everywhere
+# Tuned for a short 50-frame demo clip: fast confirmation,
+# clean output, broad GPU compatibility.
+# Uses grounded_sam2 (Apache 2.0, permissive default).
+#
+# Key differences from production (rtsm.yaml):
+#   topk_preclip: 8 (vs 15) -- fewer CLIP candidates = faster
+#   stability_promote: 0.40 (vs 0.55) -- easier confirmation
+#   stab_k: 0.55 (vs 0.45) -- faster stability rise
+#   proto_ttl_s: 5.0 (vs 10.0) -- cleaner proto cleanup
+#   keyframe_every_n: 5 (vs 30) -- more KFs from short clip
+#   tsdf.enable: false -- skip volumetric fusion
+#   mcp.enable: false -- not needed for demo
+#
+# Tuning results (50-frame demo clip, RTX 5090):
+#   18 confirmed objects, 21 proto, 27.8ms mean latency
 # ============================================================
 
 # -------------------- Hardware --------------------
@@ -7,95 +22,94 @@ camera:
   model: D435i
   width: 640
   height: 480
-  aligned_to: color   # if you align depth→color
+  aligned_to: color
   fx: 604.634705
   fy: 604.906738
   cx: 318.806030
   cy: 259.239777
 
 # -------------------- Models --------------------
-# Segmentation backend
 segmentation:
-  # Atomic backend choices:
-  #   grounded_sam2  - GDINO detect + SAM2 segment (Apache 2.0) [DEFAULT]
-  #   sam2           - SAM2 auto-mask, class-agnostic (Apache 2.0)
-  #   fastsam        - class-agnostic (requires ultralytics, AGPL)
-  #   yoloe          - open-vocab (requires ultralytics, AGPL)
-  #   dual           - FastSAM + YOLOE IoU merge (requires ultralytics, AGPL)
   backend: grounded_sam2
-  retina_masks: false                  # false = 640x640 masks (fast), true = original resolution (precise but slow)
-
-  fastsam:
-    model_path: model_store/fastsam/FastSAM-x.pt
-    device: cuda
-    imgsz: 640
-    conf: 0.6                                           # raised from 0.4 - drop weak mask fragments (0.5 still oversegmented far views)
-    iou: 0.7                                            # lowered from 0.9 - merge overlapping masks more aggressively
-    max_det: 100                                        # indoor rooms rarely have 300 objects
-
-  yoloe:
-    model_path: model_store/yolo/yoloe-26s-seg-pf.pt   # prompt-free: 1200+ LVIS categories, no vocab needed
-    device: cuda
-    imgsz: 640
-    conf: 0.25                                          # permissive so YOLOE confirms more FastSAM masks
-    iou: 0.5                                            # stricter NMS for cluttered indoor scenes
-    max_det: 100                                        # cap detections per frame
-    # vocab is ignored for -pf models (1200+ built-in categories)
-    vocab: null
+  retina_masks: false
 
   sam2:
-    model_id: facebook/sam2.1-hiera-small    # tiny | small | base_plus | large
+    model_id: facebook/sam2.1-hiera-small
     device: cuda
-    points_per_side: 32                      # grid density for auto-mask (32 = default, 64 = denser)
-    points_per_batch: 64                     # points processed per batch
-    pred_iou_thresh: 0.7                     # minimum predicted IoU to keep a mask
-    stability_score_thresh: 0.92             # minimum stability score
-    box_nms_thresh: 0.7                      # NMS threshold for overlapping masks
-    min_mask_region_area: 100                # minimum mask area in pixels
+    points_per_side: 32
+    points_per_batch: 64
+    pred_iou_thresh: 0.7
+    stability_score_thresh: 0.92
+    box_nms_thresh: 0.7
+    min_mask_region_area: 100
 
   grounded_sam2:
     gdino_model_id: IDEA-Research/grounding-dino-tiny
-    sam2_model_id: null              # null = use sam2.model_id above
+    sam2_model_id: null
     device: cuda
-    box_threshold: 0.20              # GDINO detection confidence threshold
-    text_threshold: 0.15             # GDINO text matching threshold
-    vocab: null                      # null = use default indoor vocab (40+ classes)
-
-  # Dual-confirmation settings (only used when backend: dual)
-  dual:
-    iou_confirm_threshold: 0.40       # IoU to consider FastSAM+YOLOE masks "confirmed"
-    priority_boost_dual: 0.3          # priority boost for dual-confirmed masks
-    priority_penalty_yoloe_only: 0.0  # no penalty for YOLOE-only
-    prefer_mask: yoloe26              # which mask to keep for dual-confirmed
+    box_threshold: 0.18                # DEMO: lower to catch dolls, small items
+    text_threshold: 0.12               # DEMO: lower text matching
+    vocab:
+      - chair
+      - table
+      - desk
+      - couch
+      - bed
+      - shelf
+      - cabinet
+      - monitor
+      - laptop
+      - keyboard
+      - mouse
+      - phone
+      - tv
+      - speaker
+      - bottle
+      - cup
+      - mug
+      - book
+      - bag
+      - backpack
+      - plant
+      - lamp
+      - pillow
+      - cushion
+      - blanket
+      - doll
+      - stuffed animal
+      - toy
+      - figurine
+      - plush
+      - tissue box
+      - remote
+      - headphones
+      - charger
+      - box
+      - bin
+      - basket
+      - clock
+      - picture frame
+      - curtain
 
 clip:
   model: ViT-B-16-SigLIP
   pretrained: webli
   local_dir: model_store/clip
 
-# -------------------- I/O & Network --------------------
+# -------------------- I/O --------------------
 io:
-  # Receiver backend: zeromq (D435i + RTABMap) or websocket (Calabi Lens ARKit)
-  receiver: websocket                           # zeromq | websocket
-
-  # ZMQ endpoints for dual-socket subscription (only when receiver: zeromq)
-  camera_endpoint: tcp://172.27.240.1:5555      # D435i camera.rgbd topic
-  rtabmap_endpoint: tcp://127.0.0.1:6000        # RTABMap pose topics
-
-  # WebSocket receiver config (only when receiver: websocket)
+  receiver: websocket
   websocket:
     host: "0.0.0.0"
     port: 8765
-    require_tracking_normal: true               # drop frames where tracking_state != "normal"
-    keyframe_every_n: 30                        # mark every Nth frame as keyframe
-    nonkf_min_interval_s: 0.5                   # throttle non-KF to max ~2/s
-    confidence_threshold: 2                     # 0=accept all, 1=medium+high, 2=high only (2 matches official RTABMap)
+    require_tracking_normal: true
+    keyframe_every_n: 5              # DEMO: more keyframes from short clip
+    nonkf_min_interval_s: 0.3        # DEMO: faster non-KF throughput
+    confidence_threshold: 2
 
 units:
-  # Convert incoming values to meters at ingestion
-  # If your dataset publishes millimeters, set to 0.001
-  depth_m_per_unit: 0.001   # D435i depth is in mm
-  pose_m_per_unit: 1.0      # RTABMap poses are already in meters
+  depth_m_per_unit: 0.001
+  pose_m_per_unit: 1.0
 
 time_sync:
   slop_ms: 30
@@ -106,23 +120,23 @@ time_sync:
 gates:
   min_brightness: 5
   min_std: 5
-  min_depth_valid: 0.35           # loosened from 0.5 - more lenient for cluttered indoor scenes
+  min_depth_valid: 0.40              # DEMO: slightly stricter
 
 masks:
   min_coverage: 0.005
-  max_coverage: 0.8               # loosened from 0.6 - allow bigger segmentation masks
+  max_coverage: 0.8
   max_border_fraction: 0.15
 
 filters:
-  min_area_px: 500                # lowered from 700 - catch smaller indoor objects
+  min_area_px: 400                   # DEMO: lower to catch smaller objects (dolls, toys)
   aspect_ratio: [0.2, 5.0]
   solidity_min: 0.3
-  border_touch_max_pct: 0.15      # tightened: reject masks with >15% border contact
+  border_touch_max_pct: 0.15
   depth:
     z_min_m: 0.2
     z_max_m: 8.0
     valid_min_pct: 0.10
-    sigma_max_m: 0.50             # loosened from 0.25 - allow reflective/multi-plane objects (TVs, glass)
+    sigma_max_m: 0.35                # DEMO: tighter depth spread
   border:
     partial_min_pct: 0.30
     extreme_drop_pct: 0.90
@@ -132,206 +146,153 @@ structure:
   enable: true
   sample_stride: 3
   min_support_px: 2000
-  max_rms_m: 0.02                 # tightened from 0.03 - 2cm fit residual for cleaner RTABMap data
+  max_rms_m: 0.02
   angle_floor_deg: 12
   wall_dot_max: 0.3
 
 planarity:
   sample_stride: 3
-  inlier_pct_min: 0.85            # tightened from 0.80 - require more inliers with stable point cloud
-  rms_residual_max_m: 0.015       # tightened from 0.02 - 1.5cm for cleaner indoor surfaces
+  inlier_pct_min: 0.85
+  rms_residual_max_m: 0.015
 
-# -------------------- Staging & Prioritization --------------------
+# -------------------- Staging --------------------
 staging:
-  # Basic thresholds
   min_area_px: 120
-  centroid_min_valid: 0.05       # loosened from 0.15 - allow centroid even with very sparse depth
-  depth_valid_min: 0.02          # loosened from 0.10 - allow near-zero depth on reflective surfaces (TVs, mirrors)
-  depth_erode_px: 1              # reduced: 1px erosion to preserve more mask area for centroid
-  topk_preclip: 15
+  centroid_min_valid: 0.05
+  depth_valid_min: 0.02
+  depth_erode_px: 1
+  topk_preclip: 12                   # DEMO: more candidates to catch small objects
   crop_pad_px: 6
   clip_input: 224
-  bg_fill: mean                   # Background fill for masked crops: mean | white | black | blur
 
-  # Priority weights
   w_coverage: 1.0
-  w_border_fraction: -1.0         # reduced from -2.0 - less penalty for large objects touching borders
+  w_border_fraction: -1.0
   w_depth_valid: 1.0
-  w_depth_spread: -0.5            # relaxed from -1.0 - less penalty for complex multi-plane objects
+  w_depth_spread: -0.5
   w_bbox_area: 0.5
 
-  # Soft caps (penalize oversized masks without hard dropping)
-  coverage_soft_cap: 0.70         # loosened from 0.50 - allow large objects (TVs, walls) before penalty
-  bbox_soft_cap: 0.70             # loosened from 0.50 - allow large bboxes before penalty
-  w_coverage_oversize: -0.5       # reduced from -1.0 - less penalty for oversized masks
-  w_bbox_oversize: -0.3           # reduced from -0.5 - less penalty for oversized bboxes
+  coverage_soft_cap: 0.70
+  bbox_soft_cap: 0.70
+  w_coverage_oversize: -0.5
+  w_bbox_oversize: -0.3
 
-  # Structure scoring (planarity + extent bias)
-  # structure_score = clamp(a*s_geom + b*s_sem + c*s_extent, 0, 1)
-  w_struct: 0.2                   # reduced from 0.4 - less planarity penalty overall
-  struct_a: 0.3                   # reduced from 0.5 - less geometry/planarity term weight
-  struct_b: 0.3                   # semantic (CLIP) term (unused pre-CLIP)
-  struct_c: 0.1                   # extent term
+  w_struct: 0.2
+  struct_a: 0.3
+  struct_b: 0.3
+  struct_c: 0.1
   struct_geom_inlier_pct_min: 0.80
   struct_geom_rms_inv_scale_m: 0.005
   struct_geom_rms_hi_m: 0.02
   struct_extent_lo: 0.10
   struct_extent_hi: 0.35
 
-  # Same-frame dedup (suppress duplicate masks before CLIP batch)
-  # Lightweight mode (default): centroid proximity + area similarity + bbox IoU
-  # Set dedup_use_mask: true to re-enable pixel-wise mask IoU (expensive at retina resolution)
-  dedup_use_mask: false              # false = lightweight (centroid+area+bbox), true = pixel mask IoU
-  dedup_centroid_px: 50.0            # max centroid distance (px) to consider as candidate duplicate
-  dedup_area_ratio_min: 0.4          # min area ratio (smaller/larger) to consider as same object
-  dedup_bbox_iou_thr: 0.50           # min bbox IoU to confirm duplicate
-  dedup_iou_thr: 0.80                # mask IoU threshold (only used when dedup_use_mask: true)
+  dedup_use_mask: false
+  dedup_centroid_px: 35.0              # DEMO: tighter dedup to reduce duplicates
+  dedup_area_ratio_min: 0.3
+  dedup_bbox_iou_thr: 0.40             # DEMO: tighter bbox overlap for dedup
+  dedup_iou_thr: 0.60                  # DEMO: tighter mask iou for dedup
 
 # -------------------- Spatial Memory --------------------
 sweep_cache:
-  # Spatial grid & membership
-  grid_size_m: 0.25               # cell size G (meters)
-  per_cell_cap: 64                # max IDs per cell before eviction
-  neighbors_max: 128              # clamp union of neighbor IDs
-  two_d: true                     # drop z in the key (indoors often true)
-
-  # View binning (direction quantization)
-  yaw_bins: 12                    # 360° / 12 = 30° per yaw bin
-  pitch_bins: 5                   # number of vertical slices
-  pitch_deg: 60                   # pitch_max = ±60°; clamp extremes into edge bins
-
-  # Novelty helpers state
-  look_lru_keep: 8                # remember last N look-cells per (cell,vbin)
-  hysteresis_frac: 0.20           # only switch pose cell if >20% into new cell (border flicker guard)
-
-  # Optional: structure dedup (off by default)
+  grid_size_m: 0.25
+  per_cell_cap: 64
+  neighbors_max: 128
+  two_d: true
+  yaw_bins: 12
+  pitch_bins: 5
+  pitch_deg: 60
+  look_lru_keep: 8
+  hysteresis_frac: 0.20
   enable_plane_dedup: false
-  plane_quant_step: 0.05          # meters for plane offset quant (only if enabled)
-  plane_normal_bins: 24           # coarse normal dir bins (only if enabled)
+  plane_quant_step: 0.05
+  plane_normal_bins: 24
 
 sweep_policy:
-  # Time-based cadence
-  ttl_s: 2.0                      # more frequent soft refresh
-  hard_max_s: 8.0                 # earlier absolute backstop to force sweeps
-
-  # Parallax (baseline) gate
-  min_baseline_m: 0.08            # tightened from 0.05 - reduce jitter sensitivity with stable RTABMap
-  k_depth: 0.005                  # scale baseline more gently with range Z
-
-  # TTL behavior
-  require_novelty_on_ttl: false   # allow TTL alone to trigger sweep
+  ttl_s: 2.0
+  hard_max_s: 8.0
+  min_baseline_m: 0.08
+  k_depth: 0.005
+  require_novelty_on_ttl: false
 
 io_sweep:
-  # What cell to mark after a sweep (ties staleness to what was actually seen)
-  mark_mode: look_cell            # camera_cell | look_cell | look_patch3x3
-  look_patch_radius_cells: 1      # only used for look_patch3x3 (1 => 3x3)
+  mark_mode: look_cell
+  look_patch_radius_cells: 1
 
 assoc:
-  rings: 1                        # neighbor rings for candidate fetch (2D: 9 cells; 3D: 27)
-  nearest_m_for_cos: 8            # K: only compare cosine against the nearest K by distance
+  rings: 1
+  nearest_m_for_cos: 5
   use_embeddings: true
-  cos_min: 0.90                   # minimum cosine similarity threshold for association (0.0 to 1.0)
-  gate_dist_base_m: 0.50          # 50cm - looser 3D distance gate for small room / noisy depth
-  gate_reproj_px: 60              # ~10cm at 1m depth - more forgiving reprojection
-  fallback_all_when_empty: true   # fallback to all objects in WM if no nearby objects are found
-  debug_positions: false          # Enable diagnostic position logging
+  cos_min: 0.90
+  gate_dist_base_m: 0.35              # DEMO: balanced — merge same object across views but not neighbors
+  gate_reproj_px: 35                  # DEMO: balanced — allow some viewpoint variation
+  fallback_all_when_empty: true
+  debug_positions: false
 
 # -------------------- Object Promotion --------------------
 object:
-  proto_ttl_s: 10.0               # seconds before proto object expires if not re-observed
-  promote_hits: 2                 # observations needed to promote proto → confirmed
-  stability_promote: 0.55         # loosened from 0.8 - allow more proto objects to confirm
-  require_view_bins: 1            # loosened from 2 - allow stationary camera to confirm objects
-  stab_k: 0.45                    # stability update factor
-  miss_decay: 0.5                # stability decay on missed frames
+  proto_ttl_s: 5.0                   # DEMO: faster expiry
+  promote_hits: 2
+  stability_promote: 0.40            # DEMO: easier to confirm
+  require_view_bins: 1
+  stab_k: 0.55                       # DEMO: faster stability rise
+  miss_decay: 0.5
 
 # -------------------- Pose --------------------
 pose:
-  demote_thresh_m: 0.30           # correction shift (m) above which confirmed objects are demoted to proto
+  demote_thresh_m: 0.30
 
 # -------------------- Storage --------------------
 vectors:
   enable: true
-  backend: faiss                  # faiss | milvus
-  dim: 768                        # SigLIP ViT-B-16 visual embedding size
+  backend: faiss
+  dim: 768
   faiss:
     index_path: model_store/faiss/index.flatip
-  # milvus:
-  #   host: 127.0.0.1
-  #   port: 19530
-  #   collection: rtsm_objects
   flush_period_s: 3.0
 
 # -------------------- Visualization --------------------
 visualization:
-  enable: true                    # Enable embedded visualization server
+  enable: true
   host: 0.0.0.0
-  port: 8083                      # WebSocket port for frontend
-  apply_camera_flip: true           # Flip ARKit camera (Y-up, Z-back) to OpenCV (Y-down, Z-forward)
-
-  # Depth filtering for visualization pipeline
+  port: 8083
+  apply_camera_flip: true
   depth:
-    min_m: 0.1                    # Minimum depth (meters)
-    max_m: 3.5                    # Maximum depth (meters) - tighter for indoor quality
-
-  # TSDF volumetric fusion (replaces naive per-frame point cloud accumulation)
+    min_m: 0.1
+    max_m: 3.5
   tsdf:
-    enable: true
-    integration_max_width: 640    # Downsample RGB before integration (depth is 256x192)
-    voxel_size: 0.01              # 1cm voxels for indoor
-    sdf_trunc: 0.04               # truncation distance (meters)
-    max_depth_m: 3.5              # max depth for TSDF integration
-    extract_every_n: 30           # extract mesh every N integrated frames
-    extract_interval_s: 2.0       # or extract on timer (seconds), whichever first
-    frame_buffer_size: 200        # ring buffer for re-integration on loop closure
-    correction_reset_threshold_m: 0.05  # if max pose correction > this, reset+re-integrate
-
-  # Object overlay settings
+    enable: false                    # DEMO: skip TSDF for speed + memory
+    integration_max_width: 480       # DEMO: smaller if used
+    voxel_size: 0.01
+    sdf_trunc: 0.04
+    max_depth_m: 3.5
+    extract_every_n: 30
+    extract_interval_s: 2.0
+    frame_buffer_size: 200
+    correction_reset_threshold_m: 0.05
   objects:
-    push_interval_ms: 200         # How often to push WM objects to clients
-    include_proto: true           # Include proto (unconfirmed) objects
-
-  # Runtime analytics dashboard push settings
+    push_interval_ms: 200
+    include_proto: true
   analytics:
-    push_interval_ms: 1000        # Tier 2 rollup + push cadence (ms)
-    full_sync_interval_s: 30      # Re-send full Tier 2 history every N seconds
+    push_interval_ms: 1000
+    full_sync_interval_s: 30
 
-# -------------------- SLAM (on-device, via Calabi Lens) --------------------
-# RTAB-Map runs on the iPhone. These settings control how RTSM handles
-# SLAM-corrected poses received from the client.
 slam:
-  # Log pose_source from client (arkit_vio vs rtabmap_slam)
   log_pose_source: true
-
-  # Accept retroactive pose corrections from on-device SLAM loop closures.
-  # When enabled, the client sends a "pose_corrections" text message after
-  # loop closure, and RTSM updates past keyframe poses in the visualization.
   accept_pose_corrections: true
-
-  # Also correct WorkingMemory object positions when loop closure corrections
-  # arrive. Each object is corrected using the delta from the spatially
-  # nearest corrected camera position.
   correct_working_memory: true
 
-# -------------------- API --------------------
 api:
   host: "0.0.0.0"
   port: 8002
 
-# -------------------- MCP (Model Context Protocol) --------------------
-# Embedded MCP server exposes RTSM spatial memory as tools for AI agents.
-# Mounts on the existing API server at /mcp/ (SSE transport).
-# Standalone bridge (rtsm-mcp) is also available for stdio transport.
 mcp:
-  enable: true                      # Enable embedded MCP server on the API port
+  enable: false                      # DEMO: not needed
 
-# -------------------- Analytics --------------------
 analytics:
-  enable: true                      # Enable runtime analytics buffers
-  retention_s: 3600                 # Tier 2 wall-clock retention (seconds)
-  buffer_frames: 300                # Tier 1 per-frame ring buffer size
+  enable: true
+  retention_s: 3600
+  buffer_frames: 300
 
-# -------------------- Runtime --------------------
 logging:
-  periodic_summary: true          # Enable/disable periodic summary logs
-  summary_interval_s: 10.0        # Seconds between summary logs
+  periodic_summary: true
+  summary_interval_s: 10.0

@@ -179,14 +179,7 @@ class Pipeline:
         t_step_start = time.perf_counter()
 
         # 1) segmentation -> masks
-        # snap.rgb is actually BGR despite the name — see rtsm/io/websocket.py
-        # decode_rgb(), which emits BGR from both BGRA and NV12 paths.
-        # Flip once here at the source so segmentation (GDINO), CLIP, and
-        # any downstream consumer all receive correct RGB.
-        if isinstance(snap.rgb, np.ndarray):
-            pil_img = Image.fromarray(snap.rgb[..., ::-1])
-        else:
-            pil_img = snap.rgb
+        pil_img = Image.fromarray(snap.rgb) if isinstance(snap.rgb, np.ndarray) else snap.rgb
 
         # Get segmentation vocab from config (for open-vocab models)
         seg_cfg = self.cfg.get("segmentation", {})
@@ -780,10 +773,13 @@ class Pipeline:
         for i, c in enumerate(cands):
             if c.crop is None:
                 continue
-            # Crops inherit RGB from the full-frame flip at pipeline.py:181
-            # (snap.rgb is actually BGR; see rtsm/io/websocket.py decode_rgb).
+            # ensure RGB PIL for preprocess; if your crop is BGR, swap channels here once:
+            # crop = c.crop[..., ::-1]
             crop = c.crop
-            crop_rgb = crop  # alias kept to minimize downstream diff
+            # Crops arrive as BGR because the WebSocket reader
+            # (rtsm/io/websocket.py) emits BGR from both BGRA and NV12 paths,
+            # and nothing upstream flips to RGB. CLIP expects RGB.
+            crop_rgb = crop[..., ::-1].copy()
             if not getattr(self, "_dbg_bgr_flip_logged", False):
                 logger.info(f"[bgr-flip] active; crop shape={crop_rgb.shape} dtype={crop_rgb.dtype}")
                 self._dbg_bgr_flip_logged = True

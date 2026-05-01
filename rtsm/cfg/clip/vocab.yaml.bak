@@ -193,9 +193,6 @@ classes:
   - id: doll
     synonyms: []
 
-  - id: teddy bear
-    synonyms: ["stuffed animal", "plush toy", "stuffed bear", "plushie"]
-
   # Electronics & Tech
   - id: webcam
     synonyms: ["camera", "web camera"]

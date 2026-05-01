@@ -481,16 +481,53 @@ class WorkingMemory:
             o = self._map.get(oid)
             if o is None or o.confirmed:
                 return
-            if o.hits >= self.promote_hits and o.stability >= self.stability_promote and len(o.view_bins) >= self.require_view_bins:
+
+            gate_hits = o.hits >= self.promote_hits
+            gate_stab = o.stability >= self.stability_promote
+            gate_bins = len(o.view_bins) >= self.require_view_bins
+
+            top_lbl = max(o.label_scores, key=o.label_scores.get) if o.label_scores else None
+            top_conf = (o.label_scores.get(top_lbl, 0.0) if top_lbl else 0.0)
+
+            # Label-quality gate: require a label that passed the CLIP classifier's
+            # own threshold (which means label_scores is non-empty AND the top
+            # score is a cosine similarity at or above the classifier's min_top).
+            gate_label = (top_lbl is not None) and (top_conf >= 0.25)
+
+            structural_pass = gate_hits and gate_stab and gate_bins
+            all_pass = structural_pass and gate_label
+
+            logger.info(
+                f"[promote-gate] oid={oid[:8]} "
+                f"hits={o.hits}/{self.promote_hits}({int(gate_hits)}) "
+                f"stab={o.stability:.3f}/{self.stability_promote}({int(gate_stab)}) "
+                f"bins={len(o.view_bins)}/{self.require_view_bins}({int(gate_bins)}) "
+                f"label={top_lbl} conf={top_conf:.3f}({int(gate_label)}) "
+                f"decision={int(all_pass)}"
+            ) 
+
+            if all_pass:
                 o.confirmed = True
-                # Schedule immediate LTM eligibility check
-                top_lbl = o.label_primary
-                conf = (o.label_scores.get(top_lbl, 0.0) if top_lbl else 0.0)
                 logger.info(
-                    f"[WM] promote oid={oid} label={top_lbl if top_lbl else '-'} "
-                    f"conf={conf:.3f} hits={o.hits} stab={o.stability:.3f}"
+                    f"[WM] promote oid={oid} label={top_lbl} "
+                    f"conf={top_conf:.3f} hits={o.hits} stab={o.stability:.3f}"
                 )
-                heapq.heappush(self._ltm_heap, (_now_mono(), oid))
+
+    #def maybe_promote(self, oid: str) -> None:
+        #with self._lock:
+            #o = self._map.get(oid)
+            #if o is None or o.confirmed:
+                #return
+            #if o.hits >= self.promote_hits and o.stability >= self.stability_promote and len(o.view_bins) >= self.require_view_bins:
+                #o.confirmed = True
+                # Schedule immediate LTM eligibility check
+                #top_lbl = o.label_primary
+                #conf = (o.label_scores.get(top_lbl, 0.0) if top_lbl else 0.0)
+                #logger.info(
+                    #f"[WM] promote oid={oid} label={top_lbl if top_lbl else '-'} "
+                    #f"conf={conf:.3f} hits={o.hits} stab={o.stability:.3f}"
+                #)
+               # heapq.heappush(self._ltm_heap, (_now_mono(), oid))
 
     def collect_ready_for_upsert(self, force_all: bool = False) -> List[Dict[str, Any]]:
         """Collect confirmed objects that should be (re)upserted to LTM now.

@@ -1,0 +1,6 @@
+?? docs/git-commit.txt
+?? docs/git-status-at-snapshot.txt
+?? docs/model-store-manifest.txt
+?? docs/pip-freeze.known-good-2026-04-27.txt
+?? model_store
+?? scripts/docker-dev.sh
