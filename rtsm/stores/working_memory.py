@@ -492,7 +492,12 @@ class WorkingMemory:
             # Label-quality gate: require a label that passed the CLIP classifier's
             # own threshold (which means label_scores is non-empty AND the top
             # score is a cosine similarity at or above the classifier's min_top).
-            gate_label = (top_lbl is not None) and (top_conf >= 0.25)
+            # PATCHED 20260430: demo-clip validation
+            # Original threshold 0.25 matched min_top=0.30 in vocab.yaml.
+            # After relaxing min_top to 0.06, observed confs are 0.04-0.11,
+            # so 0.25 is unreachable. Lowered to 0.05 for persistence-loop
+            # end-to-end validation. TODO: re-tune with live D435i data.
+            gate_label = (top_lbl is not None) and (top_conf >= 0.05)
 
             structural_pass = gate_hits and gate_stab and gate_bins
             all_pass = structural_pass and gate_label

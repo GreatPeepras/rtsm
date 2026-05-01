@@ -318,6 +318,13 @@ def run_demo(argv: list[str] | None = None) -> None:
                     logger.info(f"[demo] Force-flushed {len(ready)} objects to vector store after replay")
                 except Exception as e:
                     logger.warning(f"[demo] Force flush failed: {e}")
+            # Persist FAISS state to disk so it survives restart.
+            try:
+                index_path = cfg["vectors"]["faiss"]["index_path"]
+                vectors.save(index_path)
+                logger.info(f"[demo] FAISS state saved to {index_path}")
+            except Exception as e:
+                logger.warning(f"[demo] FAISS save failed: {e}")
 
     flush_thread = threading.Thread(target=_flush_after_replay, daemon=True, name="demo-flush")
     flush_thread.start()

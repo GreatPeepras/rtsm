@@ -71,6 +71,42 @@ class FaissClient:
             meta = {k: v for k, v in rec.items() if k not in ("emb",)}
             to_add.append((oid, emb, meta))
 
+        # --- PATCH P1 20260501: semantic-spatial dedup ---
+        # Prevent the same real-world object (same primary label at same 10cm
+        # grid cell) from accumulating duplicate OIDs across re-ingests.
+        # Incoming records win; pre-existing OIDs with matching identity are evicted.
+        def _identity_key(m):
+            xyz = m.get("xyz")
+            label = m.get("label_primary")
+            if xyz is None or label is None:
+                return None
+            try:
+                coords = tuple(round(float(c), 1) for c in xyz)  # 10cm grid
+            except (TypeError, ValueError):
+                return None
+            return (label, coords)
+
+        _incoming_keys = set()
+        for _oid, _emb, _meta in to_add:
+            k = _identity_key(_meta)
+            if k is not None:
+                _incoming_keys.add(k)
+
+        if _incoming_keys:
+            _incoming_oids = {oid for oid, _, _ in to_add}
+            _evict = [
+                eoid for eoid, emeta in self._metadata.items()
+                if eoid not in _incoming_oids
+                and _identity_key(emeta) in _incoming_keys
+            ]
+            for eoid in _evict:
+                self._metadata.pop(eoid, None)
+                self._embeddings.pop(eoid, None)
+            if _evict:
+                print(f"[FAISS] P1 dedup: evicted {len(_evict)} stale OIDs "
+                      f"superseded by {len(_incoming_keys)} incoming identities")
+        # --- END PATCH P1 ---
+
         # Merge/update metadata and materialize dense arrays
         for oid, emb, meta in to_add:
             self._metadata[oid] = meta
@@ -151,6 +187,25 @@ class FaissClient:
         if self._row_to_id:
             embs = np.vstack([self._embeddings[oid] for oid in self._row_to_id]).astype(np.float32)
             np.save(path + ".embs.npy", embs)
+        # Persist metadata sidecar (ndarray-safe).  Added for cross-restart
+        # metadata recovery so semantic search can enrich results after the
+        # rtsm process is killed and a fresh one loads the index from disk.
+        import json as _json
+        meta_out = {}
+        for oid, meta in self._metadata.items():
+            clean = {}
+            for k, v in meta.items():
+                if isinstance(v, np.ndarray):
+                    clean[k] = v.tolist()
+                elif isinstance(v, (np.integer, np.floating)):
+                    clean[k] = v.item()
+                else:
+                    clean[k] = v
+            meta_out[oid] = clean
+        tmp_path = path + ".meta.json.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            _json.dump(meta_out, f)
+        os.replace(tmp_path, path + ".meta.json")
 
     def load(self, path: str) -> None:
         if not os.path.exists(path):
@@ -169,6 +224,33 @@ class FaissClient:
             embs = np.load(embs_path).astype(np.float32)
             for oid, vec in zip(self._row_to_id, embs):
                 self._embeddings[oid] = vec
+        # Load metadata sidecar if present.  Absent on legacy indexes (pre-fix);
+        # _metadata stays empty and semantic search falls back gracefully.
+        meta_path = path + ".meta.json"
+        self._metadata = {}
+        if os.path.exists(meta_path):
+            import json as _json
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    raw = _json.load(f)
+                for oid, meta in raw.items():
+                    restored = dict(meta)
+                    xyz = restored.get("xyz")
+                    if isinstance(xyz, list):
+                        restored["xyz"] = np.asarray(xyz, dtype=np.float32)
+                    self._metadata[oid] = restored
+            except Exception:
+                # corrupt sidecar should not break load; callers fall back to WM
+                self._metadata = {}
+
+    def get_metadata(self, oid: str):
+        """Return the stored metadata dict for oid, or None if unknown.
+
+        Used by the REST API to enrich semantic-search results when the
+        corresponding WorkingMemory entry has been lost (e.g. across
+        process restart).
+        """
+        return self._metadata.get(oid)
 
     def close(self) -> None:
         self._index = None

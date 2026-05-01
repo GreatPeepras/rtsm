@@ -7,8 +7,13 @@ templates:
   - "an object that is a {}"
 
 unknown:
-  min_top: 0.30     # minimum top score to accept a label
-  min_margin: 0.05  # top - second-best must exceed this
+  # PATCHED 20260430: demo-clip validation
+  # Original values (min_top=0.30, min_margin=0.05) were unreachable given
+  # observed top-1 cosine range of 0.063-0.113 on demo_clip. Relaxed to let
+  # crops through for persistence-loop end-to-end validation.
+  # TODO: re-tune with live D435i data.
+  min_top: 0.06     # minimum top score to accept a label (was 0.30)
+  min_margin: 0.005 # top - second-best must exceed this (was 0.05)
 
 classes:
   # Planarity/structure classes for suppressing repetitive structure

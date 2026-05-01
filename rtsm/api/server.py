@@ -441,6 +441,29 @@ def create_app(
 
         return result
 
+    # PATCH III 20260501: hot-reload FrozenWorkingMemory from its on-disk sidecar.
+    # Serve-mode only (requires working_memory to be a FrozenWorkingMemory).
+    @app.post("/reload")
+    def reload_frozen() -> Dict[str, Any]:
+        """Reload FrozenWorkingMemory from the FAISS meta sidecar without restarting.
+
+        Returns 200 with a summary on success, 400 if the current working_memory
+        does not support reload (live pipeline mode), 404 if the sidecar is missing,
+        500 for parse/other errors. On failure, existing state is preserved.
+        """
+        if not hasattr(working_memory, "reload"):
+            raise HTTPException(
+                status_code=400,
+                detail="reload not supported (working_memory has no reload method)",
+            )
+        try:
+            summary = working_memory.reload()
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=f"sidecar missing: {e}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"reload failed: {e}")
+        return {"status": "ok", **summary}
+
     # ---- Detailed stats endpoint ----
     @app.get("/stats/detailed")
     def stats_detailed() -> Dict[str, Any]:
@@ -536,21 +559,56 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Vector search failed: {e}")
 
-        # 3. Filter by threshold and enrich with WM metadata
+        # 3. Filter by threshold and enrich with WM metadata, falling back
+        #    to the FAISS-side metadata sidecar when WM has no entry for the
+        #    oid (e.g. a fresh process that only loaded FAISS from disk).
         results = []
         for oid, score in matches:
             if score < threshold:
                 continue
             obj = working_memory.get(oid)
+            if obj is not None:
+                source = "wm"
+                confirmed_v = obj.confirmed
+                stability_v = round(float(obj.stability), 3)
+                xyz = obj.xyz_world
+                xyz_v = xyz.tolist() if xyz is not None else None
+            else:
+                meta = None
+                get_meta = getattr(vectors, "get_metadata", None)
+                if callable(get_meta):
+                    try:
+                        meta = get_meta(oid)
+                    except Exception:
+                        meta = None
+                if meta is not None:
+                    source = "faiss_meta"
+                    confirmed_v = True  # only confirmed objects ever reach FAISS
+                    stability_v = round(float(meta.get("stability", 0.0) or 0.0), 3)
+                    mxyz = meta.get("xyz")
+                    if mxyz is None:
+                        xyz_v = None
+                    elif hasattr(mxyz, "tolist"):
+                        xyz_v = mxyz.tolist()
+                    else:
+                        xyz_v = list(mxyz)
+                else:
+                    source = "none"
+                    confirmed_v = True
+                    stability_v = 0.0
+                    xyz_v = None
             entry: Dict[str, Any] = {
                 "id": oid,
                 "score": round(float(score), 4),
-                "confirmed": obj.confirmed if obj else True,
-                "stability": round(float(obj.stability), 3) if obj else 0.0,
-                "xyz_world": obj.xyz_world.tolist() if obj and obj.xyz_world is not None else None,
+                "confirmed": confirmed_v,
+                "stability": stability_v,
+                "xyz_world": xyz_v,
+                "source": source,
             }
 
-            # Include most recent snapshot for multimodal agent verification
+            # Include most recent snapshot for multimodal agent verification.
+            # Snapshots live only in WM (not persisted to FAISS), so they are
+            # unavailable via the faiss_meta path; this is intentional.
             if include_snapshot and obj:
                 crops = getattr(obj, 'image_crops', None) or []
                 if crops:

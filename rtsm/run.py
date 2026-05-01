@@ -20,6 +20,7 @@ except ImportError as e:
 # ── Core imports (always available) ──
 from rtsm.models.segmentation import get_segmenter
 from rtsm.stores.working_memory import WorkingMemory
+from rtsm.stores.frozen_wm import FrozenWorkingMemory
 from rtsm.stores.proximity_index import ProximityIndex, GridSpec
 from rtsm.core.association import Associator
 from rtsm.core.ingest_gate import IngestGate
@@ -83,7 +84,132 @@ def main():
                         help="Replay speed multiplier (<1 = slower, e.g. 0.5 = half speed)")
     parser.add_argument("--record-only", action="store_true",
                         help="Record without running pipeline (no GPU needed)")
+    # PATCHED 20260430: serve-only mode
+    parser.add_argument("--serve", action="store_true",
+                        help="Serve API from persisted FAISS state without running the pipeline (fast-boot, query-only)")
     args = parser.parse_args()
+
+
+    # PATCHED 20260430: serve-only mode
+    # Fast-boot path: load FAISS sidecars and serve /search/* without any pipeline.
+    # Mutually exclusive with --replay and --record.
+    if getattr(args, "serve", False):
+        if args.replay or args.record:
+            parser.error("--serve is mutually exclusive with --replay/--record")
+
+        import threading as _threading
+        logger.info("[run] SERVE-ONLY MODE — loading persisted state, pipeline disabled")
+
+        cfg = load_config("rtsm.yaml")
+        logger.info(f"Configuration loaded from {cfg_path('rtsm.yaml')}")
+
+        # Minimal state: proximity index + empty WM + FaissClient (auto-loads disk)
+        scfg = cfg.get("sweep_cache", {})
+        two_d = bool(scfg.get("two_d", True))
+        io_cfg = cfg.get("io", {})
+        receiver_type = str(io_cfg.get("receiver", "zeromq")).lower()
+        up_axis_default = "y" if receiver_type == "websocket" else "z"
+        pi_grid = GridSpec(
+            cell_m=float(scfg.get("grid_size_m", 0.25)),
+            use_3d=not two_d,
+            up_axis=str(scfg.get("up_axis", up_axis_default)),
+        )
+        proximity_index = ProximityIndex(
+            pi_grid,
+            per_cell_cap=int(scfg.get("per_cell_cap", 64)),
+            neighbors_max=int(scfg.get("neighbors_max", 128)),
+        )
+        # [Patch G] Load FAISS FIRST so we can resolve the meta sidecar path,
+        # then hydrate a FrozenWorkingMemory from that sidecar.
+        vectors = None
+        meta_path = None
+        vec_cfg = cfg.get("vectors", {})
+        if bool(vec_cfg.get("enable", True)):
+            backend = str(vec_cfg.get("backend", "faiss")).lower()
+            if backend == "faiss":
+                from rtsm.stores.vectors.faiss_client import FaissClient
+                vectors = FaissClient(cfg)  # auto-loads sidecars from disk
+                n_loaded = len(getattr(vectors, "_row_to_id", []))
+                logger.info(f"[serve] FaissClient loaded {n_loaded} persisted objects")
+                # Resolve meta sidecar path for FrozenWM hydration.
+                # FaissClient stores its index path on one of these attributes
+                # depending on version; fall back to the canonical location.
+                idx_path = (
+                    getattr(vectors, "_index_path", None)
+                    or getattr(vectors, "index_path", None)
+                    or "/mnt/rtsm-data/model_store/faiss/index.flatip"
+                )
+                meta_path = idx_path + ".meta.json"
+            else:
+                logger.warning(f"[serve] backend '{backend}' not supported in serve mode, skipping")
+
+        if meta_path is not None:
+            wm = FrozenWorkingMemory(meta_path)
+            logger.info(f"[serve] FrozenWorkingMemory active with {len(wm.iter_objects())} objects")
+            # PATCH II 20260501: sidecar freshness check at startup
+            try:
+                import os as _os, time as _time
+                _stale_days = float(_os.environ.get("RTSM_SIDECAR_STALE_DAYS", "7"))
+                _mtime = _os.path.getmtime(meta_path)
+                _age_days = (_time.time() - _mtime) / 86400.0
+                _mtime_iso = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_mtime))
+                _msg = (f"[serve] sidecar age={_age_days:.2f}d threshold={_stale_days:.2f}d "
+                        f"mtime={_mtime_iso} path={meta_path}")
+                if _age_days > _stale_days:
+                    logger.warning(_msg + " STALE")
+                else:
+                    logger.info(_msg + " fresh")
+            except OSError as _e:
+                logger.error(f"[serve] sidecar freshness check failed: {_e} path={meta_path}")
+        else:
+            # No vectors backend ⇒ fall back to empty live WM (legacy behavior)
+            wm = WorkingMemory(cfg, index=proximity_index)
+            logger.info("[serve] Working memory initialized (empty, no vectors backend)")
+
+        # PATCH IV 20260501: load CLIP adapter for /search/semantic in serve mode.
+        # Mirrors replay-mode init at run.py:266. Failure is non-fatal; other
+        # endpoints continue to work and /search/semantic returns 503 as before.
+        clip_adapter = None
+        if CLIPAdapter is not None:
+            clip_cfg = cfg.get("clip", {})
+            clip_model = clip_cfg.get("model", "ViT-B-16-SigLIP")
+            clip_pretrained = clip_cfg.get("pretrained", "webli")
+            clip_local = clip_cfg.get("local_dir", "model_store/clip")
+            try:
+                logger.info(f"[serve] loading CLIP ({clip_model}/{clip_pretrained}) \u2014 this takes a few seconds...")
+                _t0 = _time.time()
+                clip_adapter = CLIPAdapter(clip_model, clip_pretrained, clip_local,
+                                           device=cfg.get("device", "cuda"))
+                logger.info(f"[serve] CLIP loaded in {_time.time() - _t0:.1f}s \u2014 /search/semantic enabled")
+            except Exception as e:
+                logger.warning(f"[serve] CLIP load failed ({e}); /search/semantic will return 503")
+                clip_adapter = None
+        else:
+            logger.warning("[serve] CLIPAdapter unavailable (GPU deps not installed); /search/semantic disabled")
+
+        app = create_app(
+            working_memory=wm,
+            vectors=vectors,
+            clip_adapter=clip_adapter,
+            static_dir=_find_static_dir(),
+        )
+        api_cfg = cfg.get("api", {})
+        host = api_cfg.get("host", "0.0.0.0")
+        port = int(api_cfg.get("port", 8002))
+
+        local_ips = get_local_ipv4_addresses()
+        display_host = local_ips[0] if local_ips else "0.0.0.0"
+
+        start_server(app, host=host, port=port)
+        logger.info(f"[serve] FastAPI server started on http://{display_host}:{port}")
+        logger.info("[serve] Ready. Blocking forever. Ctrl-C to exit.")
+
+        try:
+            _threading.Event().wait()
+        except KeyboardInterrupt:
+            logger.info("[serve] Shutdown requested")
+        return
+    # END PATCHED serve-only mode
 
     print("=" * 60)
     print("  RTSM - Real-Time Spatio-Semantic Memory")
@@ -420,6 +546,21 @@ def main():
                     logger.info(f"[run] Force-flushed {len(ready)} objects to vector store after replay")
                 except Exception as e:
                     logger.warning(f"[run] Force flush failed: {e}")
+            # Persist FAISS state to disk so it survives restart.
+            try:
+                index_path = cfg["vectors"]["faiss"]["index_path"]
+                # PATCH H 20260501 — refuse to overwrite persisted index with empty one
+                _n_current = len(getattr(vectors, "_embeddings", []) or [])
+                if _n_current == 0:
+                    logger.warning(
+                        f"[run] FAISS save SKIPPED: in-memory index is empty; "
+                        f"refusing to overwrite {index_path}"
+                    )
+                else:
+                    vectors.save(index_path)
+                    logger.info(f"[run] FAISS state saved to {index_path} ({_n_current} objects)")
+            except Exception as e:
+                logger.warning(f"[run] FAISS save failed: {e}")
 
         flush_thread = threading.Thread(target=_flush_after_replay, daemon=True, name="replay-flush")
         flush_thread.start()

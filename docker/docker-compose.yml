@@ -5,11 +5,14 @@ services:
     runtime: nvidia
     restart: unless-stopped
     working_dir: /workspace/rtsm
-    command: sleep infinity
     ports:
       - "8002:8002"
+      - "8765:8765"
     volumes:
       - /home/peep/rtsm:/workspace/rtsm
       - /mnt/rtsm-data/model_store:/mnt/rtsm-data/model_store
       - /mnt/rtsm-data/cache:/root/.cache
       - /mnt/rtsm-data/rtsm-workdir:/workspace/workdir
+    environment:
+      RTSM_MODE: ${RTSM_MODE:-serve}
+    command: ["/workspace/rtsm/scripts/entrypoint.sh"]
