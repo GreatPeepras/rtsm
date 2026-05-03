@@ -155,6 +155,10 @@ class Associator:
             if p_cam is None or (use_embeddings and e is None):
                 continue
 
+            # PATCH 20260503: capture candidate's top label for diagnostic logs
+            _cand_topk = getattr(c, 'label_topk', None)
+            top_cand_label = _cand_topk[0][0] if _cand_topk else '?'
+
             # world point: transform p_cam (camera frame) to world frame using T_wc
             pw = (T_wc @ np.append(p_cam.astype(np.float32), 1.0))[:3]
 
@@ -186,6 +190,11 @@ class Associator:
             except Exception:
                 pass
             if not cand_ids:
+                # PATCH 20260503: log empty-lookup case for diagnosis
+                logger.info(
+                    f"[assoc-empty-lookup] pw=[{pw[0]:.2f},{pw[1]:.2f},{pw[2]:.2f}] "
+                    f"cell={cell} label={top_cand_label} rings={rings}"
+                )
                 # Optional fallback: scan all WM objects if index returns empty
                 # Only fallback when WM has few objects (early exploration phase)
                 if bool(assoc_cfg.get('fallback_all_when_empty', False)):
@@ -277,6 +286,13 @@ class Associator:
                         if use_embeddings and e is not None:
                             cos = float(np.dot(e, ref.astype(np.float32)))
                             if cos < cos_min:
+                                # PATCH 20260503: log cosine rejection
+                                existing_label = getattr(o, 'label_primary', None) or '?'
+                                logger.info(
+                                    f"[assoc-reject-cos] oid={oid[:8]} "
+                                    f"cos={cos:.4f}<{cos_min:.3f} dist={dist:.3f} "
+                                    f"label_cand={top_cand_label} label_existing={existing_label}"
+                                )
                                 continue
                         else:
                             cos = 1.0  # neutral when embeddings disabled
@@ -310,9 +326,43 @@ class Associator:
 
             # no match → consider spawn (respect per-cell spawn cap)
             cell = index.grid.cell(pw)
+
+            # PATCH 20260503: log spawn context BEFORE cap check
+            nearest_hint = "no_nearby"
+            if cand_ids:
+                try:
+                    best_nearby_oid = None
+                    best_nearby_d = float('inf')
+                    for _oid in cand_ids:
+                        _o = wm.get(_oid)
+                        if _o is None:
+                            continue
+                        _d = float(np.linalg.norm(pw - _o.xyz_world))
+                        if _d < best_nearby_d:
+                            best_nearby_d = _d
+                            best_nearby_oid = _oid
+                    if best_nearby_oid is not None:
+                        _on = wm.get(best_nearby_oid)
+                        _on_label = (getattr(_on, 'label_primary', None) or '?') if _on else '?'
+                        nearest_hint = (
+                            f"nearest={best_nearby_oid[:8]} d={best_nearby_d:.3f} "
+                            f"label_nearest={_on_label}"
+                        )
+                except Exception:
+                    pass
+            logger.info(
+                f"[assoc-spawn] pw=[{pw[0]:.2f},{pw[1]:.2f},{pw[2]:.2f}] "
+                f"cell={cell} label={top_cand_label} n_cands={len(cand_ids)} {nearest_hint}"
+            )
+
             if per_cell_spawn_counter is not None:
                 count = per_cell_spawn_counter.get(cell, 0)
                 if count >= spawn_cap:
+                    # PATCH 20260503: log spawn-cap reject
+                    logger.info(
+                        f"[assoc-reject-cap] cell={cell} count={count}/{spawn_cap} "
+                        f"label={top_cand_label}"
+                    )
                     continue
                 per_cell_spawn_counter[cell] = count + 1
 
