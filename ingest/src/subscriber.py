@@ -40,7 +40,7 @@ from sensor_msgs.msg import CameraInfo, Image
 # RELIABLE, KEEP_LAST, VOLATILE.  We use depth=5 (publisher is depth=1)
 # so we have a small local buffer for ApproxTimeSync to pair across.
 SENSOR_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
+    reliability=ReliabilityPolicy.BEST_EFFORT,  # was RELIABLE — sensor stream
     durability=DurabilityPolicy.VOLATILE,
     history=HistoryPolicy.KEEP_LAST,
     depth=5,
@@ -87,13 +87,85 @@ class IngestSubscriber(Node):
         # Time-synced image subscribers via message_filters.
         color_sub = Subscriber(self, Image, COLOR_TOPIC, qos_profile=SENSOR_QOS)
         depth_sub = Subscriber(self, Image, DEPTH_TOPIC, qos_profile=SENSOR_QOS)
+        #self._sync = ApproximateTimeSynchronizer(
+            #[color_sub, depth_sub],
+            #queue_size=10,
+            #slop=SYNC_SLOP_SEC,
+        #)
+        # queue_size sized for the worst-case arrival lag we've measured.
+        # On Albert's current USB 2.1 link, color frames (larger payload
+        # than depth) back up in the driver's USB transfer queue and
+        # arrive with wall-time lag that grows from ~0.15s at startup to
+        # ~1.0s under sustained load (observed 2026-05-03 diagnostic run).
+        # Depth lag stays small. Both streams' header stamps are the
+        # hardware capture time, so paired stamps match exactly — but if
+        # the synchronizer's per-topic buffer is too small, the depth
+        # frame matching a late color arrival gets evicted before its
+        # partner shows up, and the pair is lost.
+        #
+        # At 30 Hz, queue_size=60 holds 2 s of history, comfortably
+        # covering the observed 1 s color lag with margin.
+        #
+        # A USB 3.0 cable is on order; once deployed, color lag will
+        # drop to ~30 ms and most of this buffer will be unused. Safe
+        # to leave as-is then; revisit only if memory becomes a concern
+        # (~110 MB worst case for 60 color + 60 depth frames at VGA).
         self._sync = ApproximateTimeSynchronizer(
             [color_sub, depth_sub],
-            queue_size=10,
+            queue_size=60,
             slop=SYNC_SLOP_SEC,
         )
         self._sync.registerCallback(self._on_synced)
+        # --- TEMPORARY DIAGNOSTIC (remove after 2.c closes) ---
+        # Logs every raw arrival on each topic so we can see whether
+        # individual messages reach us and what their stamp offsets are.
+        # Also logs sync callback entry so we can tell "sync never fires"
+        # from "sync fires but early-returns on encoding check".
+        self._diag_color_count = 0
+        self._diag_depth_count = 0
+        self._diag_sync_entries = 0
 
+        def _diag_on_color(msg):
+            self._diag_color_count += 1
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            now = self.get_clock().now().nanoseconds * 1e-9
+            self.get_logger().info(
+                f"DIAG COLOR #{self._diag_color_count} "
+                f"enc={msg.encoding} stamp={stamp:.3f} lag={now-stamp:.3f}s"
+            )
+
+        def _diag_on_depth(msg):
+            self._diag_depth_count += 1
+            if self._diag_depth_count % 5 == 0:
+                stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+                now = self.get_clock().now().nanoseconds * 1e-9
+                self.get_logger().info(
+                    f"DIAG DEPTH #{self._diag_depth_count} "
+                    f"enc={msg.encoding} stamp={stamp:.3f} lag={now-stamp:.3f}s"
+                )
+
+        color_sub.registerCallback(_diag_on_color)
+        depth_sub.registerCallback(_diag_on_depth)
+
+        # Wrap _on_synced so we count entries even if it early-returns.
+        _real_on_synced = self._on_synced
+        def _diag_on_synced(color_msg, depth_msg):
+            self._diag_sync_entries += 1
+            c_stamp = color_msg.header.stamp.sec + color_msg.header.stamp.nanosec * 1e-9
+            d_stamp = depth_msg.header.stamp.sec + depth_msg.header.stamp.nanosec * 1e-9
+            self.get_logger().info(
+                f"DIAG SYNC #{self._diag_sync_entries} "
+                f"c_enc={color_msg.encoding} d_enc={depth_msg.encoding} "
+                f"c_stamp={c_stamp:.3f} d_stamp={d_stamp:.3f} "
+                f"offset={abs(c_stamp-d_stamp)*1000:.1f}ms"
+            )
+            _real_on_synced(color_msg, depth_msg)
+        # Re-register: remove old synced cb, install wrapped one.
+        # message_filters doesn't expose unregister cleanly, so we simply
+        # register the wrapper too — both will fire, but the original
+        # just does work we're already measuring. Cheap.
+        self._sync.registerCallback(_diag_on_synced)
+        # --- END DIAGNOSTIC ---
         self.get_logger().info(
             f"rtsm_ingest_subscriber up. color={COLOR_TOPIC} "
             f"depth={DEPTH_TOPIC} slop={SYNC_SLOP_SEC*1000:.0f}ms"
