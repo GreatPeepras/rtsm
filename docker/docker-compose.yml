@@ -13,6 +13,7 @@ services:
       - /mnt/rtsm-data/model_store:/mnt/rtsm-data/model_store
       - /mnt/rtsm-data/cache:/root/.cache
       - /mnt/rtsm-data/rtsm-workdir:/workspace/workdir
+      - /mnt/rtsm-data/rtsm-recordings:/mnt/rtsm-data/rtsm-recordings
     environment:
       RTSM_MODE: ${RTSM_MODE:-serve}
     command: ["/workspace/rtsm/scripts/entrypoint.sh"]
