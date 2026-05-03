@@ -124,3 +124,9 @@ config
 
 # MkDocs build output (should not be committed; deploy via CI or a gh-pages branch)
 site/
+# Recordings: ignore everything except curated demo data that ships with the repo.
+# User recordings should live in /mnt/rtsm-data/rtsm-recordings/ (bind-mounted from host),
+# but this is a safety net in case someone uses a relative path like `--record recordings/foo`.
+/recordings/*
+!/recordings/session1/
+!/recordings/demo_clip/
