@@ -8,5 +8,6 @@ docker run -d \
   -e CYCLONEDDS_URI=file:///cyclonedds.xml \
   -v /home/peep/cyclonedds.xml:/cyclonedds.xml:ro \
   -v /home/peep/rtsm/ingest:/workspace/rtsm-ingest \
+  -v /mnt/rtsm-data/rtsm-recordings:/recordings \
   --name rtsm-ingest \
   rtsm-ingest:skeleton

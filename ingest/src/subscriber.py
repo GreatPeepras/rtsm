@@ -28,18 +28,33 @@ Design decisions (see session log 2026-05-03):
   - Using aligned_depth_to_color, not raw depth: depth is already
     registered to the RGB frame, so no extrinsics work downstream.
   - camera_info fetched once on startup (static), not sync'd per-frame.
-  - `_emit(frame)` is the downstream seam. Today it logs and drops.
-    Tomorrow it becomes the HTTP POST or ring-buffer write.
+  - `_emit(frame)` is the downstream seam. Today it writes to a Recorder
+    (when --record is set) or drops. Tomorrow: HTTP POST / ring-buffer.
+
+Recording (added 2026-05-06):
+  - --record            enable per-frame dump to <record-root>/<run_id>/
+  - --max-frames N      stop after N frames (default: run until Ctrl-C)
+  - --record-root PATH  override root dir (default: /recordings, which is
+                        bind-mounted from /mnt/rtsm-data/rtsm-recordings
+                        on the host)
+  Writes paired files per synced frame: NNNNNN.jpg (raw on-wire JPEG),
+  NNNNNN.png (16-bit depth PNG, on-wire bytes after header strip), and
+  NNNNNN.json (timestamps + frame_id). One meta.json per session with
+  intrinsics + final frame count.
 
 What this does NOT do (deliberately deferred):
   - No keyframe gating — every synced pair calls _emit.
-  - No storage, no HTTP, no serialization.
+  - No HTTP, no serialization to rtsm-dev.
   - No TF lookups. Camera-frame coords only.
   - No reconnect logic if Albert's publisher dies.
   - No fallback to raw transport if compressed plugins fail.
 """
+import argparse
+import json
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -87,12 +102,91 @@ class Frame:
     rgb: np.ndarray         # (H, W, 3) uint8, RGB order
     depth_mm: np.ndarray    # (H, W)   uint16, millimeters, 0 = invalid
     color_frame_id: str     # ROS frame_id from header; for future TF work
+    # Raw wire bytes, only populated when a Recorder is attached.
+    # color_jpeg: the on-wire JPEG, unchanged.
+    # depth_png:  the PNG payload AFTER the 12-byte compressedDepth header.
+    color_jpeg: Optional[bytes] = None
+    depth_png: Optional[bytes] = None
+
+
+class Recorder:
+    """Writes synced frames to <root>/<run_id>/ as paired jpg+png+json.
+
+    Design:
+      - Writes the compressed bytes straight from the wire. JPEG from
+        color_msg.data, PNG from depth_msg.data[12:]. Zero re-encode,
+        bit-exact fidelity, viewer-compatible.
+      - Per-frame JSON: stamps + frame_id. Tiny, debug-friendly.
+      - meta.json: intrinsics + session info. Written on first frame
+        where camera_info is available; frame count appended on close().
+      - Filename: 6-digit zero-padded sequence. 999,999 frames at 15 Hz
+        = ~18.5 h. Fine for manual sessions.
+    """
+
+    def __init__(self, root: Path, max_frames: Optional[int]):
+        self.run_id = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+        self.dir = root / self.run_id
+        self.dir.mkdir(parents=True, exist_ok=False)
+        self.max_frames = max_frames
+        self.written = 0
+        self._meta_written = False
+
+    def write(self, frame: Frame, camera_info: Optional[CameraInfo]) -> bool:
+        """Returns True if we should continue, False if max_frames is hit."""
+        if self.max_frames is not None and self.written >= self.max_frames:
+            return False
+        if frame.color_jpeg is None or frame.depth_png is None:
+            raise RuntimeError(
+                "Recorder.write called on a Frame without raw bytes attached"
+            )
+
+        if not self._meta_written and camera_info is not None:
+            self._write_meta(camera_info, frame.color_frame_id)
+            self._meta_written = True
+
+        stem = f"{self.written:06d}"
+        (self.dir / f"{stem}.jpg").write_bytes(frame.color_jpeg)
+        (self.dir / f"{stem}.png").write_bytes(frame.depth_png)
+        (self.dir / f"{stem}.json").write_text(json.dumps({
+            "seq": frame.seq,
+            "t_capture_ns": frame.t_capture_ns,
+            "t_received_ns": frame.t_received_ns,
+            "color_frame_id": frame.color_frame_id,
+        }))
+        self.written += 1
+        return True
+
+    def _write_meta(self, info: CameraInfo, color_frame_id: str):
+        (self.dir / "meta.json").write_text(json.dumps({
+            "run_id": self.run_id,
+            "source": "rtsm-ingest subscriber",
+            "transport": "compressed (JPEG color, PNG compressedDepth)",
+            "rate_hz_nominal": 15,
+            "width": info.width,
+            "height": info.height,
+            "intrinsics": {
+                "fx": info.k[0], "fy": info.k[4],
+                "cx": info.k[2], "cy": info.k[5],
+            },
+            "distortion_model": info.distortion_model,
+            "distortion_coeffs": list(info.d),
+            "color_frame_id": color_frame_id,
+        }, indent=2))
+
+    def close(self):
+        """Append final frame count to meta.json."""
+        meta_path = self.dir / "meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            meta["frames_written"] = self.written
+            meta_path.write_text(json.dumps(meta, indent=2))
 
 
 class IngestSubscriber(Node):
-    def __init__(self):
+    def __init__(self, recorder: Optional[Recorder] = None):
         super().__init__("rtsm_ingest_subscriber")
 
+        self._recorder = recorder
         self._seq = 0
         self._t_start = time.monotonic()
         self._last_log_t = self._t_start
@@ -162,10 +256,15 @@ class IngestSubscriber(Node):
         self._sync.registerCallback(_ds)
         # --- END MINIMAL PROBE ---
 
+        rec_status = (
+            f"yes -> {self._recorder.dir}"
+            if self._recorder is not None
+            else "no"
+        )
         self.get_logger().info(
             f"rtsm_ingest_subscriber up (compressed transport). "
             f"color={COLOR_TOPIC} depth={DEPTH_TOPIC} "
-            f"slop={SYNC_SLOP_SEC*1000:.0f}ms"
+            f"slop={SYNC_SLOP_SEC*1000:.0f}ms recording={rec_status}"
         )
 
     def _on_camera_info(self, msg: CameraInfo):
@@ -206,6 +305,16 @@ class IngestSubscriber(Node):
             + color_msg.header.stamp.nanosec
         )
 
+        # Only copy wire bytes if we have somewhere to put them.
+        # bytes(msg.data) is a copy; skipping it when not recording
+        # keeps the no-op path zero-cost.
+        if self._recorder is not None:
+            color_jpeg = bytes(color_msg.data)
+            depth_png = bytes(depth_msg.data[COMPRESSED_DEPTH_HEADER_SIZE:])
+        else:
+            color_jpeg = None
+            depth_png = None
+
         frame = Frame(
             seq=self._seq,
             t_capture_ns=t_capture_ns,
@@ -213,6 +322,8 @@ class IngestSubscriber(Node):
             rgb=rgb,
             depth_mm=depth_mm,
             color_frame_id=color_msg.header.frame_id,
+            color_jpeg=color_jpeg,
+            depth_png=depth_png,
         )
         self._seq += 1
         self._emit(frame)
@@ -259,9 +370,14 @@ class IngestSubscriber(Node):
         return depth
 
     def _emit(self, frame: Frame):
-        """Downstream seam. Replace this when wiring to rtsm-dev."""
-        # Today: drop. Tomorrow: HTTP POST / storage / keyframe gate.
-        pass
+        """Downstream seam. Replace/extend when wiring to rtsm-dev."""
+        if self._recorder is None:
+            return
+        if not self._recorder.write(frame, self._camera_info):
+            self.get_logger().info(
+                f"max_frames reached ({self._recorder.written}), shutting down"
+            )
+            raise SystemExit(0)
 
     def _maybe_log(self):
         """Log aggregate stats every ~2 s so we don't spam."""
@@ -272,22 +388,52 @@ class IngestSubscriber(Node):
         d_count = self._seq - self._last_log_count
         inst_rate = d_count / dt if dt > 0 else 0.0
         avg_rate = self._seq / (now - self._t_start)
+        rec_info = (
+            f" rec={self._recorder.written}"
+            if self._recorder is not None
+            else ""
+        )
         self.get_logger().info(
             f"synced_frames={self._seq} inst={inst_rate:.1f}Hz "
             f"avg={avg_rate:.1f}Hz info={'yes' if self._camera_info else 'no'}"
+            f"{rec_info}"
         )
         self._last_log_t = now
         self._last_log_count = self._seq
 
 
 def main():
+    parser = argparse.ArgumentParser(description="rtsm-ingest subscriber")
+    parser.add_argument(
+        "--record", action="store_true",
+        help="Dump every synced frame to <record-root>/<run_id>/"
+    )
+    parser.add_argument(
+        "--max-frames", type=int, default=None,
+        help="Stop after N frames (default: run until Ctrl-C)"
+    )
+    parser.add_argument(
+        "--record-root", type=Path, default=Path("/recordings"),
+        help="Root directory for recordings (default: /recordings)"
+    )
+    args = parser.parse_args()
+
+    recorder = None
+    if args.record:
+        recorder = Recorder(root=args.record_root, max_frames=args.max_frames)
+
     rclpy.init()
-    node = IngestSubscriber()
+    node = IngestSubscriber(recorder=recorder)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
+        if recorder is not None:
+            recorder.close()
+            node.get_logger().info(
+                f"recording complete: {recorder.written} frames in {recorder.dir}"
+            )
         node.destroy_node()
         rclpy.shutdown()
 
