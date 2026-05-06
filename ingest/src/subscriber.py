@@ -2,14 +2,28 @@
 """
 subscriber.py — rtsm-ingest frame subscriber (sub-gate 2.c).
 
-Subscribes to Albert's D435i color + aligned-depth streams, time-syncs
-them, and passes each synced pair to a stub `_emit` method.
+Subscribes to Albert's D435i compressed color + compressed-depth streams,
+decompresses locally, time-syncs them, and passes each synced pair to a
+stub `_emit` method.
+
+Transport:
+  - color: /camera/camera/color/image_raw/compressed
+           JPEG-encoded, lossy. Fine for RGB; ~5-10x smaller than raw.
+  - depth: /camera/camera/aligned_depth_to_color/image_raw/compressedDepth
+           PNG-encoded 16UC1 with 12-byte config header prepended.
+           Lossless, so depth values survive the round-trip unchanged.
+
+  Switched from raw transport on 2026-05-06 to keep Albert's Wi-Fi
+  uplink inside its ~150 Mbps practical budget. Raw RGBD at 640x480@15
+  was ~184 Mbps; compressed is ~10 Mbps, leaving headroom for nav, SSH,
+  and telemetry.
 
 Design decisions (see session log 2026-05-03):
-  - QoS: RELIABLE, KEEP_LAST depth=5 (matches publisher; our depth > their
-    depth=1 so we have a small local buffer before ApproxTimeSync gates).
-  - Sync: ApproximateTimeSynchronizer, 50 ms slop. Frame period at
-    20-30 Hz is 33-50 ms; 50 ms catches same-frame pairs, rejects
+  - QoS: BEST_EFFORT, KEEP_LAST depth=5 (matches sensor-stream convention;
+    our depth > publisher's depth=1 so we have a small local buffer
+    before ApproxTimeSync gates).
+  - Sync: ApproximateTimeSynchronizer, 50 ms slop. At 15 Hz the frame
+    period is ~67 ms, so 50 ms catches same-frame pairs, rejects
     cross-frame drift.
   - Using aligned_depth_to_color, not raw depth: depth is already
     registered to the RGB frame, so no extrinsics work downstream.
@@ -22,35 +36,46 @@ What this does NOT do (deliberately deferred):
   - No storage, no HTTP, no serialization.
   - No TF lookups. Camera-frame coords only.
   - No reconnect logic if Albert's publisher dies.
+  - No fallback to raw transport if compressed plugins fail.
 """
 import time
 from dataclasses import dataclass
 from typing import Optional
 
+import cv2
 import numpy as np
 import rclpy
-from cv_bridge import CvBridge
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage
 
 
-# Matches publisher-side QoS as reported by `ros2 topic info --verbose`:
-# RELIABLE, KEEP_LAST, VOLATILE.  We use depth=5 (publisher is depth=1)
-# so we have a small local buffer for ApproxTimeSync to pair across.
+# Sensor-stream QoS: BEST_EFFORT, KEEP_LAST, VOLATILE.
+# Depth=5 gives us a small local buffer for ApproxTimeSync.
 SENSOR_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.BEST_EFFORT,  # was RELIABLE — sensor stream
+    reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE,
     history=HistoryPolicy.KEEP_LAST,
     depth=5,
 )
 
-COLOR_TOPIC = "/camera/camera/color/image_raw"
-DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw"
+COLOR_TOPIC = "/camera/camera/color/image_raw/compressed"
+DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw/compressedDepth"
 COLOR_INFO_TOPIC = "/camera/camera/color/camera_info"
 
 SYNC_SLOP_SEC = 0.05  # 50 ms; see header comment
+
+# compressedDepth message layout:
+#   12 bytes ConfigHeader, then PNG bytes.
+# ConfigHeader (little-endian):
+#   int32   compression_format  (0=PNG, 1=RVL)
+#   float32 depth_quantization_A
+#   float32 depth_quantization_B
+# For 16UC1 depth (our case), A/B are unused; PNG is a straight 16-bit
+# grayscale image in millimeters. If upstream ever switches to RVL,
+# this decoder raises loudly — good.
+COMPRESSED_DEPTH_HEADER_SIZE = 12
 
 
 @dataclass
@@ -68,7 +93,6 @@ class IngestSubscriber(Node):
     def __init__(self):
         super().__init__("rtsm_ingest_subscriber")
 
-        self.bridge = CvBridge()
         self._seq = 0
         self._t_start = time.monotonic()
         self._last_log_t = self._t_start
@@ -84,91 +108,64 @@ class IngestSubscriber(Node):
             SENSOR_QOS,
         )
 
-        # Time-synced image subscribers via message_filters.
-        color_sub = Subscriber(self, Image, COLOR_TOPIC, qos_profile=SENSOR_QOS)
-        depth_sub = Subscriber(self, Image, DEPTH_TOPIC, qos_profile=SENSOR_QOS)
-        #self._sync = ApproximateTimeSynchronizer(
-            #[color_sub, depth_sub],
-            #queue_size=10,
-            #slop=SYNC_SLOP_SEC,
-        #)
-        # queue_size sized for the worst-case arrival lag we've measured.
-        # On Albert's current USB 2.1 link, color frames (larger payload
-        # than depth) back up in the driver's USB transfer queue and
-        # arrive with wall-time lag that grows from ~0.15s at startup to
-        # ~1.0s under sustained load (observed 2026-05-03 diagnostic run).
-        # Depth lag stays small. Both streams' header stamps are the
-        # hardware capture time, so paired stamps match exactly — but if
-        # the synchronizer's per-topic buffer is too small, the depth
-        # frame matching a late color arrival gets evicted before its
-        # partner shows up, and the pair is lost.
-        #
-        # At 30 Hz, queue_size=60 holds 2 s of history, comfortably
-        # covering the observed 1 s color lag with margin.
-        #
-        # A USB 3.0 cable is on order; once deployed, color lag will
-        # drop to ~30 ms and most of this buffer will be unused. Safe
-        # to leave as-is then; revisit only if memory becomes a concern
-        # (~110 MB worst case for 60 color + 60 depth frames at VGA).
+        # Time-synced compressed-image subscribers via message_filters.
+        color_sub = Subscriber(
+            self, CompressedImage, COLOR_TOPIC, qos_profile=SENSOR_QOS
+        )
+        depth_sub = Subscriber(
+            self, CompressedImage, DEPTH_TOPIC, qos_profile=SENSOR_QOS
+        )
+
+        # queue_size sized for worst-case arrival lag.
+        # Raw-transport investigation (2026-05-03) measured color lag
+        # growing to ~1 s under USB 2.1 bottleneck. Compressed transport
+        # should eliminate that — frames are 5-10x smaller, transfer
+        # time proportionally shorter — but we keep queue_size=60
+        # conservatively until we've observed the new steady-state.
+        # At 15 Hz, queue_size=60 holds 4 s of history.
         self._sync = ApproximateTimeSynchronizer(
             [color_sub, depth_sub],
             queue_size=60,
             slop=SYNC_SLOP_SEC,
         )
         self._sync.registerCallback(self._on_synced)
-        # --- TEMPORARY DIAGNOSTIC (remove after 2.c closes) ---
-        # Logs every raw arrival on each topic so we can see whether
-        # individual messages reach us and what their stamp offsets are.
-        # Also logs sync callback entry so we can tell "sync never fires"
-        # from "sync fires but early-returns on encoding check".
-        self._diag_color_count = 0
-        self._diag_depth_count = 0
-        self._diag_sync_entries = 0
 
-        def _diag_on_color(msg):
-            self._diag_color_count += 1
-            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-            now = self.get_clock().now().nanoseconds * 1e-9
-            self.get_logger().info(
-                f"DIAG COLOR #{self._diag_color_count} "
-                f"enc={msg.encoding} stamp={stamp:.3f} lag={now-stamp:.3f}s"
-            )
+        # --- MINIMAL RATE PROBE (remove after 2.c closes) ---
+        self._diag_c = 0
+        self._diag_d = 0
+        self._diag_s = 0
 
-        def _diag_on_depth(msg):
-            self._diag_depth_count += 1
-            if self._diag_depth_count % 5 == 0:
-                stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-                now = self.get_clock().now().nanoseconds * 1e-9
+        def _dc(m):
+            self._diag_c += 1
+            if self._diag_c % 60 == 0:
+                self.get_logger().info(f"DIAG color_seen={self._diag_c}")
+
+        def _dd(m):
+            self._diag_d += 1
+            if self._diag_d % 60 == 0:
+                self.get_logger().info(f"DIAG depth_seen={self._diag_d}")
+
+        color_sub.registerCallback(_dc)
+        depth_sub.registerCallback(_dd)
+
+        def _ds(c, d):
+            self._diag_s += 1
+            if self._diag_s % 30 == 0:
+                off = abs(
+                    (c.header.stamp.sec + c.header.stamp.nanosec * 1e-9)
+                    - (d.header.stamp.sec + d.header.stamp.nanosec * 1e-9)
+                ) * 1000
                 self.get_logger().info(
-                    f"DIAG DEPTH #{self._diag_depth_count} "
-                    f"enc={msg.encoding} stamp={stamp:.3f} lag={now-stamp:.3f}s"
+                    f"DIAG sync_seen={self._diag_s} offset={off:.1f}ms"
                 )
 
-        color_sub.registerCallback(_diag_on_color)
-        depth_sub.registerCallback(_diag_on_depth)
+        self._sync.registerCallback(_ds)
+        # --- END MINIMAL PROBE ---
 
-        # Wrap _on_synced so we count entries even if it early-returns.
-        _real_on_synced = self._on_synced
-        def _diag_on_synced(color_msg, depth_msg):
-            self._diag_sync_entries += 1
-            c_stamp = color_msg.header.stamp.sec + color_msg.header.stamp.nanosec * 1e-9
-            d_stamp = depth_msg.header.stamp.sec + depth_msg.header.stamp.nanosec * 1e-9
-            self.get_logger().info(
-                f"DIAG SYNC #{self._diag_sync_entries} "
-                f"c_enc={color_msg.encoding} d_enc={depth_msg.encoding} "
-                f"c_stamp={c_stamp:.3f} d_stamp={d_stamp:.3f} "
-                f"offset={abs(c_stamp-d_stamp)*1000:.1f}ms"
-            )
-            _real_on_synced(color_msg, depth_msg)
-        # Re-register: remove old synced cb, install wrapped one.
-        # message_filters doesn't expose unregister cleanly, so we simply
-        # register the wrapper too — both will fire, but the original
-        # just does work we're already measuring. Cheap.
-        self._sync.registerCallback(_diag_on_synced)
-        # --- END DIAGNOSTIC ---
         self.get_logger().info(
-            f"rtsm_ingest_subscriber up. color={COLOR_TOPIC} "
-            f"depth={DEPTH_TOPIC} slop={SYNC_SLOP_SEC*1000:.0f}ms"
+            f"rtsm_ingest_subscriber up (compressed transport). "
+            f"color={COLOR_TOPIC} depth={DEPTH_TOPIC} "
+            f"slop={SYNC_SLOP_SEC*1000:.0f}ms"
         )
 
     def _on_camera_info(self, msg: CameraInfo):
@@ -185,25 +182,23 @@ class IngestSubscriber(Node):
         self.destroy_subscription(self._info_sub)
         self._info_sub = None
 
-    def _on_synced(self, color_msg: Image, depth_msg: Image):
-        # Encoding sanity checks. If these ever fire, something upstream
-        # changed and our downstream assumptions break silently — fail loud.
-        if color_msg.encoding != "rgb8":
+    def _on_synced(self, color_msg: CompressedImage, depth_msg: CompressedImage):
+        try:
+            rgb = self._decode_jpeg(color_msg.data)
+        except Exception as e:
             self.get_logger().error(
-                f"unexpected color encoding: {color_msg.encoding!r} (want rgb8)"
-            )
-            return
-        if depth_msg.encoding != "16UC1":
-            self.get_logger().error(
-                f"unexpected depth encoding: {depth_msg.encoding!r} (want 16UC1)"
+                f"color JPEG decode failed (format={color_msg.format!r}): {e}"
             )
             return
 
         try:
-            rgb = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
-            depth_mm = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
+            depth_mm = self._decode_compressed_depth(
+                depth_msg.data, depth_msg.format
+            )
         except Exception as e:
-            self.get_logger().error(f"cv_bridge conversion failed: {e}")
+            self.get_logger().error(
+                f"depth compressedDepth decode failed (format={depth_msg.format!r}): {e}"
+            )
             return
 
         t_capture_ns = (
@@ -222,6 +217,46 @@ class IngestSubscriber(Node):
         self._seq += 1
         self._emit(frame)
         self._maybe_log()
+
+    @staticmethod
+    def _decode_jpeg(data: bytes) -> np.ndarray:
+        """JPEG bytes -> (H, W, 3) uint8 RGB."""
+        buf = np.frombuffer(data, dtype=np.uint8)
+        bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ValueError("cv2.imdecode returned None on color JPEG")
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    @staticmethod
+    def _decode_compressed_depth(data: bytes, fmt: str) -> np.ndarray:
+        """compressedDepth bytes -> (H, W) uint16 millimeters.
+
+        Format string varies by publisher version:
+          - "16UC1; compressedDepth"       -> implicit PNG (older default)
+          - "16UC1; compressedDepth png"   -> explicit PNG
+          - "16UC1; compressedDepth rvl"   -> RVL (not supported here)
+        We accept both PNG variants and reject RVL loudly.
+        """
+        fmt_lower = fmt.lower()
+        if "rvl" in fmt_lower:
+            raise ValueError(f"RVL compressedDepth not supported: fmt={fmt!r}")
+        # Otherwise assume PNG (explicit or implicit). If it's neither,
+        # cv2.imdecode below will return None and we'll raise.
+
+        if len(data) < COMPRESSED_DEPTH_HEADER_SIZE:
+            raise ValueError(f"depth buffer too short: {len(data)} bytes")
+
+        png_bytes = data[COMPRESSED_DEPTH_HEADER_SIZE:]
+        buf = np.frombuffer(png_bytes, dtype=np.uint8)
+        depth = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+        if depth is None:
+            raise ValueError(
+                f"cv2.imdecode returned None on depth payload (fmt={fmt!r}, "
+                f"payload_bytes={len(png_bytes)})"
+            )
+        if depth.dtype != np.uint16:
+            raise ValueError(f"expected uint16 depth, got {depth.dtype}")
+        return depth
 
     def _emit(self, frame: Frame):
         """Downstream seam. Replace this when wiring to rtsm-dev."""

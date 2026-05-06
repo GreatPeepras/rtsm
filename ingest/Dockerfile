@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-cv-bridge \
     ros-humble-image-transport \
+    ros-humble-image-transport-plugins \
+    ros-humble-compressed-image-transport \
+    ros-humble-compressed-depth-image-transport \
     ros-humble-tf2-ros \
     ros-humble-tf2-geometry-msgs \
     python3-pip \
