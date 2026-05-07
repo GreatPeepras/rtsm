@@ -47,6 +47,7 @@ class ReplayStats:
     errors: int = 0
     bytes_sent: int = 0
     latencies_ms: List[float] = field(default_factory=list)
+    server_decode_ms: List[float] = field(default_factory=list)  # Gate 2.f.1: timings.total_ms from response body
     first_seq: Optional[int] = None
     last_seq: Optional[int] = None
     wall_start: float = 0.0
@@ -70,15 +71,38 @@ class ReplayStats:
             f"Bytes:    {mb:.2f} MB total"
             + (f" (avg {self.bytes_sent // self.sent // 1024} KB/frame)" if self.sent else ""),
         ]
+        client_p50: Optional[float] = None
         if self.latencies_ms:
             xs = sorted(self.latencies_ms)
             def pct(p: float) -> float:
                 i = min(len(xs) - 1, int(round(p * (len(xs) - 1))))
                 return xs[i]
+            client_p50 = pct(0.50)
             lines.append(
                 f"Latency:  p50={pct(0.50):.1f}ms  p95={pct(0.95):.1f}ms  "
                 f"p99={pct(0.99):.1f}ms  max={max(xs):.1f}ms  "
-                f"(mean={statistics.fmean(xs):.1f}ms)"
+                f"(mean={statistics.fmean(xs):.1f}ms, client-observed)"
+            )
+        # Gate 2.f.1: server-side decode distribution, when the endpoint
+        # returns structured timings (decode-only mode). The gap between
+        # client latency and server decode is HTTP framing overhead
+        # (Pydantic validate + JSON parse + loopback).
+        server_p50: Optional[float] = None
+        if self.server_decode_ms:
+            ys = sorted(self.server_decode_ms)
+            def spct(p: float) -> float:
+                i = min(len(ys) - 1, int(round(p * (len(ys) - 1))))
+                return ys[i]
+            server_p50 = spct(0.50)
+            lines.append(
+                f"Decode:   p50={spct(0.50):.1f}ms  p95={spct(0.95):.1f}ms  "
+                f"p99={spct(0.99):.1f}ms  max={max(ys):.1f}ms  "
+                f"(mean={statistics.fmean(ys):.1f}ms, server-side, n={len(ys)})"
+            )
+        if client_p50 is not None and server_p50 is not None:
+            lines.append(
+                f"Framing:  ~{client_p50 - server_p50:.1f}ms  "
+                f"(client p50 - server p50; HTTP + Pydantic + loopback overhead)"
             )
         lines.append(f"Endpoint: {endpoint}")
         return lines
@@ -296,6 +320,17 @@ def main() -> int:
                 stats.bytes_sent += len(payload["rgb_jpeg"]) + len(payload["depth_png"])
                 stats.latencies_ms.append(lat_ms)
                 stats.last_seq = payload["sequence"]
+                # Gate 2.f.1: capture server-side decode timing when available.
+                # Only decode-only responses have full timings; decode-failed
+                # and older stub responses are silently skipped.
+                try:
+                    body = r.json()
+                    if body.get("mode") == "decode-only":
+                        total_ms = body.get("timings", {}).get("total_ms")
+                        if isinstance(total_ms, (int, float)):
+                            stats.server_decode_ms.append(float(total_ms))
+                except (ValueError, KeyError, TypeError):
+                    pass  # malformed body; not fatal for the replay run
                 if args.verbose:
                     print(f"  seq={payload['sequence']:06d}  {lat_ms:6.1f} ms  "
                           f"→ {r.status_code}")
