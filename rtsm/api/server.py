@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional, Dict, List
 from dataclasses import dataclass
 
 import base64
+from pydantic import BaseModel, Field, field_validator  # PATCH 20260507: ingest stub
 import numpy as np
 from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect
 from prometheus_client import Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
@@ -18,6 +19,34 @@ class ResetComponents:
     sweep_cache: Any = None
     frame_window: Any = None
     vis_server: Any = None  # VisualizationServer with registry
+
+
+# PATCH 20260507: /ingest/keyframe wire-contract models (Gate 2.d)
+class PoseQuat(BaseModel):
+    tx: float
+    ty: float
+    tz: float
+    qx: float
+    qy: float
+    qz: float
+    qw: float
+
+
+class KeyframePayload(BaseModel):
+    rgb_jpeg: str
+    depth_png: str
+    K: List[float] = Field(..., min_length=9, max_length=9)
+    pose: PoseQuat
+    timestamp_ros: float
+    frame_id: Optional[str] = "camera_color_optical_frame"
+    sequence: Optional[int] = None
+
+    @field_validator("K")
+    @classmethod
+    def _k_shape(cls, v: List[float]) -> List[float]:
+        if len(v) != 9:
+            raise ValueError("K must be 9 floats (row-major 3x3)")
+        return v
 
 
 def create_app(
@@ -69,6 +98,13 @@ def create_app(
     # Create a few dynamic gauges that read values from WorkingMemory on scrape.
     # Default to the global REGISTRY when a custom registry isn't provided.
     reg = registry or REGISTRY
+
+    # PATCH 20260507: /ingest/keyframe counters (stub state)
+    _ingest_counters: Dict[str, int] = {
+        "frames_received": 0,
+        "bytes_received": 0,
+        "last_sequence": -1,
+    }
     objects_gauge = Gauge(
         "rtsm_working_objects",
         "Total objects in WorkingMemory",
@@ -762,6 +798,48 @@ def create_app(
                 pass
             finally:
                 await vis_broadcaster.disconnect(websocket)
+
+    # ---- /ingest/keyframe stub (Gate 2.d scaffolding) ----
+    # PATCH 20260507: accepts valid payloads, counts, logs, returns accepted.
+    # Gate 2.d replaces the body with real decode/detect/embed/upsert.
+    @app.post("/ingest/keyframe")
+    def ingest_keyframe(payload: KeyframePayload) -> Dict[str, Any]:
+        """Accept a keyframe from rtsm-ingest (stub; Gate 2.d will wire the pipeline)."""
+        import logging as _log
+        rgb_bytes = len(payload.rgb_jpeg)
+        depth_bytes = len(payload.depth_png)
+        total_bytes = rgb_bytes + depth_bytes
+
+        _ingest_counters["frames_received"] += 1
+        _ingest_counters["bytes_received"] += total_bytes
+        if payload.sequence is not None:
+            _ingest_counters["last_sequence"] = int(payload.sequence)
+
+        _log.getLogger(__name__).info(
+            "[ingest] rx seq=%s ts=%.3f rgb=%dB depth=%dB frame_id=%s",
+            payload.sequence if payload.sequence is not None else "?",
+            payload.timestamp_ros,
+            rgb_bytes,
+            depth_bytes,
+            payload.frame_id,
+        )
+
+        return {
+            "status": "accepted",
+            "observations_added": 0,
+            "objects_updated": 0,
+            "sequence": payload.sequence,
+            "mode": "stub",
+            "notes": "serve-mode stub; no pipeline wired (Gate 2.d)",
+        }
+
+    @app.get("/stats/ingest")
+    def stats_ingest() -> Dict[str, Any]:
+        """Ingest stub counters (not reset by /reset -- transport-layer accounting)."""
+        out = dict(_ingest_counters)
+        out["mode"] = "stub"
+        return out
+    # ---- end PATCH 20260507 ----
 
     # ---- Static frontend (mount LAST so API routes take priority) ----
     if static_dir:

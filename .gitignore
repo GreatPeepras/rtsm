@@ -130,3 +130,4 @@ site/
 /recordings/*
 !/recordings/session1/
 !/recordings/demo_clip/
+*.PRE_*
