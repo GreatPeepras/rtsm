@@ -480,6 +480,7 @@ def main():
         working_memory=wm,
         clip_adapter=clip,
         vectors=vectors,
+        ingest_queue=ingest_q,
         extra_stats_provider=lambda: {
             "ingest_q": ingest_q.qsize(),
         },

@@ -67,6 +67,7 @@ def create_app(
     vis_broadcaster: Optional[Any] = None,
     vis_registry: Optional[Any] = None,
     static_dir: Optional[str] = None,
+    ingest_queue: Optional[Any] = None,
 ) -> FastAPI:
     """
     Build a FastAPI app exposing:
@@ -107,7 +108,10 @@ def create_app(
         "frames_received": 0,
         "bytes_received": 0,
         "last_sequence": -1,
+        "queue_full_drops": 0,
+        "frames_queued": 0,
     }
+    _ingest_queue = ingest_queue  # closure ref; None in --serve mode
     objects_gauge = Gauge(
         "rtsm_working_objects",
         "Total objects in WorkingMemory",
@@ -903,21 +907,29 @@ def create_app(
                 "total_ms": round((t3 - t0) * 1000.0, 3),
             },
             "validation_warnings": warnings_list,
+            "_arrays": {"rgb": rgb, "depth_raw": depth_raw},
         }
 
     @app.post("/ingest/keyframe")
     def ingest_keyframe(payload: KeyframePayload) -> Dict[str, Any]:
-        """Accept a keyframe: decode RGB+depth, validate, return timings.
+        """Accept a keyframe: decode, build FramePacket, push to ingest queue.
 
-        Gate 2.f.1: decode-only. No FramePacket construction, no pipeline call.
-        Pipeline dispatch lands in Gate 2.f.2.
+        Gate 2.f.2: builds FramePacket from decoded arrays and enqueues it for
+        the pipeline consumer. Returns 503 if the queue is full (backpressure).
+        If no ingest_queue is bound (e.g. --serve mode), falls back to the
+        2.f.1 decode-only behavior.
         """
         import logging as _log
+        import queue as _queue
+        from rtsm.core.datamodel import (
+            FramePacket, TimeBundle, PoseStamped, PinholeIntrinsics,
+        )
+
         rgb_bytes = len(payload.rgb_jpeg)
         depth_bytes = len(payload.depth_png)
         total_bytes = rgb_bytes + depth_bytes
 
-        # Transport counters increment regardless of decode outcome.
+        # Transport counters increment regardless of decode / dispatch outcome.
         _ingest_counters["frames_received"] += 1
         _ingest_counters["bytes_received"] += total_bytes
         if payload.sequence is not None:
@@ -925,30 +937,115 @@ def create_app(
 
         decoded = _decode_keyframe_payload(payload)
 
+        # Decode failure: return early in the same shape as 2.f.1.
+        if decoded.get("mode") != "decode-only":
+            _log.getLogger(__name__).warning(
+                "[ingest] decode-failed seq=%s stage=%s",
+                payload.sequence, decoded.get("stage"),
+            )
+            return {
+                "status": "decode_failed",
+                "observations_added": 0,
+                "objects_updated": 0,
+                "sequence": payload.sequence,
+                **decoded,
+            }
+
+        # Extract arrays; build FramePacket.
+        arrays = decoded.pop("_arrays")
+        rgb = arrays["rgb"]
+        depth_raw = arrays["depth_raw"]
+        # depth_raw is uint16 mm (D435i convention, 0 = invalid).
+        depth_m = depth_raw.astype(np.float32) / 1000.0
+        depth_m[depth_raw == 0] = np.nan
+
+        H, W = int(rgb.shape[0]), int(rgb.shape[1])
+        K = payload.K
+        intr = PinholeIntrinsics(
+            width=W, height=H,
+            fx=K[0], fy=K[4], cx=K[2], cy=K[5],
+        )
+        pq = payload.pose
+        t_sensor_ns = int(payload.timestamp_ros * 1e9)
+        tb = TimeBundle(
+            t_mono_s=time.monotonic(),
+            t_wall_utc_s=time.time(),
+            t_sensor_ns=t_sensor_ns,
+            seq=payload.sequence,
+        )
+        pose = PoseStamped(
+            stamp_ns=t_sensor_ns,
+            frame_id=payload.frame_id,
+            t_wc=np.array([pq.tx, pq.ty, pq.tz], dtype=np.float32),
+            q_wc_xyzw=np.array([pq.qx, pq.qy, pq.qz, pq.qw], dtype=np.float32),
+        )
+        pkt = FramePacket(
+            time=tb, rgb=rgb, depth_m=depth_m,
+            pose=pose, intr=intr,
+            is_keyframe=True,
+        )
+
+        # If no queue is bound (e.g. --serve mode), behave as 2.f.1.
+        if _ingest_queue is None:
+            _log.getLogger(__name__).info(
+                "[ingest] rx seq=%s ts=%.3f no queue bound; decode-only",
+                payload.sequence, payload.timestamp_ros,
+            )
+            return {
+                "status": "accepted",
+                "observations_added": 0,
+                "objects_updated": 0,
+                "sequence": payload.sequence,
+                **decoded,
+                "notes": "no ingest_queue bound; decode-only (likely --serve mode)",
+            }
+
+        # Queue put (non-blocking). Full -> 503.
+        t_q0 = time.perf_counter()
+        try:
+            _ingest_queue.put(pkt, block=False)
+        except _queue.Full:
+            _ingest_counters["queue_full_drops"] += 1
+            _log.getLogger(__name__).warning(
+                "[ingest] queue full; drop seq=%s", payload.sequence,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "queue_full",
+                    "sequence": payload.sequence,
+                    "queue_full_drops": _ingest_counters["queue_full_drops"],
+                },
+            )
+        queue_put_ms = round((time.perf_counter() - t_q0) * 1000.0, 3)
+        _ingest_counters["frames_queued"] += 1
+
+        decoded["timings"]["queue_put_ms"] = queue_put_ms
         _log.getLogger(__name__).info(
-            "[ingest] rx seq=%s ts=%.3f rgb=%dB depth=%dB mode=%s total_ms=%s",
-            payload.sequence if payload.sequence is not None else "?",
-            payload.timestamp_ros,
+            "[ingest] queued seq=%s ts=%.3f rgb=%dB depth=%dB total_ms=%s",
+            payload.sequence, payload.timestamp_ros,
             rgb_bytes, depth_bytes,
-            decoded.get("mode"),
             decoded.get("timings", {}).get("total_ms"),
         )
 
-        status = "accepted" if decoded["mode"] == "decode-only" else "decode_failed"
         return {
-            "status": status,
+            "status": "queued",
             "observations_added": 0,
             "objects_updated": 0,
             "sequence": payload.sequence,
             **decoded,
-            "notes": "Gate 2.f.1 decode-only; pipeline dispatch lands in 2.f.2",
         }
 
     @app.get("/stats/ingest")
     def stats_ingest() -> Dict[str, Any]:
         """Ingest counters (not reset by /reset -- transport-layer accounting)."""
         out = dict(_ingest_counters)
-        out["mode"] = "decode-only"
+        if _ingest_queue is not None:
+            out["queue_depth"] = int(_ingest_queue.qsize())
+            out["queue_maxsize"] = int(getattr(_ingest_queue, "maxsize", 0))
+            out["mode"] = "queued"
+        else:
+            out["mode"] = "decode-only"
         return out
     # ---- end PATCH 20260507 / 20260507b ----
 
