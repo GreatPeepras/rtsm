@@ -7,6 +7,9 @@ from typing import Any, Callable, Optional, Dict, List
 from dataclasses import dataclass
 
 import base64
+import binascii
+
+import cv2
 from pydantic import BaseModel, Field, field_validator  # PATCH 20260507: ingest stub
 import numpy as np
 from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect
@@ -799,47 +802,155 @@ def create_app(
             finally:
                 await vis_broadcaster.disconnect(websocket)
 
-    # ---- /ingest/keyframe stub (Gate 2.d scaffolding) ----
-    # PATCH 20260507: accepts valid payloads, counts, logs, returns accepted.
-    # Gate 2.d replaces the body with real decode/detect/embed/upsert.
+    # ---- /ingest/keyframe (Gate 2.f.1 -- decode-only) ----
+    # PATCH 20260507  (Gate 2.d):   stub that validated wire contract and counted bytes.
+    # PATCH 20260507b (Gate 2.f.1): decode + validate; no pipeline dispatch yet.
+    # Gate 2.f.2 will construct FramePacket and push to IngestQueue.
+    def _decode_keyframe_payload(payload: KeyframePayload) -> Dict[str, Any]:
+        """Decode a KeyframePayload into numpy arrays + validated metadata.
+
+        Pure function; never raises. Pydantic has already validated schema
+        before we are called. Decode errors become structured
+        {mode: "decode-failed", ...} responses.
+        """
+        t0 = time.perf_counter()
+
+        # Stage 1: base64 decode (validate=True so garbage fails loudly).
+        try:
+            rgb_jpeg_bytes = base64.b64decode(payload.rgb_jpeg, validate=True)
+            depth_png_bytes = base64.b64decode(payload.depth_png, validate=True)
+        except (binascii.Error, ValueError) as e:
+            return {
+                "mode": "decode-failed",
+                "error": "base64_decode_failed",
+                "stage": "base64",
+                "detail": str(e),
+                "timings": {"base64_ms": (time.perf_counter() - t0) * 1000.0},
+            }
+        t1 = time.perf_counter()
+
+        # Stage 2: cv2 image decode.
+        try:
+            rgb_buf = np.frombuffer(rgb_jpeg_bytes, dtype=np.uint8)
+            rgb = cv2.imdecode(rgb_buf, cv2.IMREAD_COLOR)   # BGR HxWx3 uint8
+            if rgb is None:
+                raise ValueError("cv2.imdecode returned None for rgb_jpeg")
+            depth_buf = np.frombuffer(depth_png_bytes, dtype=np.uint8)
+            depth_raw = cv2.imdecode(depth_buf, cv2.IMREAD_UNCHANGED)  # HxW uint16 (mm)
+            if depth_raw is None:
+                raise ValueError("cv2.imdecode returned None for depth_png")
+        except Exception as e:
+            return {
+                "mode": "decode-failed",
+                "error": "cv2_decode_failed",
+                "stage": "cv2",
+                "detail": str(e),
+                "timings": {
+                    "base64_ms": (t1 - t0) * 1000.0,
+                    "cv2_ms": (time.perf_counter() - t1) * 1000.0,
+                },
+            }
+        t2 = time.perf_counter()
+
+        # Stage 3: validation (non-fatal: collect warnings, still decode-only).
+        warnings_list: List[str] = []
+        if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.dtype != np.uint8:
+            warnings_list.append(
+                f"rgb shape/dtype: got {list(rgb.shape)} {rgb.dtype}, expected HxWx3 uint8"
+            )
+        if depth_raw.ndim != 2 or depth_raw.dtype != np.uint16:
+            warnings_list.append(
+                f"depth shape/dtype: got {list(depth_raw.shape)} {depth_raw.dtype}, expected HxW uint16"
+            )
+        if rgb.ndim == 3 and depth_raw.ndim == 2 and rgb.shape[:2] != depth_raw.shape:
+            warnings_list.append(
+                f"rgb/depth shape mismatch: rgb {list(rgb.shape[:2])} vs depth {list(depth_raw.shape)}"
+            )
+
+        K = payload.K
+        fx, fy, cx, cy = K[0], K[4], K[2], K[5]
+        H = int(rgb.shape[0]) if rgb.ndim == 3 else 0
+        W = int(rgb.shape[1]) if rgb.ndim == 3 else 0
+        if not (fx > 0 and fy > 0):
+            warnings_list.append(f"K: fx={fx} fy={fy} must be positive")
+        if W > 0 and not (0.0 <= cx <= W):
+            warnings_list.append(f"K: cx={cx} out of [0, {W}]")
+        if H > 0 and not (0.0 <= cy <= H):
+            warnings_list.append(f"K: cy={cy} out of [0, {H}]")
+
+        p = payload.pose
+        qnorm = (p.qx * p.qx + p.qy * p.qy + p.qz * p.qz + p.qw * p.qw) ** 0.5
+        if abs(qnorm - 1.0) > 0.01:
+            warnings_list.append(f"pose quaternion not unit: norm={qnorm:.4f}")
+
+        if depth_raw.ndim == 2 and depth_raw.size > 0:
+            valid = int(np.count_nonzero(depth_raw))
+            depth_valid_pct = 100.0 * valid / depth_raw.size
+        else:
+            depth_valid_pct = 0.0
+
+        t3 = time.perf_counter()
+
+        return {
+            "mode": "decode-only",
+            "rgb_shape": list(rgb.shape),
+            "depth_shape": list(depth_raw.shape),
+            "depth_valid_pct": round(depth_valid_pct, 2),
+            "timings": {
+                "base64_ms": round((t1 - t0) * 1000.0, 3),
+                "cv2_ms": round((t2 - t1) * 1000.0, 3),
+                "validate_ms": round((t3 - t2) * 1000.0, 3),
+                "total_ms": round((t3 - t0) * 1000.0, 3),
+            },
+            "validation_warnings": warnings_list,
+        }
+
     @app.post("/ingest/keyframe")
     def ingest_keyframe(payload: KeyframePayload) -> Dict[str, Any]:
-        """Accept a keyframe from rtsm-ingest (stub; Gate 2.d will wire the pipeline)."""
+        """Accept a keyframe: decode RGB+depth, validate, return timings.
+
+        Gate 2.f.1: decode-only. No FramePacket construction, no pipeline call.
+        Pipeline dispatch lands in Gate 2.f.2.
+        """
         import logging as _log
         rgb_bytes = len(payload.rgb_jpeg)
         depth_bytes = len(payload.depth_png)
         total_bytes = rgb_bytes + depth_bytes
 
+        # Transport counters increment regardless of decode outcome.
         _ingest_counters["frames_received"] += 1
         _ingest_counters["bytes_received"] += total_bytes
         if payload.sequence is not None:
             _ingest_counters["last_sequence"] = int(payload.sequence)
 
+        decoded = _decode_keyframe_payload(payload)
+
         _log.getLogger(__name__).info(
-            "[ingest] rx seq=%s ts=%.3f rgb=%dB depth=%dB frame_id=%s",
+            "[ingest] rx seq=%s ts=%.3f rgb=%dB depth=%dB mode=%s total_ms=%s",
             payload.sequence if payload.sequence is not None else "?",
             payload.timestamp_ros,
-            rgb_bytes,
-            depth_bytes,
-            payload.frame_id,
+            rgb_bytes, depth_bytes,
+            decoded.get("mode"),
+            decoded.get("timings", {}).get("total_ms"),
         )
 
+        status = "accepted" if decoded["mode"] == "decode-only" else "decode_failed"
         return {
-            "status": "accepted",
+            "status": status,
             "observations_added": 0,
             "objects_updated": 0,
             "sequence": payload.sequence,
-            "mode": "stub",
-            "notes": "serve-mode stub; no pipeline wired (Gate 2.d)",
+            **decoded,
+            "notes": "Gate 2.f.1 decode-only; pipeline dispatch lands in 2.f.2",
         }
 
     @app.get("/stats/ingest")
     def stats_ingest() -> Dict[str, Any]:
-        """Ingest stub counters (not reset by /reset -- transport-layer accounting)."""
+        """Ingest counters (not reset by /reset -- transport-layer accounting)."""
         out = dict(_ingest_counters)
-        out["mode"] = "stub"
+        out["mode"] = "decode-only"
         return out
-    # ---- end PATCH 20260507 ----
+    # ---- end PATCH 20260507 / 20260507b ----
 
     # ---- Static frontend (mount LAST so API routes take priority) ----
     if static_dir:
