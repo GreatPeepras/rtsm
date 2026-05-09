@@ -771,7 +771,13 @@ class Pipeline:
                         crop[mask_resized == 0] = bg_color
 
             crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_LINEAR)
-            c.crop = crop
+            # snap.rgb is BGR (cv2.imdecode at api/server.py:839 and
+            # io/zeromq.py:174; NV12->BGR at io/websocket.py). But
+            # datamodel.Observation.crop is documented RGB, and both
+            # downstream consumers (SigLIP feed at pipeline.py and the
+            # WM snapshot writer in stores/working_memory.py) expect RGB.
+            # Convert once here so c.crop honors its contract.
+            c.crop = crop[..., ::-1].copy()
 
     @torch.no_grad()
     def _clip_batch_inplace(self, cands: List[Candidate]):
@@ -780,10 +786,8 @@ class Pipeline:
         for i, c in enumerate(cands):
             if c.crop is None:
                 continue
-            # Crops inherit RGB from the full-frame flip at pipeline.py:181
-            # (snap.rgb is actually BGR; see rtsm/io/websocket.py decode_rgb).
-            crop = c.crop
-            crop_rgb = crop  # alias kept to minimize downstream diff
+            # c.crop is RGB (converted at end of _make_crops_inplace).
+            crop_rgb = c.crop
             if not getattr(self, "_dbg_bgr_flip_logged", False):
                 logger.info(f"[bgr-flip] active; crop shape={crop_rgb.shape} dtype={crop_rgb.dtype}")
                 self._dbg_bgr_flip_logged = True
