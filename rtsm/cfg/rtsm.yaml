@@ -95,6 +95,11 @@ clip:
   model: ViT-B-16-SigLIP
   pretrained: webli
   local_dir: model_store/clip
+  # Bumped 2026-05-09 (post-bug-#1). Default was implicit 5 from
+  # pipeline.py:815. SigLIP scores full vocab; this is just a storage
+  # cap on label_scores. Top-5 was excluding correct concepts
+  # (tissue box, teddy bear) from EWMA; raising headroom.
+  vocab_topk: 30
 
 # -------------------- I/O --------------------
 io:
@@ -162,7 +167,7 @@ staging:
   depth_valid_min: 0.02
   depth_erode_px: 1
   topk_preclip: 12                   # DEMO: more candidates to catch small objects
-  crop_pad_px: 6
+  crop_pad_px: 24                  # 2026-05-09: bumped from 6; gives SigLIP enough spatial context for small objects (plushy/night-light eval)
   clip_input: 224
 
   w_coverage: 1.0
