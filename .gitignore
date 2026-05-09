@@ -131,3 +131,6 @@ site/
 !/recordings/session1/
 !/recordings/demo_clip/
 *.PRE_*
+
+# Local backup files from in-place patches
+*.bak.*
