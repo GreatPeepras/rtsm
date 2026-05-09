@@ -91,3 +91,23 @@ Crops dumped from `/objects/{id}/snapshots/{idx}/image` for visual
 verification. Per-object `label_scores` ranking was the most
 informative diagnostic — it shows where the correct concept sits
 in the long tail even when top-1 is wrong.
+
+## Caveat: BGR/RGB fix was active during eval
+
+A separate fix in `rtsm/core/pipeline.py` (committed after this
+eval doc) corrected a BGR/RGB contract violation: SigLIP had been
+receiving BGR-encoded crops while the model expects RGB. That fix
+was applied to the running container before the post-patch
+measurements were taken, so the gains reported here are the
+*combined* effect of crop_pad_px=24, vocab_topk=30, AND the BGR
+fix — not crop_pad_px alone.
+
+We did not isolate the contribution of each change. In hindsight,
+the BGR fix is probably responsible for a meaningful share of the
+small-object improvements (channel-swapped SigLIP inputs would
+particularly hurt fine-grained discrimination on small objects
+where subtle texture cues matter).
+
+If a future investigation needs to attribute gains to a specific
+knob, replay each change in isolation against a pinned baseline
+build.
