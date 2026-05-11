@@ -7,33 +7,33 @@ templates:
   - "an object that is a {}"
 
 unknown:
-  # PATCHED 20260430: demo-clip validation
-  # Original values (min_top=0.30, min_margin=0.05) were unreachable given
-  # observed top-1 cosine range of 0.063-0.113 on demo_clip. Relaxed to let
-  # crops through for persistence-loop end-to-end validation.
-  # TODO: re-tune with live D435i data.
-  min_top: 0.06     # minimum top score to accept a label (was 0.30)
-  min_margin: 0.005 # top - second-best must exceed this (was 0.05)
+  # 2026-05-11 retune for resident-robot deployment.
+  # Demo patch (20260430) loosened these to 0.06/0.005 for end-to-end demo-
+  # clip validation. Apartment replay 2026-05-06 confirmed the loosened
+  # operating point admits blur ghosts ("night light", "edge", "mirror") at
+  # top-1 scores 0.04-0.11. Restoring ~2/3 toward original 0.30/0.05.
+  # Resident-robot operating point favors precision over recall: false
+  # negatives self-correct in days (the robot keeps observing); false
+  # positives accumulate forever (LTM has no eviction yet).
+  # See docs/design/persistence.md.
+  min_top: 0.20      # was 0.06 (demo), originally 0.30
+  min_margin: 0.03   # was 0.005 (demo), originally 0.05
 
 classes:
-  # Planarity/structure classes for suppressing repetitive structure
-  - id: wall
-    synonyms: ["vertical surface", "partition"]
-
-  - id: floor
-    synonyms: ["ground", "horizontal surface"]
-
-  - id: ceiling
-    synonyms: ["overhead", "top surface"]
-
-  - id: corner
-    synonyms: ["junction", "intersection"]
-
-  - id: edge
-    synonyms: ["border", "boundary"]
-
-  - id: platform
-    synonyms: ["raised surface", "stage"]
+  # Structural classes (wall / floor / ceiling) intentionally OMITTED here.
+  # They belong in the structure-detection layer (planarity-based, see
+  # rtsm/utils/mask_staging.py) which routes via Observation.struct_type
+  # rather than via CLIP cosine similarity. The structure layer is currently
+  # vestigial scaffolding (typed slot + planarity computation, no consumer);
+  # until a structural-detection consumer ships, structural surfaces will go
+  # undetected — which is preferable to being mislabeled as objects and
+  # competing for WM/LTM slots. (TODO: docs/design/structure-layer.md)
+  #
+  # corner / edge / platform also removed: not in StructType, no architectural
+  # backing, were pure CLIP attractors for blurry crops.
+  #
+  # Existing FAISS records with these labels (e.g. floor_001) are preserved
+  # for now; cleanup deferred to structure-layer migration.
 
   # Regular object classes
   - id: chair
@@ -79,9 +79,6 @@ classes:
     synonyms: []
 
   - id: phone
-    synonyms: []
-
-  - id: clock
     synonyms: []
 
   - id: mirror

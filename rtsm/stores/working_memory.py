@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 Vec3 = np.ndarray  # shape (3,), float32
 Emb = np.ndarray   # shape (D,), float32 L2-normalized unless stated
 
+# Sentinel for update_user_fields(): distinguishes "field omitted"
+# (leave unchanged) from "field set to None" (clear). Module-level so
+# server.py can import it for the PATCH /objects/{oid} handler.
+_UNSET: Any = object()
+
 # --- helpers ---
 
 def _l2norm(v: Emb) -> Emb:
@@ -141,6 +146,18 @@ class ObjectState:
     # cache
     _dim: int
 
+    # --- 2026-05-11 PR: user override + lifecycle hooks ---
+    # User-pinned label override. None = no override (use label_primary).
+    # Survives forever; signals "do not auto-evict" to future lifecycle logic.
+    # Set via PATCH /objects/{oid}.
+    label_user: Optional[str] = None
+
+    # Movability class for future lifecycle/eviction logic. None = unset
+    # (eviction logic falls back to vocab default, then to "semi_static").
+    # Valid: permanent | static | semi_static | movable | roaming | ephemeral
+    # See docs/design/persistence.md for taxonomy.
+    movability_class: Optional[str] = None
+
 # ------------------------- Proximity index interface -------------------------
 
 class ProximityIndexLike(Protocol):
@@ -185,6 +202,9 @@ class WorkingMemory:
         self.proto_ttl_s: float = float(obj_cfg.get("proto_ttl_s", 10.0))
         self.promote_hits: int = int(obj_cfg.get("promote_hits", 2))
         self.stability_promote: float = float(obj_cfg.get("stability_promote", 0.50))
+        # 2026-05-11: was hardcoded 0.05 at promote-gate (line 498); now
+        # config-lifted. Default 0.18 is the resident-robot operating point.
+        self.promote_min_conf: float = float(obj_cfg.get("promote_min_conf", 0.18))
         self.require_view_bins: int = int(obj_cfg.get("require_view_bins", 2))
         self.stab_k: float = float(obj_cfg.get("stab_k", 0.45))
         self.miss_decay: float = float(obj_cfg.get("miss_decay", 0.92))
@@ -227,6 +247,51 @@ class WorkingMemory:
             if o is None:
                 return None
             return (o.confirmed, o.stability, o.last_seen_mono)
+
+    # --- 2026-05-11 PR: user override + lifecycle hooks ---
+    # Six-class movability ladder. See docs/design/persistence.md.
+    _VALID_MOVABILITY = frozenset({
+        "permanent", "static", "semi_static",
+        "movable", "roaming", "ephemeral",
+    })
+
+    def update_user_fields(
+        self,
+        oid: str,
+        *,
+        label_user: Any = _UNSET,
+        movability_class: Any = _UNSET,
+    ) -> Optional["ObjectState"]:
+        """Thread-safe update of user-controllable fields on an ObjectState.
+
+        Use the module-level `_UNSET` sentinel to distinguish "leave unchanged"
+        from "set to None". `None` means "clear the field".
+
+        Returns the updated ObjectState, or None if oid not found.
+        Raises ValueError on invalid movability_class or empty label_user.
+        """
+        with self._lock:
+            o = self._map.get(oid)
+            if o is None:
+                return None
+            if label_user is not _UNSET:
+                if label_user is not None:
+                    if not isinstance(label_user, str) or not label_user.strip():
+                        raise ValueError(
+                            "label_user must be a non-empty string or None"
+                        )
+                    o.label_user = label_user.strip()
+                else:
+                    o.label_user = None
+            if movability_class is not _UNSET:
+                if movability_class is not None and movability_class not in self._VALID_MOVABILITY:
+                    raise ValueError(
+                        f"movability_class must be one of "
+                        f"{sorted(self._VALID_MOVABILITY)} or None, "
+                        f"got {movability_class!r}"
+                    )
+                o.movability_class = movability_class
+            return o
 
     def iter_objects(self) -> Iterable[ObjectState]:
         with self._lock:
@@ -493,11 +558,12 @@ class WorkingMemory:
             # own threshold (which means label_scores is non-empty AND the top
             # score is a cosine similarity at or above the classifier's min_top).
             # PATCHED 20260430: demo-clip validation
-            # Original threshold 0.25 matched min_top=0.30 in vocab.yaml.
-            # After relaxing min_top to 0.06, observed confs are 0.04-0.11,
-            # so 0.25 is unreachable. Lowered to 0.05 for persistence-loop
-            # end-to-end validation. TODO: re-tune with live D435i data.
-            gate_label = (top_lbl is not None) and (top_conf >= 0.05)
+            # 2026-05-11: threshold lifted to config (object.promote_min_conf,
+            # default 0.18). Demo patch had hardcoded 0.05 to pass the
+            # loosened vocab thresholds (0.06/0.005); both are now restored
+            # toward original strictness for resident-robot deployment.
+            # See docs/design/persistence.md.
+            gate_label = (top_lbl is not None) and (top_conf >= self.promote_min_conf)
 
             structural_pass = gate_hits and gate_stab and gate_bins
             all_pass = structural_pass and gate_label
@@ -566,6 +632,10 @@ class WorkingMemory:
                         "emb": o.emb_mean.astype(np.float32),
                         "xyz": o.xyz_world.astype(np.float32),
                         "label_primary": o.label_primary,
+                        # 2026-05-11: user override + display label + movability hook
+                        "label_user": o.label_user,
+                        "display_label": o.label_user or o.label_primary,
+                        "movability_class": o.movability_class,
                         "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
                         "label_topk": [k for k, _ in label_topk],
                         "label_scores": [float(v) for _, v in label_topk],
@@ -617,6 +687,10 @@ class WorkingMemory:
                     "emb": o.emb_mean.astype(np.float32),
                     "xyz": o.xyz_world.astype(np.float32),
                     "label_primary": o.label_primary,
+                    # 2026-05-11: user override + display label + movability hook
+                    "label_user": o.label_user,
+                    "display_label": o.label_user or o.label_primary,
+                    "movability_class": o.movability_class,
                     "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
                     "label_topk": [k for k, _ in label_topk],
                     "label_scores": [float(v) for _, v in label_topk],

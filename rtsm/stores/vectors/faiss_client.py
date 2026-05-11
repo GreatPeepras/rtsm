@@ -76,15 +76,20 @@ class FaissClient:
         # grid cell) from accumulating duplicate OIDs across re-ingests.
         # Incoming records win; pre-existing OIDs with matching identity are evicted.
         def _identity_key(m):
+            # 2026-05-11: dedup on display label (label_user or label_primary)
+            # so user-pinned objects retain stable identity across restarts and
+            # autonomic-label drift. See docs/design/persistence.md.
             xyz = m.get("xyz")
-            label = m.get("label_primary")
-            if xyz is None or label is None:
+            label_user = m.get("label_user")
+            label_primary = m.get("label_primary")
+            display_label = label_user or label_primary
+            if xyz is None or display_label is None:
                 return None
             try:
                 coords = tuple(round(float(c), 1) for c in xyz)  # 10cm grid
             except (TypeError, ValueError):
                 return None
-            return (label, coords)
+            return (display_label, coords)
 
         _incoming_keys = set()
         for _oid, _emb, _meta in to_add:

@@ -237,6 +237,11 @@ assoc:
 object:
   proto_ttl_s: 5.0                   # DEMO: faster expiry
   promote_hits: 2
+  # 2026-05-11: lifted from working_memory.py:498 hardcoded 0.05 (demo
+  # patch). Original was 0.25; 0.18 is ~2/3 back toward original.
+  # Resident-robot principle: precision > recall. See
+  # docs/design/persistence.md and docs/design/demo-config-audit.md.
+  promote_min_conf: 0.18
   stability_promote: 0.40            # DEMO: easier to confirm
   require_view_bins: 1
   stab_k: 0.55                       # DEMO: faster stability rise

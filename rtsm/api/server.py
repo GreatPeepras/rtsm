@@ -12,7 +12,7 @@ import binascii
 import cv2
 from pydantic import BaseModel, Field, field_validator  # PATCH 20260507: ingest stub
 import numpy as np
-from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect, Body
 from prometheus_client import Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 
@@ -50,6 +50,23 @@ class KeyframePayload(BaseModel):
         if len(v) != 9:
             raise ValueError("K must be 9 floats (row-major 3x3)")
         return v
+
+
+# ---- Module-scoped Pydantic models (must be at module scope so
+# `from __future__ import annotations` forward-refs resolve via
+# get_type_hints(); closure-scoped classes break FastAPI/Pydantic v2). ----
+class ObjectPatch(BaseModel):
+    """Body schema for PATCH /objects/{oid}.
+
+    All fields optional. Field omission means "leave unchanged".
+    Field set to null means "clear" (revert to default).
+    Empty string for label_user is rejected (use null to clear).
+    """
+    label_user: Optional[str] = None
+    movability_class: Optional[str] = None
+
+    model_config = {"extra": "forbid"}
+
 
 
 def create_app(
@@ -176,6 +193,11 @@ def create_app(
     # ---- Object debug endpoints ----
     def _obj_summary(o: Any) -> Dict[str, Any]:
         try:
+            # 2026-05-11: surface user override + display label + movability + age
+            label_user = getattr(o, "label_user", None)
+            label_primary = getattr(o, "label_primary", None)
+            last_seen = float(getattr(o, "last_seen_mono", 0.0))
+            now_mono = time.monotonic()
             return {
                 "id": getattr(o, "id", None),
                 "xyz_world": getattr(o, "xyz_world", None).tolist() if getattr(o, "xyz_world", None) is not None else None,
@@ -184,9 +206,14 @@ def create_app(
                 "stability": float(getattr(o, "stability", 0.0)),
                 "hits": int(getattr(o, "hits", 0)),
                 "confirmed": bool(getattr(o, "confirmed", False)),
-                "label_primary": getattr(o, "label_primary", None),
+                "label_primary": label_primary,
+                "label_user": label_user,
+                "display_label": label_user or label_primary,
+                "movability_class": getattr(o, "movability_class", None),
                 "view_bins": len(getattr(o, "view_bins", {}) or {}),
-                "last_seen_mono": float(getattr(o, "last_seen_mono", 0.0)),
+                "last_seen_mono": last_seen,
+                "last_seen_age_s": (max(0.0, now_mono - last_seen)
+                                    if last_seen > 0 else None),
             }
         except Exception:
             return {"id": getattr(o, "id", None)}
@@ -278,6 +305,51 @@ def create_app(
         if o is None:
             return {"error": "not_found", "id": oid}
         return _obj_detail(o, include_vectors=include_vectors)
+
+    # ---- 2026-05-11 PR: user override + lifecycle hooks ----
+
+    @app.patch("/objects/{oid}")
+    def patch_object(oid: str, patch: ObjectPatch = Body(...)) -> Dict[str, Any]:
+        """Update user-controllable fields on a WM object.
+
+        Distinguishes:
+          - field omitted from body  -> leave unchanged
+          - field set to null        -> clear (revert to default)
+          - label_user empty string  -> 400 (use null to clear)
+          - movability_class invalid -> 400
+
+        Returns the updated object detail. Returns 405 on frozen WM
+        (serve-mode), 404 on unknown oid.
+        """
+        # Frozen WM (serve-mode) is read-only.
+        if not hasattr(working_memory, "update_user_fields"):
+            raise HTTPException(
+                status_code=405,
+                detail="PATCH not supported on frozen working memory (serve-mode)",
+            )
+
+        provided = patch.model_fields_set
+        kwargs: Dict[str, Any] = {}
+        if "label_user" in provided:
+            kwargs["label_user"] = patch.label_user
+        if "movability_class" in provided:
+            kwargs["movability_class"] = patch.movability_class
+
+        if not kwargs:
+            # Idempotent no-op: client sent {} or only unrelated fields.
+            o = working_memory.get(oid)
+            if o is None:
+                raise HTTPException(status_code=404, detail=f"Object {oid} not found")
+            return _obj_detail(o)
+
+        try:
+            o = working_memory.update_user_fields(oid, **kwargs)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if o is None:
+            raise HTTPException(status_code=404, detail=f"Object {oid} not found")
+        return _obj_detail(o)
 
     # ---- Snapshot gallery endpoints ----
     @app.get("/objects/{oid}/snapshots")
