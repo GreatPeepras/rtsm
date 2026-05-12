@@ -241,7 +241,7 @@ object:
   # patch). Original was 0.25; 0.18 is ~2/3 back toward original.
   # Resident-robot principle: precision > recall. See
   # docs/design/persistence.md and docs/design/demo-config-audit.md.
-  promote_min_conf: 0.18
+  promote_min_conf: 0.05  # restored to May 11 demo baseline; resident-robot target was 0.18 but apartment cosines sit at 0.08–0.10
   stability_promote: 0.40            # DEMO: easier to confirm
   require_view_bins: 1
   stab_k: 0.55                       # DEMO: faster stability rise

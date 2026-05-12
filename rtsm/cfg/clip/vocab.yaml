@@ -16,8 +16,8 @@ unknown:
   # negatives self-correct in days (the robot keeps observing); false
   # positives accumulate forever (LTM has no eviction yet).
   # See docs/design/persistence.md.
-  min_top: 0.20      # was 0.06 (demo), originally 0.30
-  min_margin: 0.03   # was 0.005 (demo), originally 0.05
+  min_top: 0.06     # restored to May 11 baseline; see core/pipeline.py:829
+  min_margin: 0.005  # restored to May 11 baseline
 
 classes:
   # Structural classes (wall / floor / ceiling) intentionally OMITTED here.
