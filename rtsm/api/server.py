@@ -209,6 +209,7 @@ def create_app(
                 "label_primary": label_primary,
                 "label_user": label_user,
                 "display_label": label_user or label_primary,
+                "label_top_hits": int((getattr(o, "label_hits", {}) or {}).get(label_primary, 0)) if label_primary else 0,
                 "movability_class": getattr(o, "movability_class", None),
                 "view_bins": len(getattr(o, "view_bins", {}) or {}),
                 "last_seen_mono": last_seen,
@@ -224,6 +225,7 @@ def create_app(
             d.update({
                 "cov_world": getattr(o, "cov_world", None).tolist() if getattr(o, "cov_world", None) is not None else None,
                 "label_scores": dict(getattr(o, "label_scores", {}) or {}),
+                "label_hits":   dict(getattr(o, "label_hits",   {}) or {}),
                 "last_seen_wall_utc": float(getattr(o, "last_seen_wall_utc", 0.0)),
                 "last_seen_px": list(getattr(o, "last_seen_px", [])) if getattr(o, "last_seen_px", None) is not None else None,
                 "upsert": {
@@ -456,6 +458,7 @@ def create_app(
             "labels": {
                 "primary": getattr(o, "label_primary", None),
                 "scores": dict(getattr(o, "label_scores", {}) or {}),
+                "hits":   dict(getattr(o, "label_hits",   {}) or {}),
             },
             "view_diversity": {
                 "bins_filled": len(getattr(o, "view_bins", {}) or {}),

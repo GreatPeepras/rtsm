@@ -821,15 +821,18 @@ class Pipeline:
                         f"[clip-score] row={row} tv={tv:.3f} "
                         f"class_idx={class_idx} top3={[(cid, round(float(sc),3)) for (cid, sc, _j) in topk[:3]]}"
                     )
-                    # Respect the classifier's verdict. When class_idx == -1
-                    # the classifier rejected this crop as "unknown" (top
-                    # cosine below min_top, or margin below min_margin).
-                    # Do not surface the underlying ranked list as a label.
+                    # 2026-05-12: pass soft top-K through regardless of
+                    # per-frame classifier verdict. Precision is enforced at
+                    # promotion time via min_label_hits + promote_min_conf in
+                    # WM.maybe_promote, decoupling per-frame strictness from
+                    # multi-observation evidence aggregation.
+                    setattr(cands[i], 'label_topk',
+                            [(cid, float(sc)) for (cid, sc, _j) in topk])
                     if class_idx == -1:
-                        setattr(cands[i], 'label_topk', [])
-                    else:
-                        setattr(cands[i], 'label_topk',
-                                [(cid, float(sc)) for (cid, sc, _j) in topk])
+                        logger.debug(
+                            f"[clip-score] row={row} classifier rejected "
+                            f"(top={tv:.3f}); soft top-K passed to WM"
+                        )
         # Merge YOLOE detection labels with CLIP vocab labels.
         # For dual-confirmed masks, prepend the YOLOE label (higher specificity
         # from detection head) ahead of CLIP's vocab-classifier labels.

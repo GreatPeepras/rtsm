@@ -118,6 +118,7 @@ class ObjectState:
     view_bins: Dict[int, Emb]            # bin_id -> mean emb (float32 L2)
 
     label_scores: Dict[str, float]       # EWMA label scores
+    label_hits:   Dict[str, int]         # per-label observation count (precision gate)
     label_primary: Optional[str]
 
     stability: float                     # [0,1]
@@ -205,6 +206,8 @@ class WorkingMemory:
         # 2026-05-11: was hardcoded 0.05 at promote-gate (line 498); now
         # config-lifted. Default 0.18 is the resident-robot operating point.
         self.promote_min_conf: float = float(obj_cfg.get("promote_min_conf", 0.18))
+        # 2026-05-12: evidence-count gate, paired with promote_min_conf
+        self.min_label_hits: int = int(obj_cfg.get("min_label_hits", 5))
         self.require_view_bins: int = int(obj_cfg.get("require_view_bins", 2))
         self.stab_k: float = float(obj_cfg.get("stab_k", 0.45))
         self.miss_decay: float = float(obj_cfg.get("miss_decay", 0.92))
@@ -341,9 +344,11 @@ class WorkingMemory:
             view_bins[b] = emb_vis.copy()
 
         label_scores: Dict[str, float] = {}
+        label_hits:   Dict[str, int]   = {}
         if label_topk:
             for lbl, sc in label_topk:
                 label_scores[lbl] = max(label_scores.get(lbl, 0.0), float(sc))
+                label_hits[lbl]   = label_hits.get(lbl, 0) + 1
         label_primary = max(label_scores.items(), key=lambda kv: kv[1])[0] if label_scores else None
 
         # Compress and store initial crop
@@ -362,6 +367,7 @@ class WorkingMemory:
             emb_gallery=gallery,
             view_bins=view_bins,
             label_scores=label_scores,
+            label_hits=label_hits,
             label_primary=label_primary,
             stability=0.25,
             hits=1,
@@ -457,6 +463,8 @@ class WorkingMemory:
                 # EWMA toward score; smaller beta keeps memory of history
                 beta = 0.5
                 o.label_scores[lbl] = (1 - beta) * s_old + beta * float(sc)
+                # 2026-05-12: track observation count for promotion gate
+                o.label_hits[lbl] = o.label_hits.get(lbl, 0) + 1
         # primary
         if o.label_scores:
             o.label_primary = max(o.label_scores.items(), key=lambda kv: kv[1])[0]
@@ -563,7 +571,11 @@ class WorkingMemory:
             # loosened vocab thresholds (0.06/0.005); both are now restored
             # toward original strictness for resident-robot deployment.
             # See docs/design/persistence.md.
-            gate_label = (top_lbl is not None) and (top_conf >= self.promote_min_conf)
+            # 2026-05-12: split label gate into score + evidence-count
+            top_hits = o.label_hits.get(top_lbl, 0) if top_lbl else 0
+            gate_label_score = (top_lbl is not None) and (top_conf >= self.promote_min_conf)
+            gate_label_evid  = (top_lbl is not None) and (top_hits >= self.min_label_hits)
+            gate_label = gate_label_score and gate_label_evid
 
             structural_pass = gate_hits and gate_stab and gate_bins
             all_pass = structural_pass and gate_label
@@ -573,7 +585,8 @@ class WorkingMemory:
                 f"hits={o.hits}/{self.promote_hits}({int(gate_hits)}) "
                 f"stab={o.stability:.3f}/{self.stability_promote}({int(gate_stab)}) "
                 f"bins={len(o.view_bins)}/{self.require_view_bins}({int(gate_bins)}) "
-                f"label={top_lbl} conf={top_conf:.3f}({int(gate_label)}) "
+                f"label={top_lbl} conf={top_conf:.3f}({int(gate_label_score)}) "
+                f"lhits={top_hits}/{self.min_label_hits}({int(gate_label_evid)}) "
                 f"decision={int(all_pass)}"
             ) 
 
@@ -639,6 +652,7 @@ class WorkingMemory:
                         "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
                         "label_topk": [k for k, _ in label_topk],
                         "label_scores": [float(v) for _, v in label_topk],
+                        "label_hits":   [int(o.label_hits.get(k, 0)) for k, _ in label_topk],
                         "stability": float(o.stability),
                         "created_at": o.created_wall_utc,
                         "created_mono": o.created_mono,
@@ -694,6 +708,7 @@ class WorkingMemory:
                     "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
                     "label_topk": [k for k, _ in label_topk],
                     "label_scores": [float(v) for _, v in label_topk],
+                    "label_hits":   [int(o.label_hits.get(k, 0)) for k, _ in label_topk],
                     "stability": float(o.stability),
                     "created_at": o.created_wall_utc,
                     "created_mono": o.created_mono,
