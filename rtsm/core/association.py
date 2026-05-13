@@ -251,12 +251,6 @@ class Associator:
                     survivors.sort(key=lambda t: t[1])
                     survivors = survivors[:max(1, nearest_m)]
 
-                    # choose reference embedding for cosine (view-bin if available)
-                    # compute current view-bin id from p_cam
-                    vdir = p_cam.astype(np.float32)
-                    n = float(np.linalg.norm(vdir) + 1e-12)
-                    vdir /= n
-
                     alpha = float(assoc_cfg.get('score', {}).get('alpha_cos', 1.0))
                     if not use_embeddings:
                         alpha = 0.0
@@ -276,22 +270,33 @@ class Associator:
                         o = wm.get(oid)
                         if o is None:
                             continue
-                        # pick view-bin vector if present (approximate: nearest bin by current view_dir)
-                        ref = None
-                        if getattr(o, 'view_bins', None):
-                            # flatten to any one bin; for now use emb_mean (simple & stable)
-                            ref = o.emb_mean
-                        else:
-                            ref = o.emb_mean
                         if use_embeddings and e is not None:
-                            cos = float(np.dot(e, ref.astype(np.float32)))
+                            # PATCH 2026-05-13 (viewbin-aware-assoc):
+                            # Compare against MAX cosine over all stored view-bin
+                            # embeddings; fall back to emb_mean only if view_bins
+                            # is empty. emb_mean is biased toward the most-observed
+                            # angle so it falsely rejects valid new views.
+                            bins = getattr(o, 'view_bins', None) or {}
+                            e32 = e.astype(np.float32)
+                            if bins:
+                                cos = max(
+                                    float(np.dot(e32, ref_emb.astype(np.float32)))
+                                    for ref_emb in bins.values()
+                                )
+                                ref_source = 'view_bins_max'
+                                n_bins = len(bins)
+                            else:
+                                cos = float(np.dot(e32, o.emb_mean.astype(np.float32)))
+                                ref_source = 'emb_mean'
+                                n_bins = 0
                             if cos < cos_min:
                                 # PATCH 20260503: log cosine rejection
                                 existing_label = getattr(o, 'label_primary', None) or '?'
                                 logger.info(
                                     f"[assoc-reject-cos] oid={oid[:8]} "
                                     f"cos={cos:.4f}<{cos_min:.3f} dist={dist:.3f} "
-                                    f"label_cand={top_cand_label} label_existing={existing_label}"
+                                    f"label_cand={top_cand_label} label_existing={existing_label} "
+                                    f"ref={ref_source} n_bins={n_bins}"
                                 )
                                 continue
                         else:
