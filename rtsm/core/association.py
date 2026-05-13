@@ -276,27 +276,50 @@ class Associator:
                             # embeddings; fall back to emb_mean only if view_bins
                             # is empty. emb_mean is biased toward the most-observed
                             # angle so it falsely rejects valid new views.
-                            bins = getattr(o, 'view_bins', None) or {}
+                            # PATCH 2026-05-13 (gallery-aware-assoc):
+                            # Match against the union of (a) emb_gallery (raw,
+                            # diverse observations FIFO, capped at max_gallery=6,
+                            # dedup'd at gallery_dupe_cos=0.995) and (b) view_bins
+                            # (smoothed per-bin EMA). Either source can win;
+                            # we take max cos. Gallery preserves viewpoint
+                            # diversity that view_bins averages away, fixing
+                            # the cardbox-cluster spawn-race at large viewpoint
+                            # changes (~90 deg rotations drop view_bins cos to
+                            # ~0.6-0.7 while gallery keeps a hit at >=0.85).
                             e32 = e.astype(np.float32)
+                            match_gallery = bool(assoc_cfg.get('match_against_gallery', True))
+                            gallery = getattr(o, 'emb_gallery', None)
+                            bins = getattr(o, 'view_bins', None) or {}
+                            refs = []  # list of (source_name, cos)
+                            n_gallery = 0
+                            n_bins = len(bins)
+                            if match_gallery and gallery is not None and gallery.shape[0] > 0:
+                                # Vectorized: one BLAS matmul over (N,D) @ (D,) -> (N,)
+                                gallery_cos = float(np.max(gallery.astype(np.float32) @ e32))
+                                refs.append(('gallery', gallery_cos))
+                                n_gallery = int(gallery.shape[0])
                             if bins:
-                                cos = max(
+                                bin_cos = max(
                                     float(np.dot(e32, ref_emb.astype(np.float32)))
                                     for ref_emb in bins.values()
                                 )
-                                ref_source = 'view_bins_max'
-                                n_bins = len(bins)
+                                refs.append(('view_bins', bin_cos))
+                            if not refs and o.emb_mean is not None:
+                                refs.append(('emb_mean', float(np.dot(e32, o.emb_mean.astype(np.float32)))))
+                            if not refs:
+                                # No reference embeddings at all — skip cos gating
+                                cos = 1.0
+                                ref_source = 'no_refs'
                             else:
-                                cos = float(np.dot(e32, o.emb_mean.astype(np.float32)))
-                                ref_source = 'emb_mean'
-                                n_bins = 0
+                                ref_source, cos = max(refs, key=lambda kv: kv[1])
                             if cos < cos_min:
-                                # PATCH 20260503: log cosine rejection
+                                # PATCH 20260503: log cosine rejection (extended 2026-05-13 with n_gallery)
                                 existing_label = getattr(o, 'label_primary', None) or '?'
                                 logger.info(
                                     f"[assoc-reject-cos] oid={oid[:8]} "
                                     f"cos={cos:.4f}<{cos_min:.3f} dist={dist:.3f} "
                                     f"label_cand={top_cand_label} label_existing={existing_label} "
-                                    f"ref={ref_source} n_bins={n_bins}"
+                                    f"ref={ref_source} n_gallery={n_gallery} n_bins={n_bins}"
                                 )
                                 continue
                         else:

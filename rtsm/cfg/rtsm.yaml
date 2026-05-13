@@ -227,7 +227,8 @@ assoc:
   rings: 1
   nearest_m_for_cos: 5
   use_embeddings: true
-  cos_min: 0.90
+  cos_min: 0.85
+  match_against_gallery: true   # PATCH 2026-05-13: use emb_gallery + view_bins
   gate_dist_base_m: 0.35              # DEMO: balanced — merge same object across views but not neighbors
   gate_reproj_px: 35                  # DEMO: balanced — allow some viewpoint variation
   fallback_all_when_empty: true
