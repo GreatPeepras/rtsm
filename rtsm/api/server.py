@@ -195,7 +195,20 @@ def create_app(
         try:
             # 2026-05-11: surface user override + display label + movability + age
             label_user = getattr(o, "label_user", None)
-            label_primary = getattr(o, "label_primary", None)
+            # PATCH 20260513: gate label_primary on hits>=min_label_hits to
+            # prevent post-promotion EWMA drift from surfacing under-evidenced
+            # labels in the summary. Falls back to stored label_primary if
+            # the gated subset is empty (defensive; shouldn't happen for
+            # confirmed objects).
+            _scores = getattr(o, "label_scores", {}) or {}
+            _hits   = getattr(o, "label_hits",   {}) or {}
+            _min_hits = int(getattr(working_memory, "min_label_hits", 5))
+            _gated = {k: v for k, v in _scores.items()
+                      if int(_hits.get(k, 0)) >= _min_hits}
+            if _gated:
+                label_primary = max(_gated, key=_gated.get)
+            else:
+                label_primary = getattr(o, "label_primary", None)
             last_seen = float(getattr(o, "last_seen_mono", 0.0))
             now_mono = time.monotonic()
             return {
