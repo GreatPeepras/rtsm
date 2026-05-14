@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-subscriber.py — rtsm-ingest frame subscriber (sub-gate 2.c).
+subscriber.py — rtsm-ingest frame subscriber (sub-gate 2.c + live HTTP wire).
 
 Subscribes to Albert's D435i compressed color + compressed-depth streams,
 decompresses locally, time-syncs them, and passes each synced pair to a
@@ -28,28 +28,40 @@ Design decisions (see session log 2026-05-03):
   - Using aligned_depth_to_color, not raw depth: depth is already
     registered to the RGB frame, so no extrinsics work downstream.
   - camera_info fetched once on startup (static), not sync'd per-frame.
-  - `_emit(frame)` is the downstream seam. Today it writes to a Recorder
-    (when --record is set) or drops. Tomorrow: HTTP POST / ring-buffer.
+  - `_emit(frame)` is the downstream seam. It writes to a Recorder
+    (when --record is set) and/or POSTs to rtsm-dev's /ingest/keyframe
+    (when --post-to is set). Both sinks may be active at once.
 
 Recording (added 2026-05-06):
   - --record            enable per-frame dump to <record-root>/<run_id>/
   - --max-frames N      stop after N frames (default: run until Ctrl-C)
-  - --record-root PATH  override root dir (default: /recordings, which is
-                        bind-mounted from /mnt/rtsm-data/rtsm-recordings
-                        on the host)
+  - --record-root PATH  override root dir (default: /recordings)
   Writes paired files per synced frame: NNNNNN.jpg (raw on-wire JPEG),
   NNNNNN.png (16-bit depth PNG, on-wire bytes after header strip), and
   NNNNNN.json (timestamps + frame_id). One meta.json per session with
   intrinsics + final frame count.
 
-What this does NOT do (deliberately deferred):
+Live HTTP wire (added 2026-05-14):
+  - --post-to URL          POST each synced frame to rtsm-dev's ingest
+                           endpoint, with real TF pose attached.
+                           Example: http://localhost:8002/ingest/keyframe
+  - --world-frame NAME     TF target frame for pose lookup (default: map)
+  - --camera-frame NAME    TF source frame    (default: camera_color_optical_frame)
+  - --pose-timeout MS      max wait per TF lookup (default: 100 ms)
+
+  When --post-to is set, every synced frame triggers a TF lookup of
+  world_frame -> camera_frame at the color image's header stamp.
+  If the lookup fails, the frame is dropped (because POSTing without
+  real pose is exactly the contamination the May 13 handoff warned
+  against). Record-only runs are unaffected.
+
+What this still does NOT do (deferred):
   - No keyframe gating — every synced pair calls _emit.
-  - No HTTP, no serialization to rtsm-dev.
-  - No TF lookups. Camera-frame coords only.
   - No reconnect logic if Albert's publisher dies.
   - No fallback to raw transport if compressed plugins fail.
 """
 import argparse
+import base64  # PATCH 20260514: live TF pose + HTTP emitter
 import json
 import time
 from dataclasses import dataclass
@@ -60,10 +72,22 @@ from typing import Optional
 import cv2
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from message_filters import ApproximateTimeSynchronizer, Subscriber
+from rclpy.duration import Duration  # PATCH 20260514
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import CameraInfo, CompressedImage
+# PATCH 20260514: TF and HTTP deps
+from tf2_ros import (  # noqa: E402
+    Buffer,
+    TransformListener,
+    LookupException,
+    ConnectivityException,
+    ExtrapolationException,
+    TransformException,
+)
+import requests
 
 
 # Sensor-stream QoS: BEST_EFFORT, KEEP_LAST, VOLATILE.
@@ -102,11 +126,14 @@ class Frame:
     rgb: np.ndarray         # (H, W, 3) uint8, RGB order
     depth_mm: np.ndarray    # (H, W)   uint16, millimeters, 0 = invalid
     color_frame_id: str     # ROS frame_id from header; for future TF work
-    # Raw wire bytes, only populated when a Recorder is attached.
+    # Raw wire bytes, only populated when a Recorder or HttpEmitter is attached.
     # color_jpeg: the on-wire JPEG, unchanged.
     # depth_png:  the PNG payload AFTER the 12-byte compressedDepth header.
     color_jpeg: Optional[bytes] = None
     depth_png: Optional[bytes] = None
+    # PATCH 20260514: real TF pose (world_frame -> camera_frame) at t_capture.
+    # None for record-only runs. Required for HTTP emit.
+    pose: Optional[dict] = None
 
 
 class Recorder:
@@ -182,11 +209,93 @@ class Recorder:
             meta_path.write_text(json.dumps(meta, indent=2))
 
 
+class HttpEmitter:  # PATCH 20260514
+    """POSTs synced frames (with real TF pose) to rtsm-dev's /ingest/keyframe.
+
+    Mirrors the payload shape built by rtsm.tools.replay.build_payload
+    (replay.py around line 173), so rtsm-dev cannot tell live ingest
+    from replayed ingest at the wire level. Fields:
+        rgb_jpeg, depth_png   -- base64 of on-wire bytes
+        K                     -- 9-float intrinsics, row-major
+        pose                  -- {tx,ty,tz,qx,qy,qz,qw}
+        timestamp_ros         -- float seconds (t_capture_ns / 1e9)
+        frame_id              -- color header frame_id
+        sequence              -- int from frame.seq
+
+    Uses a persistent requests.Session for TCP keep-alive. Never raises;
+    logs and counts failures (node stays up if rtsm-dev briefly restarts).
+    """
+
+    def __init__(self, url: str, timeout_s: float = 2.0):
+        self.url = url
+        self.timeout_s = timeout_s
+        self.session = requests.Session()
+        self.sent = 0
+        self.failed = 0
+        self.bytes_out = 0
+
+    def post(self, frame: Frame, K_flat):
+        """POST one frame. Returns (ok: bool, err: Optional[str])."""
+        if frame.color_jpeg is None or frame.depth_png is None:
+            raise RuntimeError("HttpEmitter.post called without wire bytes")
+        if frame.pose is None:
+            raise RuntimeError("HttpEmitter.post called without pose")
+        payload = {
+            "rgb_jpeg": base64.b64encode(frame.color_jpeg).decode("ascii"),
+            "depth_png": base64.b64encode(frame.depth_png).decode("ascii"),
+            "K": list(K_flat),
+            "pose": frame.pose,
+            "timestamp_ros": frame.t_capture_ns / 1e9,
+            "frame_id": frame.color_frame_id or "camera_color_optical_frame",
+            "sequence": frame.seq,
+        }
+        try:
+            r = self.session.post(self.url, json=payload, timeout=self.timeout_s)
+        except requests.exceptions.RequestException as e:
+            self.failed += 1
+            return False, str(e)
+        if r.status_code != 200:
+            self.failed += 1
+            return False, f"HTTP {r.status_code}: {r.text[:200]}"
+        self.sent += 1
+        # Conservative byte counter (wire bytes, not base64-inflated).
+        self.bytes_out += len(frame.color_jpeg) + len(frame.depth_png)
+        return True, None
+
+
 class IngestSubscriber(Node):
-    def __init__(self, recorder: Optional[Recorder] = None):
+    def __init__(
+        self,
+        recorder: Optional[Recorder] = None,
+        http_emitter: Optional[HttpEmitter] = None,           # PATCH 20260514
+        world_frame: str = "map",                              # PATCH 20260514
+        camera_frame: str = "camera_color_optical_frame",      # PATCH 20260514
+        pose_timeout_s: float = 0.10,                          # PATCH 20260514
+        post_hz: float = 6.0,                                  # PATCH 20260514: HTTP decimation
+    ):
         super().__init__("rtsm_ingest_subscriber")
 
         self._recorder = recorder
+        # PATCH 20260514:
+        self._http_emitter = http_emitter
+        self._world_frame = world_frame
+        self._camera_frame = camera_frame
+        self._pose_timeout = Duration(seconds=pose_timeout_s)
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+        self._tf_success = 0
+        self._tf_fail = 0
+        self._post_ok = 0
+        self._post_fail = 0
+        # PATCH 20260514 (fix 20260514b): decimator + pose-staleness state
+        # belong on IngestSubscriber, not Recorder. _emit reads _post_interval_ns;
+        # _lookup_pose writes _last_pose_stale_ms; _maybe_log reads it.
+        self._post_hz = post_hz
+        self._post_interval_ns = int(1e9 / post_hz) if post_hz > 0 else 0
+        self._last_post_ns = 0
+        self._post_skipped = 0
+        self._last_pose_stale_ms = 0.0
+
         self._seq = 0
         self._t_start = time.monotonic()
         self._last_log_t = self._t_start
@@ -261,10 +370,17 @@ class IngestSubscriber(Node):
             if self._recorder is not None
             else "no"
         )
+        http_status = (
+            f"yes -> {self._http_emitter.url}"
+            if self._http_emitter is not None
+            else "no"
+        )
         self.get_logger().info(
             f"rtsm_ingest_subscriber up (compressed transport). "
             f"color={COLOR_TOPIC} depth={DEPTH_TOPIC} "
-            f"slop={SYNC_SLOP_SEC*1000:.0f}ms recording={rec_status}"
+            f"slop={SYNC_SLOP_SEC*1000:.0f}ms "
+            f"recording={rec_status} http={http_status} "
+            f"tf={self._world_frame}->{self._camera_frame}"
         )
 
     def _on_camera_info(self, msg: CameraInfo):
@@ -306,14 +422,24 @@ class IngestSubscriber(Node):
         )
 
         # Only copy wire bytes if we have somewhere to put them.
-        # bytes(msg.data) is a copy; skipping it when not recording
+        # bytes(msg.data) is a copy; skipping it when no sink is attached
         # keeps the no-op path zero-cost.
-        if self._recorder is not None:
+        # PATCH 20260514: HttpEmitter also needs wire bytes.
+        if self._recorder is not None or self._http_emitter is not None:
             color_jpeg = bytes(color_msg.data)
             depth_png = bytes(depth_msg.data[COMPRESSED_DEPTH_HEADER_SIZE:])
         else:
             color_jpeg = None
             depth_png = None
+
+        # PATCH 20260514: look up TF pose at the color stamp.
+        # Record-only runs don't strictly need pose, but the lookup is
+        # cheap (<1 ms when TF is populated) and we attach it for the
+        # session log either way. HTTP runs require it; if it fails
+        # AND http_emitter is attached, drop the frame.
+        pose = self._lookup_pose(color_msg.header.stamp)
+        if pose is None and self._http_emitter is not None:
+            return
 
         frame = Frame(
             seq=self._seq,
@@ -324,6 +450,7 @@ class IngestSubscriber(Node):
             color_frame_id=color_msg.header.frame_id,
             color_jpeg=color_jpeg,
             depth_png=depth_png,
+            pose=pose,
         )
         self._seq += 1
         self._emit(frame)
@@ -369,15 +496,81 @@ class IngestSubscriber(Node):
             raise ValueError(f"expected uint16 depth, got {depth.dtype}")
         return depth
 
-    def _emit(self, frame: Frame):
-        """Downstream seam. Replace/extend when wiring to rtsm-dev."""
-        if self._recorder is None:
-            return
-        if not self._recorder.write(frame, self._camera_info):
-            self.get_logger().info(
-                f"max_frames reached ({self._recorder.written}), shutting down"
+    def _lookup_pose(self, stamp):  # PATCH 20260514
+        """Return {tx,ty,tz,qx,qy,qz,qw} for world->camera, or None.
+
+        Uses rclpy.time.Time() (zero) instead of the image stamp, which
+        means "latest available transform" rather than "transform at this
+        exact stamp." For room-scale 15 Hz mapping this is the right
+        semantic: SLAM stacks publish map->odom on loop closure (slow,
+        seconds-scale), and stamp-exact lookups would drop frames whenever
+        TF data lags image data by even a few ms — which is essentially
+        always for a fresh image stamp.
+
+        We track the staleness (image stamp - TF stamp) so downstream can
+        decide whether a pose is "fresh enough" if it ever needs to.
+        """
+        import rclpy.time as _rclpy_time
+        try:
+            t = self._tf_buffer.lookup_transform(
+                self._world_frame,
+                self._camera_frame,
+                _rclpy_time.Time(),  # latest available
+                timeout=self._pose_timeout,
             )
-            raise SystemExit(0)
+        except (LookupException, ConnectivityException,
+                ExtrapolationException, TransformException) as e:
+            self._tf_fail += 1
+            if self._tf_fail % 30 == 1:
+                self.get_logger().warn(
+                    f"TF {self._world_frame}->{self._camera_frame} failed: {e} "
+                    f"({self._tf_fail} fails, {self._tf_success} ok)"
+                )
+            return None
+        self._tf_success += 1
+        # Track staleness: image stamp ns vs TF stamp ns.
+        img_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+        tf_ns = (t.header.stamp.sec * 1_000_000_000
+                 + t.header.stamp.nanosec)
+        self._last_pose_stale_ms = (img_ns - tf_ns) / 1e6
+        return {
+            "tx": t.transform.translation.x,
+            "ty": t.transform.translation.y,
+            "tz": t.transform.translation.z,
+            "qx": t.transform.rotation.x,
+            "qy": t.transform.rotation.y,
+            "qz": t.transform.rotation.z,
+            "qw": t.transform.rotation.w,
+        }
+
+    def _emit(self, frame: Frame):
+        """Downstream seam. Writes to recorder and/or POSTs to rtsm-dev."""
+        # PATCH 20260514: recorder and http_emitter are independent sinks.
+        if self._recorder is not None:
+            if not self._recorder.write(frame, self._camera_info):
+                self.get_logger().info(
+                    f"max_frames reached ({self._recorder.written}), shutting down"
+                )
+                raise SystemExit(0)
+        if self._http_emitter is not None and self._camera_info is not None:
+            # PATCH 20260514: time-based decimation. Recorder above gets every
+            # frame; only the HTTP wire is throttled.
+            now_ns = self.get_clock().now().nanoseconds
+            if (self._post_interval_ns == 0
+                    or now_ns - self._last_post_ns >= self._post_interval_ns):
+                ok, err = self._http_emitter.post(frame, list(self._camera_info.k))
+                if ok:
+                    self._post_ok += 1
+                else:
+                    self._post_fail += 1
+                    if self._post_fail % 30 == 1:
+                        self.get_logger().warn(
+                            f"POST to rtsm-dev failed: {err} "
+                            f"({self._post_fail} fails, {self._post_ok} ok)"
+                        )
+                self._last_post_ns = now_ns
+            else:
+                self._post_skipped += 1
 
     def _maybe_log(self):
         """Log aggregate stats every ~2 s so we don't spam."""
@@ -393,10 +586,19 @@ class IngestSubscriber(Node):
             if self._recorder is not None
             else ""
         )
+        # PATCH 20260514: aggregate TF + HTTP counters in periodic log
+        http_info = ""
+        if self._http_emitter is not None:
+            http_info = (
+                f" tf_ok={self._tf_success} tf_fail={self._tf_fail}"
+                f" tf_stale={self._last_pose_stale_ms:.0f}ms"
+                f" post_ok={self._post_ok} post_fail={self._post_fail}"
+                f" post_skip={self._post_skipped}"
+            )
         self.get_logger().info(
             f"synced_frames={self._seq} inst={inst_rate:.1f}Hz "
             f"avg={avg_rate:.1f}Hz info={'yes' if self._camera_info else 'no'}"
-            f"{rec_info}"
+            f"{rec_info}{http_info}"
         )
         self._last_log_t = now
         self._last_log_count = self._seq
@@ -416,17 +618,56 @@ def main():
         "--record-root", type=Path, default=Path("/recordings"),
         help="Root directory for recordings (default: /recordings)"
     )
+    # PATCH 20260514: live HTTP wire args
+    parser.add_argument(
+        "--post-to", default=None,
+        help="rtsm-dev URL to POST each synced frame to "
+             "(e.g. http://localhost:8002/ingest/keyframe). "
+             "When set, real TF pose is attached. Default: off (no POST)."
+    )
+    parser.add_argument(
+        "--world-frame", default="map",
+        help="TF target frame for pose lookup (default: map)"
+    )
+    parser.add_argument(
+        "--camera-frame", default="camera_color_optical_frame",
+        help="TF source frame for pose lookup "
+             "(default: camera_color_optical_frame)"
+    )
+    parser.add_argument(
+        "--pose-timeout-ms", type=int, default=100,
+        help="Max wait per TF lookup, milliseconds (default: 100)"
+    )
+    #parser.parser.add_argument("--post-hz", type=float, default=6.0,
+    #parser.               help="Decimate HTTP POSTs to this rate (Hz). Recorder is "
+    #parser.                    "unaffected. Default: 6.0. Set 0 to disable decimation.")
+    parser.add_argument(
+        "--post-hz", type=float, default=6.0,
+        help="Decimate HTTP POSTs to this rate (Hz). Recorder is unaffected. "
+             "Default: 6.0. Set 0 to disable decimation.",
+    )
     args = parser.parse_args()
 
     recorder = None
     if args.record:
         recorder = Recorder(root=args.record_root, max_frames=args.max_frames)
 
+    http_emitter = None  # PATCH 20260514
+    if args.post_to:
+        http_emitter = HttpEmitter(url=args.post_to)
+
     rclpy.init()
-    node = IngestSubscriber(recorder=recorder)
+    node = IngestSubscriber(
+        recorder=recorder,
+        http_emitter=http_emitter,
+        world_frame=args.world_frame,
+        camera_frame=args.camera_frame,
+        pose_timeout_s=args.pose_timeout_ms / 1000.0,
+        post_hz=args.post_hz,
+    )
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, SystemExit):
+    except (KeyboardInterrupt, SystemExit, ExternalShutdownException):
         pass
     finally:
         if recorder is not None:
@@ -434,8 +675,15 @@ def main():
             node.get_logger().info(
                 f"recording complete: {recorder.written} frames in {recorder.dir}"
             )
+        if http_emitter is not None:
+            node.get_logger().info(
+                f"http emit complete: sent={http_emitter.sent} "
+                f"failed={http_emitter.failed} "
+                f"bytes_out={http_emitter.bytes_out}"
+            )
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
