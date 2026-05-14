@@ -134,3 +134,4 @@ site/
 
 # Local backup files from in-place patches
 *.bak.*
+.weekend-snapshot/
