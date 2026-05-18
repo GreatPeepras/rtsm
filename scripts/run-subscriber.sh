@@ -29,7 +29,7 @@ exec docker run --rm \
     -c "source /opt/ros/humble/setup.bash && cd /workspace/rtsm-ingest && \
         python3 -u subscriber.py \
             --post-to http://localhost:8002/ingest/keyframe \
-            --post-hz 6.0 \
+            --post-hz 2.0 \
             --record \
             --record-root /recordings" \
     2>&1 | tee "$LOG_FILE"

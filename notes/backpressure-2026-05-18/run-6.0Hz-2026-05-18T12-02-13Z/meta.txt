@@ -1,0 +1,6 @@
+post_hz: 6.0
+ts_utc: 2026-05-18T12-02-13Z
+host: execution
+user: peep
+git_rev: 805eddc
+git_branch: main

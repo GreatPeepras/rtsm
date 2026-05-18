@@ -61,9 +61,11 @@ What this still does NOT do (deferred):
   - No fallback to raw transport if compressed plugins fail.
 """
 import argparse
+import csv
 import base64  # PATCH 20260514: live TF pose + HTTP emitter
 import json
 import time
+from collections import deque  # PATCH 20260518: post-latency window
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -226,13 +228,41 @@ class HttpEmitter:  # PATCH 20260514
     logs and counts failures (node stays up if rtsm-dev briefly restarts).
     """
 
-    def __init__(self, url: str, timeout_s: float = 2.0):
+    def __init__(self, url: str, timeout_s: float = 2.0,
+                 instrument_csv: Optional[str] = None):
         self.url = url
         self.timeout_s = timeout_s
         self.session = requests.Session()
         self.sent = 0
         self.failed = 0
         self.bytes_out = 0
+        # PATCH 20260518: per-POST latency capture for backpressure
+        # instrumentation. Sliding window of (most recent) wall-clock
+        # POST durations in ms. 2048 ~ 5+ min at 6 Hz, plenty for
+        # 60-second sweeps. Mixed ok/fail in one window (B1).
+        self.latencies_ms: deque = deque(maxlen=2048)
+        # PATCH 20260518: optional per-POST CSV record for backpressure
+        # sweeps. Paired with stats-poller.py (joinable on t_wall_ns).
+        # Line-buffered + explicit flush per row so SIGINT/SIGKILL
+        # loses at most the in-flight row.
+        self._csv_file = None
+        self._csv_writer = None
+        if instrument_csv is not None:
+            self._csv_file = open(instrument_csv, "w", newline="", buffering=1)
+            self._csv_writer = csv.DictWriter(
+                self._csv_file,
+                fieldnames=[
+                    "t_wall_ns",   # POST start, joins to stats-poller.csv
+                    "seq",         # frame sequence
+                    "t_sensor_ns", # camera capture time
+                    "latency_ms",  # POST roundtrip
+                    "status",      # int code or "exc:<ClassName>"
+                    "bytes_out",   # JPEG+PNG payload bytes
+                    "ok",          # 1 if 2xx, else 0
+                ],
+            )
+            self._csv_writer.writeheader()
+            self._csv_file.flush()
 
     def post(self, frame: Frame, K_flat):
         """POST one frame. Returns (ok: bool, err: Optional[str])."""
@@ -249,18 +279,100 @@ class HttpEmitter:  # PATCH 20260514
             "frame_id": frame.color_frame_id or "camera_color_optical_frame",
             "sequence": frame.seq,
         }
+        # PATCH 20260518: wall-clock latency around the POST call only
+        # (excludes payload build + base64). Recorded for both success
+        # and failure paths so timeout/error latencies are visible too.
+        # t_wall_ns captured for CSV join with stats-poller output.
+        t_wall_ns = time.time_ns()
+        t0 = time.perf_counter()
+        payload_bytes = len(frame.color_jpeg) + len(frame.depth_png)
         try:
             r = self.session.post(self.url, json=payload, timeout=self.timeout_s)
         except requests.exceptions.RequestException as e:
+            lat_ms = (time.perf_counter() - t0) * 1000.0
+            self.latencies_ms.append(lat_ms)
             self.failed += 1
+            self._record_csv(
+                t_wall_ns=t_wall_ns, frame=frame, lat_ms=lat_ms,
+                status=f"exc:{type(e).__name__}",
+                bytes_out=payload_bytes, ok=0,
+            )
             return False, str(e)
-        if r.status_code != 200:
+        lat_ms = (time.perf_counter() - t0) * 1000.0
+        self.latencies_ms.append(lat_ms)
+        ok = (r.status_code == 200)
+        if not ok:
             self.failed += 1
+            self._record_csv(
+                t_wall_ns=t_wall_ns, frame=frame, lat_ms=lat_ms,
+                status=r.status_code, bytes_out=payload_bytes, ok=0,
+            )
             return False, f"HTTP {r.status_code}: {r.text[:200]}"
         self.sent += 1
         # Conservative byte counter (wire bytes, not base64-inflated).
-        self.bytes_out += len(frame.color_jpeg) + len(frame.depth_png)
+        self.bytes_out += payload_bytes
+        self._record_csv(
+            t_wall_ns=t_wall_ns, frame=frame, lat_ms=lat_ms,
+            status=200, bytes_out=payload_bytes, ok=1,
+        )
         return True, None
+
+    def _record_csv(self, *, t_wall_ns, frame, lat_ms, status, bytes_out, ok):
+        """Write one POST record to the instrument CSV, if enabled.
+        PATCH 20260518."""
+        if self._csv_writer is None:
+            return
+        self._csv_writer.writerow({
+            "t_wall_ns": t_wall_ns,
+            "seq": frame.seq,
+            "t_sensor_ns": frame.t_capture_ns,
+            "latency_ms": f"{lat_ms:.3f}",
+            "status": status,
+            "bytes_out": bytes_out,
+            "ok": ok,
+        })
+        self._csv_file.flush()
+
+    def close(self):
+        """Flush and close instrument CSV + requests session.
+        PATCH 20260518."""
+        if self._csv_file is not None:
+            try:
+                self._csv_file.flush()
+                self._csv_file.close()
+            except Exception:
+                pass
+            self._csv_file = None
+            self._csv_writer = None
+        try:
+            self.session.close()
+        except Exception:
+            pass
+
+    def percentiles(self):
+        '''Return {p50, p95, p99, max, n} from the sliding window, in ms.
+
+        Returns Nones if the window is empty. Cheap: a sort over <=2048
+        floats; called only from the 2-second log tick.
+        PATCH 20260518.
+        '''
+        n = len(self.latencies_ms)
+        if n == 0:
+            return {"p50": None, "p95": None, "p99": None, "max": None, "n": 0}
+        s = sorted(self.latencies_ms)
+
+        def pct(p):
+            # nearest-rank, clamped. Good enough for ops; not for stats papers.
+            idx = max(0, min(n - 1, int(round(p * (n - 1)))))
+            return s[idx]
+
+        return {
+            "p50": pct(0.50),
+            "p95": pct(0.95),
+            "p99": pct(0.99),
+            "max": s[-1],
+            "n": n,
+        }
 
 
 class IngestSubscriber(Node):
@@ -271,7 +383,7 @@ class IngestSubscriber(Node):
         world_frame: str = "map",                              # PATCH 20260514
         camera_frame: str = "camera_color_optical_frame",      # PATCH 20260514
         pose_timeout_s: float = 0.10,                          # PATCH 20260514
-        post_hz: float = 6.0,                                  # PATCH 20260514: HTTP decimation
+        post_hz: float = 2.0,  # PATCH 20260518: default tuned for bursty workload, see backpressure-2026-05-18
     ):
         super().__init__("rtsm_ingest_subscriber")
 
@@ -589,11 +701,24 @@ class IngestSubscriber(Node):
         # PATCH 20260514: aggregate TF + HTTP counters in periodic log
         http_info = ""
         if self._http_emitter is not None:
+            # PATCH 20260518: latency percentiles from HttpEmitter window.
+            lat = self._http_emitter.percentiles()
+            if lat["n"] > 0:
+                lat_str = (
+                    f" lat_p50={lat['p50']:.0f}ms"
+                    f" lat_p95={lat['p95']:.0f}ms"
+                    f" lat_p99={lat['p99']:.0f}ms"
+                    f" lat_max={lat['max']:.0f}ms"
+                    f" lat_n={lat['n']}"
+                )
+            else:
+                lat_str = " lat=none"
             http_info = (
                 f" tf_ok={self._tf_success} tf_fail={self._tf_fail}"
                 f" tf_stale={self._last_pose_stale_ms:.0f}ms"
                 f" post_ok={self._post_ok} post_fail={self._post_fail}"
                 f" post_skip={self._post_skipped}"
+                f"{lat_str}"
             )
         self.get_logger().info(
             f"synced_frames={self._seq} inst={inst_rate:.1f}Hz "
@@ -638,13 +763,18 @@ def main():
         "--pose-timeout-ms", type=int, default=100,
         help="Max wait per TF lookup, milliseconds (default: 100)"
     )
-    #parser.parser.add_argument("--post-hz", type=float, default=6.0,
-    #parser.               help="Decimate HTTP POSTs to this rate (Hz). Recorder is "
-    #parser.                    "unaffected. Default: 6.0. Set 0 to disable decimation.")
     parser.add_argument(
-        "--post-hz", type=float, default=6.0,
+        "--post-hz", type=float, default=2.0,
         help="Decimate HTTP POSTs to this rate (Hz). Recorder is unaffected. "
              "Default: 6.0. Set 0 to disable decimation.",
+    )
+    # PATCH 20260518: per-POST CSV for backpressure sweeps. Pairs with
+    # stats-poller.py via t_wall_ns column. If unset, no CSV is written.
+    parser.add_argument(
+        "--instrument", type=str, default=None,
+        help="Path to per-POST CSV record (for backpressure analysis). "
+             "Joinable with stats-poller.py output on t_wall_ns. "
+             "Default: off.",
     )
     args = parser.parse_args()
 
@@ -654,7 +784,10 @@ def main():
 
     http_emitter = None  # PATCH 20260514
     if args.post_to:
-        http_emitter = HttpEmitter(url=args.post_to)
+        http_emitter = HttpEmitter(
+            url=args.post_to,
+            instrument_csv=args.instrument,  # PATCH 20260518
+        )
 
     rclpy.init()
     node = IngestSubscriber(
