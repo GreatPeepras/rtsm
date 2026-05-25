@@ -267,6 +267,14 @@ vectors:
     index_path: /mnt/rtsm-data/model_store/faiss/index.flatip  # was: model_store/faiss/index.flatip
   flush_period_s: 3.0
 
+# -------------------- LTM (long-term memory upsert gating) --------------------
+ltm:
+  # 2026-05-25: match the object.require_view_bins=1 in this config
+  # so newly-promoted objects can actually reach FAISS. Was effectively =2
+  # via working_memory.py default, creating an unbalanced gate where
+  # objects could promote but never persist.
+  ltm_min_view_bins: 1
+
 # -------------------- Visualization --------------------
 visualization:
   enable: true
