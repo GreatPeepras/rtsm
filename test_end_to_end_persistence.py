@@ -146,6 +146,53 @@ def test_promote_then_upsert():
             f"Label mismatch: {o2.label_primary}"
         print(f"  ok: rehydrated oid={oid[:8]} label={o2.label_primary}")
 
+        # *** REGRESSION CHECK: pose_state survives the roundtrip ***
+        # The field was being silently dropped from the upsert payload (May-22
+        # work added it to ObjectState but not to collect_ready_for_upsert).
+        # Fixed 2026-05-25.
+        assert o2.pose_state_at_observation == "on_floor", (
+            f"REGRESSION: pose_state_at_observation lost in roundtrip. "
+            f"Expected 'on_floor', got {o2.pose_state_at_observation!r}. "
+            f"Check that collect_ready_for_upsert writes the field into "
+            f"both the force-flush and normal-path payload dicts."
+        )
+        print(f"  ok: pose_state={o2.pose_state_at_observation!r} preserved")
+
+        # Also verify the sidecar on disk has the field (catches cases where
+        # WM accepts it but FaissClient strips it for some reason)
+        import json
+        with open(idx_path + ".meta.json") as f:
+            sidecar = json.load(f)
+        rec = sidecar.get(oid)
+        assert rec is not None, f"oid {oid} should be in sidecar"
+        assert "pose_state_at_observation" in rec, (
+            f"REGRESSION: sidecar entry missing pose_state_at_observation. "
+            f"Keys present: {sorted(rec.keys())}"
+        )
+        print(f"  ok: sidecar has pose_state_at_observation={rec['pose_state_at_observation']!r}")
+
+        # *** REGRESSION CHECK: rehydrated objects can re-upsert ***
+        # Rehydrated objects with view_bins={} were silently stuck in the
+        # LTM diversity gate (ltm_min_view_bins=2 default), getting
+        # re-scheduled forever but never re-upserted. This meant fields
+        # added to the write-side payload AFTER an object was first
+        # persisted would never reach disk for that object.
+        # Fix: rehydrate seeds view_bins={0: emb_mean}.
+        # Test: force the rehydrated object's force_period_s to elapse,
+        # then verify collect_ready_for_upsert returns it.
+        wm2.ltm_force_period_s = 0.001  # force immediate re-upsert eligibility
+        wm2.ltm_min_period_s = 0.001
+        import time as _time
+        _time.sleep(0.05)
+        ready_again = wm2.collect_ready_for_upsert()
+        assert len(ready_again) >= 1, (
+            f"REGRESSION: rehydrated object failed to re-upsert. "
+            f"Likely the LTM diversity gate (ltm_min_view_bins) is rejecting "
+            f"it because view_bins is empty. Check rehydrate seeds at least "
+            f"one view_bin."
+        )
+        print(f"  ok: rehydrated object passes LTM gate and re-upserts ({len(ready_again)} payload)")
+
 
 if __name__ == "__main__":
     test_promote_then_upsert()

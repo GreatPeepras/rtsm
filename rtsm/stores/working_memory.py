@@ -721,6 +721,7 @@ class WorkingMemory:
                         "label_user": o.label_user,
                         "display_label": o.label_user or o.label_primary,
                         "movability_class": o.movability_class,
+                        "pose_state_at_observation": o.pose_state_at_observation,
                         "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
                         "label_topk": [k for k, _ in label_topk],
                         "label_scores": [float(v) for _, v in label_topk],
@@ -777,6 +778,7 @@ class WorkingMemory:
                     "label_user": o.label_user,
                     "display_label": o.label_user or o.label_primary,
                     "movability_class": o.movability_class,
+                    "pose_state_at_observation": o.pose_state_at_observation,
                     "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
                     "label_topk": [k for k, _ in label_topk],
                     "label_scores": [float(v) for _, v in label_topk],
@@ -1158,7 +1160,17 @@ class WorkingMemory:
                 cov_world=cov_init.copy(),
                 emb_mean=emb.astype(np.float32),
                 emb_gallery=np.zeros((0, expected_dim), dtype=np.float16),
-                view_bins={},
+                # 2026-05-25: seed one view_bin from emb_mean so rehydrated
+                # objects can pass downstream diversity gates (notably
+                # ltm_min_view_bins in collect_ready_for_upsert). Without
+                # this, rehydrated objects with view_bins={} are stuck in a
+                # re-scheduling loop and never get re-upserted, which means
+                # they never receive write-side fields added after their
+                # original persistence (e.g. pose_state_at_observation).
+                # Bin id 0 is an arbitrary slot; we have no record of the
+                # original viewpoint. The emb is the same as emb_mean, which
+                # is consistent with "what association would see today."
+                view_bins={0: emb.astype(np.float32)},
                 label_scores=label_scores,
                 label_hits=label_hits,
                 label_primary=meta.get("label_primary"),
@@ -1195,6 +1207,16 @@ class WorkingMemory:
         with self._lock:
             for o in new_objects:
                 self._map[o.id] = o
+                # 2026-05-25: schedule for LTM upsert eligibility. Without
+                # this, rehydrated objects are never considered for re-upsert
+                # (collect_ready_for_upsert only drains _ltm_heap). Any
+                # write-side fields added after the object's original
+                # persistence (e.g. pose_state_at_observation) would never
+                # reach disk for that OID. Change-detection still gates the
+                # actual write — unchanged objects skip — but the force-
+                # period check eventually re-upserts them with current
+                # payload format.
+                heapq.heappush(self._ltm_heap, (_now_mono(), o.id))
                 counts["loaded"] += 1
 
         # Spatial index insertion is outside the WM lock (matches create_object).
