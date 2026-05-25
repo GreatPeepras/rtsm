@@ -158,6 +158,7 @@ class ObjectState:
     # Valid: permanent | static | semi_static | movable | roaming | ephemeral
     # See docs/design/persistence.md for taxonomy.
     movability_class: Optional[str] = None
+    pose_state_at_observation: str = "on_floor"
 
 # ------------------------- Proximity index interface -------------------------
 
@@ -231,9 +232,66 @@ class WorkingMemory:
 
         self.max_gallery: int = int(obj_cfg.get("max_gallery", 6))
         self.gallery_dupe_cos: float = float(obj_cfg.get("gallery_dupe_cos", 0.995))
+        self._pose_state: str = "on_floor"
+        # The tag we stamp on new/updated objects. Derived from _pose_state.
+        self._current_observation_tag: str = "on_floor"
+        # Counter for skipped writes, surfaced in stats()
+        self._writes_skipped_lifted: int = 0
+        self._writes_skipped_unknown: int = 0
+
 
 
     # ---------- CRUD ----------
+
+    def set_pose_state(self, state: str) -> Dict[str, Any]:
+        
+        #Update the current pose-state gate. Called from the HTTP /pose_state
+        #endpoint when Albert's lift_detector or action_service publishes a
+        #transition.
+
+        #Valid states: "on_floor", "lifted", "unknown", "confirmed_elevated".
+        #Invalid states are clamped to "unknown" (safest -- blocks writes,
+        #flags the issue in the response).
+
+        #Returns a small status dict for the HTTP response.
+        
+        valid = {"on_floor", "lifted", "unknown", "confirmed_elevated"}
+        old_state = self._pose_state
+
+        if state not in valid:
+            logger.warning(
+                "[WM] set_pose_state: invalid state '%s'; clamping to 'unknown'",
+                state,
+            )
+            state = "unknown"
+
+        with self._lock:
+            self._pose_state = state
+            # Tag mapping: on_floor and unknown share "on_floor" tag (unknown
+            # blocks writes anyway, so the tag is moot). confirmed_elevated
+            # stamps "elevated". lifted blocks writes; tag never used.
+            if state == "confirmed_elevated":
+                self._current_observation_tag = "elevated"
+            else:
+                self._current_observation_tag = "on_floor"
+
+        logger.info(
+            "[WM] pose_state %s -> %s (tag=%s)",
+            old_state, state, self._current_observation_tag,
+        )
+        return {
+            "old_state": old_state,
+            "new_state": state,
+            "current_tag": self._current_observation_tag,
+            "writes_skipped_lifted": self._writes_skipped_lifted,
+            "writes_skipped_unknown": self._writes_skipped_unknown,
+        }
+
+    def get_pose_state(self) -> str:
+        #Current pose-state string. Read-only.
+        return self._pose_state
+
+
 
     def exists(self, oid: str) -> bool:
         with self._lock:
@@ -313,6 +371,13 @@ class WorkingMemory:
         Returns:
             Object ID if created, None if rejected (e.g., out of bounds)
         """
+        ps = self._pose_state
+        if ps == "lifted":
+            self._writes_skipped_lifted += 1
+            return None
+        if ps == "unknown":
+            self._writes_skipped_unknown += 1
+            return None
         t_mono = _now_mono() if t_mono is None else t_mono
         wall_now = _now_wall_utc()
         emb_vis = emb_vis.astype(np.float32)
@@ -384,6 +449,7 @@ class WorkingMemory:
             image_crops=image_crops,
             last_update_frame_id=frame_id,
             _dim=D,
+            pose_state_at_observation=self._current_observation_tag,
         )
         with self._lock:
             self._map[oid] = o
@@ -596,6 +662,12 @@ class WorkingMemory:
                     f"[WM] promote oid={oid} label={top_lbl} "
                     f"conf={top_conf:.3f} hits={o.hits} stab={o.stability:.3f}"
                 )
+                # 2026-05-25: schedule for immediate LTM upsert eligibility.
+                # Without this, confirmed objects never reach FAISS in live
+                # ingest mode (the upsert path drains _ltm_heap; nothing else
+                # populates it). Lost in a previous refactor; force_all=True
+                # in replay mode bypassed the heap and masked the bug.
+                heapq.heappush(self._ltm_heap, (_now_mono(), oid))
 
     #def maybe_promote(self, oid: str) -> None:
         #with self._lock:
@@ -959,3 +1031,182 @@ class WorkingMemory:
                 "confirmed_cleared": confirmed_count,
                 "proto_cleared": proto_count,
             }
+
+    # ---------- rehydration ----------
+
+    def rehydrate_from_faiss(self, faiss_client: Any) -> Dict[str, int]:
+        """Inject persisted objects from a FaissClient into WM as confirmed.
+
+        Called once at live-mode startup so that association can match new
+        observations against objects from previous sessions. Without this,
+        every restart spawns fresh OIDs for already-known objects, breaking
+        cross-session continuity.
+
+        Reads `faiss_client._embeddings` (oid -> ndarray) and
+        `faiss_client._metadata` (oid -> dict). Skips objects with missing
+        or malformed data; never crashes the caller.
+
+        Returns counts: {loaded, skipped_no_emb, skipped_bad_xyz,
+        skipped_dim_mismatch, skipped_dup}.
+
+        Notes on what's NOT carried across:
+        - emb_gallery: empty. Association falls back to emb_mean (verified
+          in association.py:307-308). Gallery rebuilds as Albert re-observes.
+        - view_bins: empty. Same fallback rationale.
+        - cov_world: initialized wide ([0.04, 0.04, 0.08]) since we have
+          no certainty about how stale the stored xyz is.
+        - last_seen_*: set to "now" so rehydrated objects don't immediately
+          look stale to downstream consumers.
+        - last_upsert_*: also "now" with current emb/xyz, so change-detection
+          in collect_ready_for_upsert correctly skips them until they
+          actually change.
+        """
+        counts = {
+            "loaded": 0,
+            "skipped_no_emb": 0,
+            "skipped_bad_xyz": 0,
+            "skipped_dim_mismatch": 0,
+            "skipped_dup": 0,
+        }
+
+        embeddings = getattr(faiss_client, "_embeddings", None) or {}
+        metadata = getattr(faiss_client, "_metadata", None) or {}
+        if not metadata:
+            logger.info("[WM] rehydrate: FAISS has no persisted objects (cold start)")
+            return counts
+
+        # Determine expected embedding dimension. Prefer FaissClient's
+        # configured dim if available; otherwise infer from first embedding.
+        expected_dim = getattr(faiss_client, "dim", None)
+        if expected_dim is None:
+            for v in embeddings.values():
+                expected_dim = int(np.asarray(v).shape[-1])
+                break
+        if expected_dim is None:
+            logger.warning(
+                "[WM] rehydrate: cannot determine embedding dim "
+                "(no faiss_client.dim, no embeddings); aborting"
+            )
+            return counts
+        expected_dim = int(expected_dim)
+
+        now_m = _now_mono()
+        now_w = _now_wall_utc()
+
+        # Wider initial covariance than fresh-create (0.02/0.02/0.04) since
+        # we don't know how stale this position is. EWMA on new observations
+        # will tighten it as evidence accumulates.
+        cov_init = np.array([0.04, 0.04, 0.08], dtype=np.float32)
+
+        new_objects: List[ObjectState] = []
+
+        for oid, meta in metadata.items():
+            oid = str(oid)
+
+            # Skip if already present (shouldn't happen at startup, but
+            # defensive: a second rehydrate call is a no-op for existing oids).
+            if oid in self._map:
+                counts["skipped_dup"] += 1
+                continue
+
+            emb = embeddings.get(oid)
+            if emb is None:
+                counts["skipped_no_emb"] += 1
+                continue
+            emb = np.asarray(emb, dtype=np.float32).reshape(-1)
+            if emb.shape[0] != expected_dim:
+                logger.warning(
+                    f"[WM] rehydrate: skip oid={oid[:8]} dim {emb.shape[0]} "
+                    f"!= expected {expected_dim}"
+                )
+                counts["skipped_dim_mismatch"] += 1
+                continue
+
+            # xyz comes back from FaissClient.load() as either ndarray or list
+            # depending on sidecar version; coerce defensively.
+            xyz_raw = meta.get("xyz")
+            try:
+                xyz = np.asarray(xyz_raw, dtype=np.float32).reshape(-1)
+                if xyz.shape[0] != 3:
+                    raise ValueError(f"xyz shape {xyz.shape}")
+            except Exception as e:
+                logger.warning(f"[WM] rehydrate: skip oid={oid[:8]} bad xyz: {e}")
+                counts["skipped_bad_xyz"] += 1
+                continue
+
+            # Reconstruct label dicts from parallel lists stored in the
+            # upsert payload (see collect_ready_for_upsert).
+            label_topk = list(meta.get("label_topk", []) or [])
+            label_scores_list = list(meta.get("label_scores", []) or [])
+            label_hits_list = list(meta.get("label_hits", []) or [])
+            label_scores: Dict[str, float] = {}
+            label_hits: Dict[str, int] = {}
+            for i, name in enumerate(label_topk):
+                if i < len(label_scores_list):
+                    label_scores[str(name)] = float(label_scores_list[i])
+                if i < len(label_hits_list):
+                    label_hits[str(name)] = int(label_hits_list[i])
+
+            # hits is the WM observation counter, not in the upsert payload.
+            # Default to promote_hits — a confirmed object must have passed
+            # that gate at least once, so this is a safe lower bound.
+            hits_default = int(max(self.promote_hits, 1))
+
+            o = ObjectState(
+                id=oid,
+                xyz_world=xyz.astype(np.float32),
+                cov_world=cov_init.copy(),
+                emb_mean=emb.astype(np.float32),
+                emb_gallery=np.zeros((0, expected_dim), dtype=np.float16),
+                view_bins={},
+                label_scores=label_scores,
+                label_hits=label_hits,
+                label_primary=meta.get("label_primary"),
+                stability=float(meta.get("stability", 0.5)),
+                hits=hits_default,
+                confirmed=True,
+                created_mono=now_m,  # monotonic clock is process-local; reset
+                created_wall_utc=float(meta.get("created_at", now_w)),
+                last_seen_mono=now_m,
+                last_seen_wall_utc=now_w,
+                last_seen_px=None,
+                last_upsert_wall_utc=now_w,
+                last_upsert_mono=now_m,
+                last_upsert_emb=emb.astype(np.float32).copy(),
+                last_upsert_xyz=xyz.astype(np.float32).copy(),
+                image_crops=[],
+                last_update_frame_id=None,
+                _dim=expected_dim,
+                label_user=meta.get("label_user"),
+                movability_class=meta.get("movability_class"),
+                # 2026-05-25: preserve the two-tier memory tag from May-22.
+                # Default "on_floor" matches frozen_wm's back-compat behavior
+                # for sidecars written before the field existed. NOTE: the
+                # write side (collect_ready_for_upsert) must also include
+                # this field for the round-trip to fully work; verify before
+                # relying on elevated objects surviving restarts.
+                pose_state_at_observation=str(
+                    meta.get("pose_state_at_observation", "on_floor")
+                ),
+            )
+            new_objects.append(o)
+
+        # Single-shot lock acquisition for the actual insert.
+        with self._lock:
+            for o in new_objects:
+                self._map[o.id] = o
+                counts["loaded"] += 1
+
+        # Spatial index insertion is outside the WM lock (matches create_object).
+        if self.index is not None:
+            for o in new_objects:
+                self.index.insert(o.id, o.xyz_world, wm_lookup=self.lookup_min)
+
+        logger.info(
+            f"[WM] rehydrate: loaded {counts['loaded']} objects from FAISS "
+            f"(skipped no_emb={counts['skipped_no_emb']} "
+            f"bad_xyz={counts['skipped_bad_xyz']} "
+            f"dim={counts['skipped_dim_mismatch']} "
+            f"dup={counts['skipped_dup']})"
+        )
+        return counts

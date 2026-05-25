@@ -321,6 +321,19 @@ def main():
             vectors = FaissClient(cfg)
             logger.info(f"Faiss vectors successfully initialized")
 
+            # 2026-05-25: rehydrate WM from persisted FAISS state so that
+            # association can match new observations against objects from
+            # previous sessions. Without this, every restart spawns fresh
+            # OIDs for known objects. Wrapped defensively — a corrupt
+            # sidecar must not block live-mode startup.
+            try:
+                wm.rehydrate_from_faiss(vectors)
+            except Exception as e:
+                logger.warning(
+                    f"[run] WM rehydration from FAISS failed (continuing "
+                    f"with empty WM): {e}"
+                )
+
     # Prepare ingest plumbing
     # Note: Intrinsics are now dynamic per-frame from camera.rgbd topic
     ingest_q = IngestQueue(maxsize=512)

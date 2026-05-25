@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator  # PATCH 20260507: ingest
 import numpy as np
 from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect, Body
 from prometheus_client import Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
-
+from pydantic import BaseModel, Field
 
 @dataclass
 class ResetComponents:
@@ -66,6 +66,17 @@ class ObjectPatch(BaseModel):
     movability_class: Optional[str] = None
 
     model_config = {"extra": "forbid"}
+
+class PoseStateRequest(BaseModel):
+    #Body schema for POST /pose_state.
+    state: str = Field(
+        ...,
+        description=(
+            "One of: 'on_floor', 'lifted', 'unknown', 'confirmed_elevated'. "
+            "Invalid values are clamped to 'unknown' (safe default)."
+        ),
+    )
+
 
 
 
@@ -190,6 +201,40 @@ def create_app(
                 pass
         return base
 
+    @app.post("/pose_state")
+    def set_pose_state(req: PoseStateRequest) -> Dict[str, Any]:
+        
+        #Update RTSM's pose-trust state. Called by Albert's pose_state_bridge
+        #whenever /albert/pose_state changes.
+
+        #States:
+          #on_floor          -- AMCL pose is trusted; writes proceed normally
+          #lifted            -- robot mid-air; writes BLOCKED
+          #unknown           -- robot at rest but surface not yet known; BLOCKED
+          #confirmed_elevated -- robot on a desk; writes proceed, tagged "elevated"
+        
+        try:
+            result = working_memory.set_pose_state(req.state)
+            return result
+        except AttributeError:
+            # FrozenWorkingMemory in serve mode doesn't have this method
+            # (or has a no-op stub). Return a benign response so the bridge
+            # doesn't log it as a failure.
+            return {
+                "old_state": "unsupported",
+                "new_state": "unsupported",
+                "note": "serve mode; pose_state not applicable",
+            }
+
+    @app.get("/pose_state")
+    def get_pose_state() -> Dict[str, Any]:
+        #Current pose-state, for diagnostics.
+        try:
+            state = working_memory.get_pose_state()
+        except AttributeError:
+            state = "unsupported"
+        return {"state": state}
+
     # ---- Object debug endpoints ----
     def _obj_summary(o: Any) -> Dict[str, Any]:
         try:
@@ -224,10 +269,12 @@ def create_app(
                 "display_label": label_user or label_primary,
                 "label_top_hits": int((getattr(o, "label_hits", {}) or {}).get(label_primary, 0)) if label_primary else 0,
                 "movability_class": getattr(o, "movability_class", None),
+                "pose_state_at_observation": getattr(o, "pose_state_at_observation", "on_floor"),
                 "view_bins": len(getattr(o, "view_bins", {}) or {}),
                 "last_seen_mono": last_seen,
                 "last_seen_age_s": (max(0.0, now_mono - last_seen)
                                     if last_seen > 0 else None),
+                "pose_state_at_observation": getattr(o, "pose_state_at_observation", "on_floor"),
             }
         except Exception:
             return {"id": getattr(o, "id", None)}
@@ -267,6 +314,7 @@ def create_app(
         include_vectors: bool = False,
         include_snapshot: bool = False,
         confirmed_only: bool = False,
+        pose_state: str = "on_floor",   # NEW: filter; "on_floor" | "elevated" | "any"
         offset: int = 0,
         limit: int = 100,
     ) -> Dict[str, Any]:
@@ -290,6 +338,21 @@ def create_app(
 
         if confirmed_only:
             objs = [o for o in objs if getattr(o, 'confirmed', False)]
+
+        # 2026-05-22 pose-state filter: navigation queries get on_floor
+        # by default. Pass ?pose_state=any to see everything.
+        if pose_state != "any":
+            objs = [
+                o for o in objs
+                if getattr(o, "pose_state_at_observation", "on_floor") == pose_state
+            ]
+
+        if pose_state != "any":
+            wanted = pose_state  # "on_floor" or "elevated"
+            objs = [
+                o for o in objs
+                if getattr(o, "pose_state_at_observation", "on_floor") == wanted
+            ]
 
         total = len(objs)
         page = objs[offset : offset + limit]
@@ -648,7 +711,9 @@ def create_app(
         top_k: int = 10,
         threshold: float = 0.0,
         include_snapshot: bool = False,
+        pose_state: str = "on_floor",   # NEW: "on_floor" | "elevated" | "any"
     ) -> Dict[str, Any]:
+
         """
         Semantic search for objects using CLIP text encoding + FAISS KNN.
 
@@ -728,6 +793,38 @@ def create_app(
                     confirmed_v = True
                     stability_v = 0.0
                     xyz_v = None
+
+            # 2026-05-22 pose-state filter: navigation queries get on_floor
+            # by default. Pass ?pose_state=any to see everything (debug/UI),
+            # or ?pose_state=elevated to see only desk-observed objects.
+            #
+            # For WM objects: read the field directly (default "on_floor"
+            # for any object created pre-patch).
+            # For faiss_meta-only objects: they predate this field; treat
+            # them as on_floor (historically they were only persisted from
+            # floor observations).
+            # For source=="none": filter them out unless pose_state=="any".
+            if pose_state != "any":
+                if obj is not None:
+                    tag = getattr(obj, "pose_state_at_observation", "on_floor")
+                elif source == "faiss_meta":
+                    tag = "on_floor"
+                else:
+                    # No metadata available; safer to skip unless explicitly
+                    # asked for "any". Caller can override with ?pose_state=any.
+                    continue
+                if tag != pose_state:
+                    continue
+
+            # Compute tag for response (reuse the logic from filter; obj/source
+            # were already resolved above).
+            if obj is not None:
+                tag_for_response = getattr(obj, "pose_state_at_observation", "on_floor")
+            elif source == "faiss_meta":
+                tag_for_response = "on_floor"
+            else:
+                tag_for_response = "unknown"
+
             entry: Dict[str, Any] = {
                 "id": oid,
                 "score": round(float(score), 4),
@@ -735,7 +832,9 @@ def create_app(
                 "stability": stability_v,
                 "xyz_world": xyz_v,
                 "source": source,
+                "pose_state_at_observation": tag_for_response,
             }
+
 
             # Include most recent snapshot for multimodal agent verification.
             # Snapshots live only in WM (not persisted to FAISS), so they are

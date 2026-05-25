@@ -264,7 +264,7 @@ vectors:
   backend: faiss
   dim: 768
   faiss:
-    index_path: model_store/faiss/index.flatip
+    index_path: /mnt/rtsm-data/model_store/faiss/index.flatip  # was: model_store/faiss/index.flatip
   flush_period_s: 3.0
 
 # -------------------- Visualization --------------------
