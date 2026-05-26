@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import threading
+from datetime import datetime, timezone  # 2026-05-26 Gate 3: ISO last_seen_at
 from typing import Any, Callable, Optional, Dict, List
 from dataclasses import dataclass
 
@@ -236,6 +237,88 @@ def create_app(
         return {"state": state}
 
     # ---- Object debug endpoints ----
+    # ------------------------------------------------------------------
+    # 2026-05-26 Gate 3 helpers: shared response-enrichment utilities used
+    # by /search/semantic and /search/spatial so the Albert bridge has
+    # enough context to speak a useful answer ("X at [a,b,c], Nm from you,
+    # last seen <ISO>"). All helpers degrade gracefully — they return None
+    # rather than raising when a field is missing, so legacy WM objects
+    # and rehydrated faiss_meta entries both work.
+    # ------------------------------------------------------------------
+    def _display_label(o: Any) -> Optional[str]:
+        """Resolve the human-speakable label for an ObjectState.
+
+        Mirrors the gated label_primary selection in _obj_summary so the
+        search endpoints surface the same label /objects would. Falls
+        back through:  label_user > gated argmax(label_scores) > label_primary.
+        """
+        try:
+            label_user = getattr(o, "label_user", None)
+            if label_user:
+                return label_user
+            _scores = getattr(o, "label_scores", {}) or {}
+            _hits = getattr(o, "label_hits", {}) or {}
+            _min_hits = int(getattr(working_memory, "min_label_hits", 5))
+            _gated = {k: v for k, v in _scores.items()
+                      if int(_hits.get(k, 0)) >= _min_hits}
+            if _gated:
+                return max(_gated, key=_gated.get)
+            return getattr(o, "label_primary", None)
+        except Exception:
+            return None
+
+    def _robot_xyz(robot_pose: Any) -> Optional[np.ndarray]:
+        """Defensively extract a 3-vec from working_memory.get_robot_pose().
+
+        That accessor's return shape is not pinned in this file, so try
+        the common shapes (dict with 'xyz' or 'position'; len>=3 sequence)
+        and return None on anything we can't make sense of.
+        """
+        if robot_pose is None:
+            return None
+        try:
+            if isinstance(robot_pose, dict):
+                xyz = robot_pose.get("xyz") or robot_pose.get("position")
+                if xyz is None:
+                    return None
+                arr = np.asarray(xyz, dtype=np.float32)
+            elif hasattr(robot_pose, "__len__") and len(robot_pose) >= 3:
+                arr = np.asarray(robot_pose[:3], dtype=np.float32)
+            else:
+                return None
+            return arr if arr.shape == (3,) else None
+        except Exception:
+            return None
+
+    def _distance_from_robot(obj_xyz: Any, robot_xyz: Optional[np.ndarray]) -> Optional[float]:
+        """Euclidean distance from object to robot in world frame.
+
+        Returns None if either xyz is unusable, never raises.
+        """
+        if obj_xyz is None or robot_xyz is None:
+            return None
+        try:
+            obj_arr = np.asarray(obj_xyz, dtype=np.float32)
+            if obj_arr.shape != (3,):
+                return None
+            return round(float(np.linalg.norm(obj_arr - robot_xyz)), 3)
+        except Exception:
+            return None
+
+    def _iso_from_wall_utc(t: Any) -> Optional[str]:
+        """Convert a float UTC epoch to ISO-8601 with timezone, or None.
+
+        last_seen_wall_utc is stored as a float on ObjectState; the LLM
+        wants something speakable. Treat 0/None/negative as "never seen".
+        """
+        try:
+            ts = float(t) if t is not None else 0.0
+            if ts <= 0:
+                return None
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        except Exception:
+            return None
+
     def _obj_summary(o: Any) -> Dict[str, Any]:
         try:
             # 2026-05-11: surface user override + display label + movability + age
@@ -758,6 +841,12 @@ def create_app(
         # 3. Filter by threshold and enrich with WM metadata, falling back
         #    to the FAISS-side metadata sidecar when WM has no entry for the
         #    oid (e.g. a fresh process that only loaded FAISS from disk).
+        # 2026-05-26 Gate 3: compute robot_pose / robot_xyz once and reuse
+        # for distance_from_robot on every result. None-safe; if robot pose
+        # isn't published the per-result distance just becomes None and the
+        # Albert bridge degrades to "distance unknown".
+        robot_pose = working_memory.get_robot_pose()
+        robot_xyz = _robot_xyz(robot_pose)
         results = []
         for oid, score in matches:
             if score < threshold:
@@ -825,6 +914,25 @@ def create_app(
             else:
                 tag_for_response = "unknown"
 
+            # 2026-05-26 Gate 3: resolve label + last_seen for the Albert
+            # bridge. WM path uses live attributes (with gated label
+            # selection matching _obj_summary). faiss_meta path reads the
+            # sidecar — if the sidecar payload predates Gate 3 these come
+            # back None, which the bridge degrades gracefully on.
+            if obj is not None:
+                label_v = _display_label(obj)
+                last_seen_v = _iso_from_wall_utc(
+                    getattr(obj, "last_seen_wall_utc", 0.0)
+                )
+            elif source == "faiss_meta" and meta is not None:
+                label_v = (meta.get("label")
+                           or meta.get("label_user")
+                           or meta.get("label_primary"))
+                last_seen_v = _iso_from_wall_utc(meta.get("last_seen_wall_utc"))
+            else:
+                label_v = None
+                last_seen_v = None
+
             entry: Dict[str, Any] = {
                 "id": oid,
                 "score": round(float(score), 4),
@@ -833,6 +941,10 @@ def create_app(
                 "xyz_world": xyz_v,
                 "source": source,
                 "pose_state_at_observation": tag_for_response,
+                # 2026-05-26 Gate 3 additions:
+                "label": label_v,
+                "last_seen_at": last_seen_v,
+                "distance_from_robot": _distance_from_robot(xyz_v, robot_xyz),
             }
 
 
@@ -850,7 +962,7 @@ def create_app(
 
         return {
             "query": query,
-            "robot_pose": working_memory.get_robot_pose(),
+            "robot_pose": robot_pose,
             "results": results,
         }
 
@@ -886,6 +998,11 @@ def create_app(
 
         oids = working_memory.index.nearby_ids(center, rings=rings)
 
+        # 2026-05-26 Gate 3: compute robot_pose / robot_xyz once and reuse
+        # for distance_from_robot. None-safe.
+        robot_pose = working_memory.get_robot_pose()
+        robot_xyz = _robot_xyz(robot_pose)
+
         all_results = []
         for oid in oids:
             obj = working_memory.get(oid)
@@ -894,12 +1011,22 @@ def create_app(
             dist = float(np.linalg.norm(obj.xyz_world - center))
             if dist > radius_m:
                 continue
+            xyz_v = obj.xyz_world.tolist()
             all_results.append({
                 "id": oid,
                 "distance_m": round(dist, 4),
-                "xyz_world": obj.xyz_world.tolist(),
+                "xyz_world": xyz_v,
                 "confirmed": bool(getattr(obj, "confirmed", False)),
                 "stability": round(float(getattr(obj, "stability", 0.0)), 3),
+                # 2026-05-26 Gate 3 additions:
+                "label": _display_label(obj),
+                "last_seen_at": _iso_from_wall_utc(
+                    getattr(obj, "last_seen_wall_utc", 0.0)
+                ),
+                "distance_from_robot": _distance_from_robot(xyz_v, robot_xyz),
+                "pose_state_at_observation": getattr(
+                    obj, "pose_state_at_observation", "on_floor"
+                ),
             })
 
         all_results.sort(key=lambda r: r["distance_m"])
@@ -909,7 +1036,7 @@ def create_app(
         return {
             "center": [x, y, z],
             "radius_m": radius_m,
-            "robot_pose": working_memory.get_robot_pose(),
+            "robot_pose": robot_pose,
             "total": total,
             "offset": offset,
             "limit": limit,
