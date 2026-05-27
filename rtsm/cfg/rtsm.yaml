@@ -253,6 +253,13 @@ object:
   require_view_bins: 1
   stab_k: 0.55                       # DEMO: faster stability rise
   miss_decay: 0.5
+  # 2026-05-27: Gate 2.5 EWMA tail for emb_mean. Running mean for the
+  # first N observations (fast convergence on a new proto), then EWMA
+  # at alpha once established (prevents canonical-embedding
+  # ossification on long-lived objects, which Gate 2.5 re-id depends
+  # on). Defaults match the original Gate 2.5 spec.
+  emb_mean_hits_threshold: 20        # switch to EWMA after this many hits
+  emb_mean_ewma_alpha: 0.05          # weight on new obs once threshold reached
 
 # -------------------- Pose --------------------
 pose:

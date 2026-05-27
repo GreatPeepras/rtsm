@@ -232,6 +232,13 @@ class WorkingMemory:
 
         self.max_gallery: int = int(obj_cfg.get("max_gallery", 6))
         self.gallery_dupe_cos: float = float(obj_cfg.get("gallery_dupe_cos", 0.995))
+        # 2026-05-27: Gate 2.5 EWMA tail on emb_mean. Running mean for
+        # the first N=emb_mean_hits_threshold observations (fast
+        # convergence on new protos), then EWMA at alpha to prevent
+        # canonical-embedding ossification on long-lived objects.
+        # See update_object() below.
+        self.emb_mean_hits_threshold: int = int(obj_cfg.get("emb_mean_hits_threshold", 20))
+        self.emb_mean_ewma_alpha: float = float(obj_cfg.get("emb_mean_ewma_alpha", 0.05))
         self._pose_state: str = "on_floor"
         # The tag we stamp on new/updated objects. Derived from _pose_state.
         self._current_observation_tag: str = "on_floor"
@@ -513,7 +520,16 @@ class WorkingMemory:
                 # FIFO: drop oldest (row 0)
                 o.emb_gallery = np.vstack([o.emb_gallery[1:], e.astype(np.float16)])
         # mean
-        emb_mean = _l2norm(o.emb_mean * o.hits + e)  # simple running mean in L2 space (approx)
+        # 2026-05-27: hybrid emb_mean update. Running mean while the
+        # object is young (fast convergence), then EWMA at alpha once
+        # established (anti-ossification). The EWMA half is the
+        # second part of the original Gate 2.5 design — the first
+        # part, cosine re-id at tau=0.92, shipped 2026-05-25.
+        if o.hits < self.emb_mean_hits_threshold:
+            emb_mean = _l2norm(o.emb_mean * o.hits + e)
+        else:
+            alpha = self.emb_mean_ewma_alpha
+            emb_mean = _l2norm((1.0 - alpha) * o.emb_mean + alpha * e)
 
         # view-bin update
         b = _view_bin_id(getattr(obs, "view_dir_cam", None), self.az_bins, self.el_bins)
