@@ -7,9 +7,9 @@ decompresses locally, time-syncs them, and passes each synced pair to a
 stub `_emit` method.
 
 Transport:
-  - color: /camera/camera/color/image_raw/compressed
+  - color: /camera/realsense/color/image_raw/compressed
            JPEG-encoded, lossy. Fine for RGB; ~5-10x smaller than raw.
-  - depth: /camera/camera/aligned_depth_to_color/image_raw/compressedDepth
+  - depth: /camera/realsense/aligned_depth_to_color/image_raw/compressedDepth
            PNG-encoded 16UC1 with 12-byte config header prepended.
            Lossless, so depth values survive the round-trip unchanged.
 
@@ -101,9 +101,9 @@ SENSOR_QOS = QoSProfile(
     depth=5,
 )
 
-COLOR_TOPIC = "/camera/camera/color/image_raw/compressed"
-DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw/compressedDepth"
-COLOR_INFO_TOPIC = "/camera/camera/color/camera_info"
+COLOR_TOPIC = "/camera/realsense/color/image_raw/compressed"
+DEPTH_TOPIC = "/camera/realsense/aligned_depth_to_color/image_raw/compressedDepth"
+COLOR_INFO_TOPIC = "/camera/realsense/color/camera_info"
 
 SYNC_SLOP_SEC = 0.05  # 50 ms; see header comment
 
