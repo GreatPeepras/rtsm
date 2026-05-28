@@ -68,6 +68,7 @@ class Pipeline:
         self.vectors = vectors  # generic vector store client (FAISS or Milvus)
         self._running = False
         self._last_flush_ts = 0.0
+        self._last_evict_ts = 0.0
         self.ingest_q = ingest_q
         self.sweep_cache = sweep_cache or SweepCache()
         self._seg_analytics = seg_analytics
@@ -390,6 +391,9 @@ class Pipeline:
 
         # 7) periodic flush/upsert to vector store (if configured)
         self._maybe_flush_vectors()
+
+        # 7b) periodic Tier-2 eviction sweep (no-op unless armed)
+        self._maybe_evict_stale()
 
         # 8) periodic summary log
         if self.working_mem is not None:
@@ -882,6 +886,38 @@ class Pipeline:
         st = self.working_mem.stats()
         logger.info(f"[PIPE] flushed {len(ready)} upserts; wm_confirmed={st.get('confirmed',0)} upserts_total={st.get('upserts_total',0)}")
 
+
+    def _maybe_evict_stale(self):
+        """Throttled Tier-2 eviction sweep (movability-aware).
+
+        Rides the same per-frame maintenance tick as _maybe_flush_vectors,
+        but on its own (much longer) cadence -- eviction is day-scale.
+        Cadence uses monotonic time (process-local "when to look"); the TTL
+        math inside evict_stale() uses the wall clock (last_seen_wall_utc).
+        evict_stale() is a no-op unless cfg["eviction"]["enabled"] is true,
+        so this is safe to leave wired in before the policy is armed.
+        """
+        if self.working_mem is None:
+            return
+        evict = getattr(self.working_mem, "evict_stale", None)
+        if not callable(evict):  # serve-mode frozen WM has no pipeline ops
+            return
+        period_s = float(self.cfg.get("eviction", {}).get("period_s", 300.0))
+        now = time.monotonic()
+        if (now - self._last_evict_ts) < period_s:
+            return
+        self._last_evict_ts = now
+        try:
+            res = evict()
+        except Exception as e:
+            logger.warning(f"eviction sweep failed: {e}")
+            return
+        ev = res.get("evicted") or []
+        if ev:
+            logger.info(
+                f"[PIPE] evicted {len(ev)} stale objects "
+                f"(by_class={res.get('by_class')}, dry_run={res.get('dry_run')})"
+            )
 
     # -------- teardown --------
     def shutdown(self):
