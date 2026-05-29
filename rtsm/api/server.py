@@ -79,6 +79,37 @@ class PoseStateRequest(BaseModel):
     )
 
 
+# 2026-05-29: reference-snapshot endpoint schemas.
+class ReferenceImagePayload(BaseModel):
+    """Body schema for POST /objects/{oid}/reference.
+
+    Single base64-encoded JPEG. RTSM decodes, CLIP-embeds, writes the file
+    to disk, and updates the object's reference fields. INGEST mode only
+    (CLIP loaded + WM writable).
+    """
+    jpeg_b64: str = Field(..., description="Base64-encoded JPEG bytes.")
+
+    model_config = {"extra": "forbid"}
+
+
+class ReferenceBulkItem(BaseModel):
+    """One entry in a bulk reference upload."""
+    oid: str
+    jpeg_b64: str
+
+
+class ReferenceBulkPayload(BaseModel):
+    """Body schema for POST /objects/reference_bulk.
+
+    Albert's boot-time backfill: walk local memory.json, push every
+    linked snapshot in one request. Per-item failures are reported in
+    the response without aborting the batch.
+    """
+    items: List[ReferenceBulkItem] = Field(..., min_length=1, max_length=200)
+
+    model_config = {"extra": "forbid"}
+
+
 
 
 def create_app(
@@ -457,6 +488,103 @@ def create_app(
             "objects": result_list,
         }
 
+    @app.get("/objects/by_label_user")
+    def get_object_by_label_user(
+        name: str,
+        case_insensitive: bool = True,
+    ) -> Dict[str, Any]:
+        """Look up an object by its user-assigned name (label_user).
+
+        Drives Albert's layered recall: local memory hits first, then this
+        endpoint for current RTSM state (location, last_seen, reference).
+        Returns 404 if no object carries this label_user. If multiple
+        objects share the name (rare; user normally pins one), returns the
+        most recently observed one and surfaces a list of all matches.
+        """
+        q = name.strip()
+        if not q:
+            raise HTTPException(status_code=400, detail="name must be non-empty")
+
+        matches: List[Any] = []
+        try:
+            for o in working_memory.iter_objects():
+                lu = getattr(o, "label_user", None)
+                if lu is None:
+                    continue
+                if case_insensitive:
+                    if lu.lower() == q.lower():
+                        matches.append(o)
+                else:
+                    if lu == q:
+                        matches.append(o)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"WM iteration failed: {e}")
+
+        if not matches:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No object with label_user={name!r}",
+            )
+
+        # Most-recent first by last_seen_wall_utc.
+        matches.sort(
+            key=lambda o: float(getattr(o, "last_seen_wall_utc", 0.0) or 0.0),
+            reverse=True,
+        )
+        primary = matches[0]
+
+        # 2026-05-29: defensive serialization. xyz_world may be a
+        # Python list OR a numpy ndarray depending on how the object got
+        # into WM (ingest path vs faiss-rehydrate). Convert both safely.
+        def _xyz_to_list(xyz: Any) -> Optional[List[float]]:
+            if xyz is None:
+                return None
+            if hasattr(xyz, "tolist"):
+                try:
+                    return [float(v) for v in xyz.tolist()]
+                except Exception:
+                    pass
+            try:
+                return [float(v) for v in xyz]
+            except Exception:
+                return None
+
+        def _entry(o: Any) -> Dict[str, Any]:
+            ref_path = getattr(o, "reference_image_path", None)
+            return {
+                "id": getattr(o, "id", None),
+                "label_user": getattr(o, "label_user", None),
+                "label_primary": getattr(o, "label_primary", None),
+                "xyz_world": _xyz_to_list(getattr(o, "xyz_world", None)),
+                "movability_class": getattr(o, "movability_class", None),
+                "pose_state_at_observation": getattr(
+                    o, "pose_state_at_observation", "on_floor"
+                ),
+                "confirmed": bool(getattr(o, "confirmed", False)),
+                "last_seen_wall_utc": float(
+                    getattr(o, "last_seen_wall_utc", 0.0) or 0.0
+                ),
+                "reference_image_path": ref_path,
+                "has_reference_image": bool(ref_path),
+            }
+
+        # robot_pose may also surface non-serializable types; degrade to None
+        # so the endpoint never 500s just because of pose-shape weirdness.
+        try:
+            robot_pose = working_memory.get_robot_pose()
+        except Exception:
+            robot_pose = None
+
+        return {
+            "name": name,
+            "match_count": len(matches),
+            "primary": _entry(primary),
+            "all_matches": [_entry(o) for o in matches],
+            "robot_pose": robot_pose,
+        }
+
+    # ---- Snapshot gallery endpoints ----
+
     @app.get("/objects/{oid}")
     def get_object(oid: str, include_vectors: bool = False) -> Dict[str, Any]:
         try:
@@ -510,9 +638,225 @@ def create_app(
 
         if o is None:
             raise HTTPException(status_code=404, detail=f"Object {oid} not found")
+
+        # 2026-05-29: force-flush PATCH'd label_user/movability to FAISS.
+        # update_user_fields modifies WM only; without this push the change
+        # waits for natural re-observation, and a restart in that window
+        # loses the user's label. Re-asserting reference state via
+        # set_object_reference triggers the same lock-protected heap push
+        # that pinning a reference image already does.
+        if (getattr(o, "confirmed", False)
+                and hasattr(working_memory, "set_object_reference")):
+            try:
+                working_memory.set_object_reference(
+                    oid,
+                    image_path=getattr(o, "reference_image_path", None),
+                    embedding=getattr(o, "reference_emb", None),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"PATCH force-flush for {oid} failed: {e}"
+                )
+
         return _obj_detail(o)
 
-    # ---- Snapshot gallery endpoints ----
+    # ---- 2026-05-29: reference snapshot endpoints ----
+    # Reference snapshots are the named-moment ground truth for each object:
+    # one JPEG + one CLIP embedding, persisted through the FAISS sidecar.
+    # Distinct from image_crops (rolling observation gallery, WM-only).
+
+    def _encode_reference_image(jpeg_bytes: bytes) -> "np.ndarray":
+        """Decode JPEG + CLIP-embed. Returns L2-normalized fp32 of shape (D,).
+
+        Defensive about clip_adapter's method name: tries encode_image first
+        (OpenCLIP convention; matches the encode_text pair already used by
+        /search/semantic), falls back to embed_image. Fails loudly if neither
+        is available so the deploy/test cycle catches it immediately.
+        """
+        img_buf = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+        bgr = cv2.imdecode(img_buf, cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ValueError("cv2.imdecode returned None for JPEG bytes")
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        # 2026-05-29: clip_adapter.encode_image expects a PIL.Image (it
+        # calls .convert() internally). Wrap the ndarray defensively;
+        # fall back to ndarray only if PIL isn't importable.
+        try:
+            from PIL import Image as _PILImage
+            img_in = _PILImage.fromarray(rgb)
+        except Exception:
+            img_in = rgb
+        if hasattr(clip_adapter, "encode_image"):
+            emb_raw = clip_adapter.encode_image(img_in)
+        elif hasattr(clip_adapter, "embed_image"):
+            emb_raw = clip_adapter.embed_image(img_in)
+        else:
+            attrs = [m for m in dir(clip_adapter)
+                     if callable(getattr(clip_adapter, m, None))
+                     and not m.startswith("_")]
+            raise AttributeError(
+                f"clip_adapter has no encode_image or embed_image method. "
+                f"Available callables: {attrs}"
+            )
+        # 2026-05-29: clip_adapter returns a torch tensor on cuda:0. Move
+        # to CPU + detach before np.asarray (which implicitly calls .numpy()).
+        try:
+            import torch as _torch
+            if isinstance(emb_raw, _torch.Tensor):
+                emb_raw = emb_raw.detach().cpu().numpy()
+        except ImportError:
+            pass
+        arr = np.asarray(emb_raw, dtype=np.float32).reshape(-1)
+        n = float(np.linalg.norm(arr) + 1e-12)
+        return (arr / n).astype(np.float32)
+
+    @app.post("/objects/{oid}/reference")
+    def set_object_reference(
+        oid: str,
+        payload: ReferenceImagePayload = Body(...),
+    ) -> Dict[str, Any]:
+        """Upload the canonical reference snapshot for an object.
+
+        Stores JPEG bytes at /mnt/rtsm-data/refs/<oid>.jpg, CLIP-embeds, and
+        updates reference_image_path + reference_emb on the WM object. The
+        new fields persist through the next sidecar flush (the helper pushes
+        an immediate LTM upsert for the oid).
+
+        Errors:
+            400 — malformed base64 or unreadable JPEG
+            404 — unknown oid
+            405 — frozen WM (serve mode)
+            503 — CLIP adapter not available
+            500 — CLIP encode failed or filesystem write failed
+        """
+        import os
+        from pathlib import Path
+
+        if not hasattr(working_memory, "set_object_reference"):
+            raise HTTPException(
+                status_code=405,
+                detail="reference upload not supported on frozen WM (serve mode)",
+            )
+        if clip_adapter is None:
+            raise HTTPException(
+                status_code=503,
+                detail="CLIP adapter not available; cannot embed reference",
+            )
+
+        obj = working_memory.get(oid)
+        if obj is None:
+            raise HTTPException(status_code=404, detail=f"Object {oid} not found")
+
+        # Decode base64 -> JPEG bytes
+        try:
+            jpeg_bytes = base64.b64decode(payload.jpeg_b64, validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise HTTPException(status_code=400, detail=f"base64 decode failed: {e}")
+        if not jpeg_bytes:
+            raise HTTPException(status_code=400, detail="empty JPEG bytes")
+
+        # CLIP-embed (also validates that cv2 can decode the JPEG)
+        try:
+            emb = _encode_reference_image(jpeg_bytes)
+        except (ValueError, AttributeError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"CLIP encode failed: {e}")
+
+        # Persist JPEG to disk. The refs dir lives alongside FAISS so it
+        # rolls with the same data volume.
+        refs_dir = Path(os.environ.get(
+            "RTSM_REFS_DIR", "/workspace/workdir/refs"
+        ))
+        try:
+            refs_dir.mkdir(parents=True, exist_ok=True)
+            out_path = refs_dir / f"{oid}.jpg"
+            out_path.write_bytes(jpeg_bytes)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"file write failed: {e}")
+
+        # Update WM (also schedules immediate LTM upsert for the oid).
+        try:
+            working_memory.set_object_reference(
+                oid, image_path=str(out_path), embedding=emb,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        return {
+            "id": oid,
+            "reference_image_path": str(out_path),
+            "reference_emb_dim": int(emb.shape[0]),
+            "size_bytes": len(jpeg_bytes),
+        }
+
+    @app.post("/objects/reference_bulk")
+    def set_object_reference_bulk(
+        payload: ReferenceBulkPayload = Body(...),
+    ) -> Dict[str, Any]:
+        """Bulk reference upload, intended for Albert's boot-time backfill.
+
+        Processes each item independently — per-item errors are recorded in
+        the response without aborting the batch. Returns a summary plus
+        per-item status.
+        """
+        import os
+        from pathlib import Path
+
+        if not hasattr(working_memory, "set_object_reference"):
+            raise HTTPException(
+                status_code=405,
+                detail="reference upload not supported on frozen WM (serve mode)",
+            )
+        if clip_adapter is None:
+            raise HTTPException(
+                status_code=503,
+                detail="CLIP adapter not available; cannot embed references",
+            )
+
+        refs_dir = Path(os.environ.get(
+            "RTSM_REFS_DIR", "/workspace/workdir/refs"
+        ))
+        try:
+            refs_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"refs dir setup failed: {e}")
+
+        results: List[Dict[str, Any]] = []
+        ok_count = 0
+        for item in payload.items:
+            entry: Dict[str, Any] = {"oid": item.oid}
+            obj = working_memory.get(item.oid)
+            if obj is None:
+                entry["status"] = "not_found"
+                results.append(entry)
+                continue
+            try:
+                jpeg_bytes = base64.b64decode(item.jpeg_b64, validate=True)
+                if not jpeg_bytes:
+                    raise ValueError("empty JPEG bytes")
+                emb = _encode_reference_image(jpeg_bytes)
+                out_path = refs_dir / f"{item.oid}.jpg"
+                out_path.write_bytes(jpeg_bytes)
+                working_memory.set_object_reference(
+                    item.oid, image_path=str(out_path), embedding=emb,
+                )
+                entry["status"] = "ok"
+                entry["reference_image_path"] = str(out_path)
+                entry["size_bytes"] = len(jpeg_bytes)
+                ok_count += 1
+            except Exception as e:
+                entry["status"] = "error"
+                entry["detail"] = str(e)
+            results.append(entry)
+
+        return {
+            "total": len(payload.items),
+            "ok": ok_count,
+            "failed": len(payload.items) - ok_count,
+            "results": results,
+        }
+
     @app.get("/objects/{oid}/snapshots")
     def get_object_snapshots(oid: str, index: Optional[int] = None) -> Dict[str, Any]:
         """

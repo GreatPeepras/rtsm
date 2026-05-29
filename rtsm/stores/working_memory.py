@@ -160,6 +160,20 @@ class ObjectState:
     movability_class: Optional[str] = None
     pose_state_at_observation: str = "on_floor"
 
+    # --- 2026-05-29: reference snapshot (named-moment ground truth) ---
+    # Path on disk to the canonical JPEG ("the moment you said this is
+    # Quackers"). None until set via POST /objects/{oid}/reference.
+    # The file lives outside the sidecar at /mnt/rtsm-data/refs/<oid>.jpg
+    # by default. Persisted as a string in the FAISS sidecar.
+    reference_image_path: Optional[str] = None
+
+    # CLIP embedding of the reference snapshot. L2-normalized float32,
+    # same dim as emb_mean. Persisted through the FAISS sidecar (as a
+    # JSON list, coerced back to ndarray on rehydrate). On rehydrate,
+    # used to seed emb_gallery so named objects have appearance evidence
+    # at cold-start (no waiting for re-observation).
+    reference_emb: Optional[Emb] = None
+
 # ------------------------- Proximity index interface -------------------------
 
 class ProximityIndexLike(Protocol):
@@ -911,6 +925,12 @@ class WorkingMemory:
                         "display_label": o.label_user or o.label_primary,
                         "movability_class": o.movability_class,
                         "pose_state_at_observation": o.pose_state_at_observation,
+                        # 2026-05-29: reference snapshot (named-moment GT)
+                        "reference_image_path": o.reference_image_path,
+                        "reference_emb": (
+                            o.reference_emb.astype(np.float32).tolist()
+                            if o.reference_emb is not None else None
+                        ),
                         "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
                         "label_topk": [k for k, _ in label_topk],
                         "label_scores": [float(v) for _, v in label_topk],
@@ -969,6 +989,12 @@ class WorkingMemory:
                     "display_label": o.label_user or o.label_primary,
                     "movability_class": o.movability_class,
                     "pose_state_at_observation": o.pose_state_at_observation,
+                    # 2026-05-29: reference snapshot (named-moment GT)
+                    "reference_image_path": o.reference_image_path,
+                    "reference_emb": (
+                        o.reference_emb.astype(np.float32).tolist()
+                        if o.reference_emb is not None else None
+                    ),
                     "label_confidence": (o.label_scores.get(o.label_primary, 0.0) if o.label_primary else 0.0),
                     "label_topk": [k for k, _ in label_topk],
                     "label_scores": [float(v) for _, v in label_topk],
@@ -1392,6 +1418,32 @@ class WorkingMemory:
                     meta.get("pose_state_at_observation", "on_floor")
                 ),
             )
+            # 2026-05-29: reference snapshot (named-moment ground truth).
+            # Reads from sidecar; seeds emb_gallery so association has
+            # appearance evidence on rehydrate (no waiting for re-observation).
+            # Solves the "rehydrated = emb_mean-only matcher" gap noted in
+            # handoff_2026-05-25.md lesson #5 — for named objects, anyway.
+            ref_path = meta.get("reference_image_path")
+            o.reference_image_path = ref_path
+            ref_emb_raw = meta.get("reference_emb")
+            if ref_emb_raw is not None:
+                try:
+                    ref_emb_arr = np.asarray(ref_emb_raw, dtype=np.float32).reshape(-1)
+                    if ref_emb_arr.shape[0] == expected_dim:
+                        o.reference_emb = ref_emb_arr
+                        # Seed gallery: rehydrated object DID have appearance
+                        # at naming-time, even if we have no view_bins record.
+                        o.emb_gallery = ref_emb_arr.astype(np.float16).reshape(1, -1)
+                    else:
+                        logger.warning(
+                            f"[WM] rehydrate: reference_emb dim mismatch for "
+                            f"oid={oid[:8]}: got {ref_emb_arr.shape[0]} "
+                            f"expected {expected_dim}; skipping"
+                        )
+                except Exception as _e:
+                    logger.warning(
+                        f"[WM] rehydrate: bad reference_emb for {oid[:8]}: {_e}"
+                    )
             new_objects.append(o)
 
         # Single-shot lock acquisition for the actual insert.
@@ -1423,3 +1475,56 @@ class WorkingMemory:
             f"dup={counts['skipped_dup']})"
         )
         return counts
+
+    # ---------- reference snapshot (named-moment ground truth) ----------
+
+    def set_object_reference(
+        self,
+        oid: str,
+        *,
+        image_path: Optional[str],
+        embedding: Optional[np.ndarray],
+    ) -> Optional["ObjectState"]:
+        """Thread-safe update of reference snapshot fields on an ObjectState.
+
+        Args:
+            oid: target object id.
+            image_path: filesystem path to the JPEG (callers handle the
+                actual file write). None = clear the field.
+            embedding: CLIP embedding of the reference image, expected to be
+                a float32 vector of shape (D,). L2-normalized defensively
+                here. None = clear the field.
+
+        Side effects:
+            If the object is confirmed, pushes oid onto the LTM upsert heap
+            so the new reference fields persist through the FAISS sidecar
+            quickly (without waiting for the next regular upsert window).
+
+        Returns the updated ObjectState, or None if oid not found.
+        Raises ValueError on dim mismatch with the object's existing _dim.
+        """
+        with self._lock:
+            o = self._map.get(oid)
+            if o is None:
+                return None
+            o.reference_image_path = (
+                str(image_path) if image_path is not None else None
+            )
+            if embedding is not None:
+                arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+                if o._dim and arr.shape[0] != o._dim:
+                    raise ValueError(
+                        f"reference embedding dim {arr.shape[0]} != "
+                        f"object dim {o._dim}"
+                    )
+                # L2-normalize defensively (CLIP outputs typically are,
+                # but the upload path is unauditable from here).
+                n = float(np.linalg.norm(arr) + 1e-12)
+                o.reference_emb = (arr / n).astype(np.float32)
+            else:
+                o.reference_emb = None
+            # Force a fresh LTM upsert so the new reference fields make it
+            # to the sidecar without waiting for the regular cadence.
+            if o.confirmed:
+                heapq.heappush(self._ltm_heap, (_now_mono(), oid))
+            return o
