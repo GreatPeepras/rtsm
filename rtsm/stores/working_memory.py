@@ -253,6 +253,28 @@ class WorkingMemory:
         # See update_object() below.
         self.emb_mean_hits_threshold: int = int(obj_cfg.get("emb_mean_hits_threshold", 20))
         self.emb_mean_ewma_alpha: float = float(obj_cfg.get("emb_mean_ewma_alpha", 0.05))
+
+        # 2026-05-30: coarse-default movability_class on proto spawn.
+        # Per movability_assignment_design.md (accepted 2026-05-28):
+        #  - Default 'movable' (~3-day TTL) gives eviction something to act on.
+        #  - None is allowed for back-compat (eviction falls back to semi_static).
+        #  - static/permanent are landmark-eligible and MUST NOT be auto-assigned;
+        #    they require manual PATCH. Bad values warn and fall back to 'movable'.
+        _raw_default_mov = obj_cfg.get("default_movability", "movable")
+        if _raw_default_mov is None:
+            self.default_movability: Optional[str] = None
+        elif _raw_default_mov in self._AUTO_DEFAULT_MOVABILITY_OK:
+            self.default_movability = str(_raw_default_mov)
+        else:
+            logger.warning(
+                "[WM] object.default_movability=%r is not auto-assignable "
+                "(must be one of %s, or null). static/permanent are "
+                "landmark-eligible and require manual PATCH. Falling back to "
+                "'movable'. See movability_assignment_design.md.",
+                _raw_default_mov, sorted(self._AUTO_DEFAULT_MOVABILITY_OK),
+            )
+            self.default_movability = "movable"
+
         self._pose_state: str = "on_floor"
         # The tag we stamp on new/updated objects. Derived from _pose_state.
         self._current_observation_tag: str = "on_floor"
@@ -335,6 +357,15 @@ class WorkingMemory:
     _VALID_MOVABILITY = frozenset({
         "permanent", "static", "semi_static",
         "movable", "roaming", "ephemeral",
+    })
+    # 2026-05-30: classes safe to assign AUTOMATICALLY at proto spawn.
+    # Excludes static/permanent: those are landmark-eligible per
+    # movability_assignment_design.md and require manual PATCH so a human
+    # confirms the pose-correctness-critical assignment. None is also
+    # valid (means "no default"); eviction has its own None -> semi_static
+    # fallback for back-compat.
+    _AUTO_DEFAULT_MOVABILITY_OK = frozenset({
+        "semi_static", "movable", "roaming", "ephemeral",
     })
 
     def update_user_fields(
@@ -644,6 +675,8 @@ class WorkingMemory:
             last_update_frame_id=frame_id,
             _dim=D,
             pose_state_at_observation=self._current_observation_tag,
+            # 2026-05-30: coarse default; see __init__ for validation.
+            movability_class=self.default_movability,
         )
         with self._lock:
             self._map[oid] = o
@@ -1528,3 +1561,41 @@ class WorkingMemory:
             if o.confirmed:
                 heapq.heappush(self._ltm_heap, (_now_mono(), oid))
             return o
+
+    # ---------- removal ----------
+
+    def remove_object(self, oid: str) -> bool:
+        """Remove an object from WM entirely. Mirrors the cleanup logic in
+        expire_timeouts() (proto) and evict_stale() (Tier-2 confirmed).
+
+        Returns True if removed, False if oid was not in WM.
+
+        Note: does NOT remove from the FAISS sidecar. If the caller wants
+        permanent removal, they must also clean the sidecar (typically by
+        stopping RTSM, editing the on-disk sidecar, and restarting). Without
+        that, the object will rehydrate on the next startup. The HTTP layer
+        attempts vectors.remove(oid) if the FaissClient exposes it.
+        """
+        last_xyz = None
+        with self._lock:
+            o = self._map.get(oid)
+            if o is None:
+                return False
+            # frame -> objects reverse index cleanup
+            fid = getattr(o, "last_update_frame_id", None)
+            if fid is not None:
+                fset = self._frame_to_objects.get(fid)
+                if fset is not None:
+                    fset.discard(oid)
+                    if not fset:
+                        del self._frame_to_objects[fid]
+            if getattr(o, "xyz_world", None) is not None:
+                last_xyz = o.xyz_world.copy()
+            del self._map[oid]
+        if self.index is not None:
+            try:
+                self.index.remove(oid, last_xyz)
+            except Exception:
+                logger.exception("remove_object: index.remove failed for %s", oid)
+        logger.info("[WM] removed oid=%s", oid)
+        return True

@@ -260,6 +260,11 @@ object:
   # on). Defaults match the original Gate 2.5 spec.
   emb_mean_hits_threshold: 20        # switch to EWMA after this many hits
   emb_mean_ewma_alpha: 0.05          # weight on new obs once threshold reached
+  # 2026-05-30: coarse default movability_class for every new proto.
+  # Auto-assignable values: semi_static, movable, roaming, ephemeral, or null.
+  # static/permanent are landmark-eligible and require manual PATCH per
+  # movability_assignment_design.md. Bad values fall back to 'movable'.
+  default_movability: movable
 
 # -------------------- Pose --------------------
 pose:
