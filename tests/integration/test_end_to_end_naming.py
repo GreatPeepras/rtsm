@@ -166,6 +166,17 @@ def main() -> int:
         return 1
 
     finally:
+        # 2026-05-30: clean up the reference image we POSTed in step 2.
+        # Without this, every test run leaves a stray purple JPEG on disk
+        # plus polluted reference_emb on the object (caught the hard way).
+        try:
+            r = requests.delete(
+                f"{RTSM_URL}/objects/{oid}/reference",
+                timeout=TIMEOUT_S,
+            )
+            print(f"[cleanup] DELETE /reference: HTTP {r.status_code}")
+        except Exception as e:
+            print(f"[cleanup] WARNING: failed to delete reference: {e}", file=sys.stderr)
         # Restore the original label_user. None -> clears it (which is
         # also fine if it was None to begin with). Best-effort: a restore
         # failure shouldn't mask the test outcome.

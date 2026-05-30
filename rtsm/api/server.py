@@ -878,6 +878,49 @@ def create_app(
 
         crops = getattr(o, 'image_crops', []) or []
         if not crops:
+            # 2026-05-30: fall back to the persisted reference snapshot if
+            # set. Named objects (via name_object) get a canonical JPEG that
+            # survives restart even when image_crops is empty (which it
+            # always is post-rehydrate, since crops aren't persisted to
+            # FAISS).
+            ref_path = getattr(o, "reference_image_path", None)
+            if ref_path and os.path.isfile(ref_path):
+                try:
+                    with open(ref_path, "rb") as _f:
+                        _ref_bytes = _f.read()
+                    _ref_b64 = base64.b64encode(_ref_bytes).decode("ascii")
+                    _ref_uri = f"data:image/jpeg;base64,{_ref_b64}"
+                    if index is not None and index != 0:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=(
+                                f"Snapshot index {index} out of range "
+                                f"(only the reference snapshot is available)"
+                            ),
+                        )
+                    if index == 0:
+                        return {
+                            "id": oid,
+                            "index": 0,
+                            "total": 1,
+                            "snapshot": _ref_uri,
+                            "source": "reference",
+                        }
+                    return {
+                        "id": oid,
+                        "count": 1,
+                        "snapshots": [{
+                            "index": 0,
+                            "data": _ref_uri,
+                            "size_bytes": len(_ref_bytes),
+                            "source": "reference",
+                        }],
+                    }
+                except (OSError, IOError) as _e:
+                    logger.warning(
+                        "[snapshots] failed to read reference for %s: %s",
+                        oid, _e,
+                    )
             return {"id": oid, "count": 0, "snapshots": []}
 
         # Reverse order so index 0 is most recent
@@ -932,6 +975,97 @@ def create_app(
         return Response(content=crops_reversed[index], media_type="image/jpeg")
 
     # ---- Object debug endpoint ----
+    # 2026-05-30: cleanup endpoints. Mirror the design doc's intent
+    # that named objects are user-managed and pollution should be
+    # explicitly removable.
+    @app.delete("/objects/{oid}/reference")
+    def delete_object_reference(oid: str) -> Dict[str, Any]:
+        """Clear the reference snapshot fields on a WM object and delete
+        the on-disk JPEG.
+
+        Triggers an LTM heap push so the FAISS sidecar loses the reference
+        fields on the next upsert cycle (asynchronous; restart inside
+        flush_period_s can lose this -- mirrors the 5/29 PATCH timing
+        caveat).
+        """
+        if not hasattr(working_memory, "set_object_reference"):
+            raise HTTPException(
+                status_code=405,
+                detail="reference not supported on frozen working memory",
+            )
+        o = working_memory.get(oid)
+        if o is None:
+            raise HTTPException(status_code=404, detail=f"Object {oid} not found")
+        old_path = getattr(o, "reference_image_path", None)
+        try:
+            working_memory.set_object_reference(oid, image_path=None, embedding=None)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        file_deleted = False
+        if old_path and os.path.isfile(old_path):
+            try:
+                os.remove(old_path)
+                file_deleted = True
+            except OSError as e:
+                logger.warning(
+                    "[delete_reference] failed to remove %s: %s", old_path, e
+                )
+        return {
+            "id": oid,
+            "cleared": True,
+            "old_reference_image_path": old_path,
+            "file_deleted": file_deleted,
+        }
+
+    @app.delete("/objects/{oid}")
+    def delete_object(oid: str) -> Dict[str, Any]:
+        """Remove an object from WM entirely.
+
+        Also deletes the reference JPEG if present, and attempts to remove
+        from the FAISS sidecar if the configured vectors client exposes a
+        remove() method. Without sidecar removal, the object will rehydrate
+        on next restart.
+        """
+        if not hasattr(working_memory, "remove_object"):
+            raise HTTPException(
+                status_code=405,
+                detail="DELETE not supported on frozen working memory",
+            )
+        o = working_memory.get(oid)
+        if o is None:
+            raise HTTPException(status_code=404, detail=f"Object {oid} not found")
+        ref_path = getattr(o, "reference_image_path", None)
+        file_deleted = False
+        if ref_path and os.path.isfile(ref_path):
+            try:
+                os.remove(ref_path)
+                file_deleted = True
+            except OSError as e:
+                logger.warning(
+                    "[delete_object] failed to remove reference %s: %s", ref_path, e
+                )
+        faiss_removed = False
+        if vectors is not None and hasattr(vectors, "remove"):
+            try:
+                vectors.remove(oid)
+                faiss_removed = True
+            except Exception as e:
+                logger.warning(
+                    "[delete_object] vectors.remove failed for %s: %s", oid, e
+                )
+        removed = working_memory.remove_object(oid)
+        if not removed:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Object {oid} disappeared from WM during delete",
+            )
+        return {
+            "id": oid,
+            "removed": True,
+            "reference_file_deleted": file_deleted,
+            "faiss_sidecar_removed": faiss_removed,
+        }
+
     @app.get("/objects/{oid}/debug")
     def get_object_debug(oid: str) -> Dict[str, Any]:
         """Get detailed diagnostic information for an object."""
