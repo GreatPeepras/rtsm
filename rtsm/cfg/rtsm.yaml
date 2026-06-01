@@ -265,6 +265,7 @@ object:
   # static/permanent are landmark-eligible and require manual PATCH per
   # movability_assignment_design.md. Bad values fall back to 'movable'.
   default_movability: movable
+  crops_root: /workspace/workdir/crops
 
 # -------------------- Pose --------------------
 pose:

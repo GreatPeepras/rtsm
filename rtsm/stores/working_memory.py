@@ -6,7 +6,10 @@ Authoritative in-memory store for *live* objects (proto + confirmed).
 - Holds embeddings (mean + small gallery), label EWMA, stability, pose, timestamps.
 - Mirrors spatial membership via an injected ObjectIndex (proximity index).
 - Prepares compact payloads to upsert into Milvus (LTM) when objects are ready.
-
+- 2026-05-31: per-object image_crops + emb_gallery are MIRRORED TO DISK
+  under cfg.object.crops_root (default /mnt/rtsm-data/rtsm-workdir/crops).
+  Rehydrate restores both from disk, closing the cross-restart matching gap
+  that caused new OIDs to spawn for re-observed physical objects.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -17,6 +20,9 @@ import uuid
 import threading
 import heapq
 import logging
+import os
+import shutil
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +55,11 @@ def _now_wall_utc() -> float:
 
 
 def _compress_crop_jpeg(crop: np.ndarray, quality: int = 75) -> bytes:
-    """Compress 224x224x3 uint8 crop to JPEG bytes.
-
-    Args:
-        crop: RGB image array (H, W, 3) uint8
-        quality: JPEG quality (1-100)
-
-    Returns:
-        JPEG-encoded bytes, or empty bytes if compression fails
-    """
+    """Compress 224x224x3 uint8 crop to JPEG bytes."""
     import cv2
     if crop is None or crop.size == 0:
         return b''
     try:
-        # RGB -> BGR for cv2
         if len(crop.shape) == 3 and crop.shape[-1] == 3:
             crop_bgr = crop[..., ::-1].copy()
         else:
@@ -83,15 +80,205 @@ def _view_bin_id(view_dir_cam: Optional[np.ndarray], AZ_BINS: int, EL_BINS: int)
     if n < 1e-6:
         return None
     v = v / n
-    # camera +Z forward, +X right, +Y down (typical pinhole cam frame)
     x, y, z = float(v[0]), float(v[1]), float(v[2])
-    az = np.arctan2(x, z)                    # [-pi, pi]
-    el = np.arctan2(-y, np.hypot(x, z))      # [-pi/2, pi/2]
+    az = np.arctan2(x, z)
+    el = np.arctan2(-y, np.hypot(x, z))
     az_i = int(np.floor((az + np.pi) / (2*np.pi) * AZ_BINS))
     el_i = int(np.floor((el + np.pi/2) / np.pi    * EL_BINS))
     az_i = max(0, min(AZ_BINS-1, az_i))
     el_i = max(0, min(EL_BINS-1, el_i))
     return el_i * AZ_BINS + az_i
+
+
+# ------------------------- persistent gallery (2026-05-31) -------------------------
+
+class _PersistentGallery:
+    """Disk-backed mirror of (image_crops, emb_gallery) per OID.
+
+    Layout under `root`:
+        <root>/<oid>/
+            0001.jpg, 0002.jpg, ...   FIFO-numbered crops (zero-padded)
+            embs.npy                  (M, D) float16 -- emb_gallery contents
+            manifest.json             {"next_counter": int}
+
+    Crops and embeddings are tracked as independent FIFO buffers because
+    emb_gallery has dedup gating (gallery_dupe_cos) while image_crops
+    appends every observed crop -- they can have different lengths in
+    steady state.
+
+    All methods are best-effort: any I/O failure logs and continues. Disk
+    state is a cache that improves cross-restart matching; corruption
+    degrades to the "empty gallery on rehydrate" behavior, never crashes
+    the ingest path.
+
+    Atomic writes via .tmp + os.replace so a crash mid-write cannot leave
+    a partial embs.npy that would fail np.load on rehydrate. Per-crop
+    JPEGs use the same pattern (individual JPEGs are also separate files,
+    so a partial write can't poison sibling crops).
+    """
+
+    def __init__(self, root: str, enabled: bool) -> None:
+        self.root = str(root) if root else ""
+        self.enabled = bool(enabled and self.root)
+        if self.enabled:
+            try:
+                os.makedirs(self.root, exist_ok=True)
+            except Exception:
+                logger.exception(
+                    "[gallery] cannot create root %r; disabling persistence",
+                    self.root,
+                )
+                self.enabled = False
+
+    def _dir(self, oid: str) -> str:
+        return os.path.join(self.root, oid)
+
+    def _manifest_path(self, oid: str) -> str:
+        return os.path.join(self._dir(oid), "manifest.json")
+
+    def _embs_path(self, oid: str) -> str:
+        return os.path.join(self._dir(oid), "embs.npy")
+
+    def _read_manifest(self, oid: str) -> Dict[str, Any]:
+        path = self._manifest_path(oid)
+        if not os.path.exists(path):
+            return {"next_counter": 1}
+        try:
+            with open(path, "r") as fp:
+                m = json.load(fp)
+            if not isinstance(m, dict) or "next_counter" not in m:
+                return {"next_counter": 1}
+            return m
+        except Exception:
+            return {"next_counter": 1}
+
+    def _write_manifest(self, oid: str, manifest: Dict[str, Any]) -> None:
+        path = self._manifest_path(oid)
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w") as fp:
+                json.dump(manifest, fp)
+            os.replace(tmp, path)
+        except Exception:
+            logger.exception("[gallery] manifest write failed for %s", oid[:8])
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+
+    def write_crop(self, oid: str, jpeg_bytes: bytes, max_crops: int) -> None:
+        """Append jpeg_bytes as the next FIFO crop; prune to max_crops."""
+        if not self.enabled or not jpeg_bytes:
+            return
+        try:
+            d = self._dir(oid)
+            os.makedirs(d, exist_ok=True)
+            manifest = self._read_manifest(oid)
+            counter = int(manifest.get("next_counter", 1))
+            fname = f"{counter:04d}.jpg"
+            path = os.path.join(d, fname)
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as fp:
+                fp.write(jpeg_bytes)
+            os.replace(tmp, path)
+            manifest["next_counter"] = counter + 1
+            self._write_manifest(oid, manifest)
+            # FIFO prune: sort by filename (zero-padded -> chronological)
+            jpegs = sorted(f for f in os.listdir(d) if f.endswith(".jpg"))
+            excess = len(jpegs) - int(max_crops)
+            for old in jpegs[:max(0, excess)]:
+                try:
+                    os.remove(os.path.join(d, old))
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("[gallery] crop write failed for %s", oid[:8])
+
+    def write_embs(self, oid: str, embs: np.ndarray) -> None:
+        """Atomically overwrite embs.npy with the full current emb_gallery."""
+        if not self.enabled:
+            return
+        if embs is None or embs.size == 0:
+            # Empty gallery: ensure no stale file is left behind
+            try:
+                p = self._embs_path(oid)
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+            return
+        try:
+            d = self._dir(oid)
+            os.makedirs(d, exist_ok=True)
+            path = self._embs_path(oid)
+            # numpy's .npy auto-extension forces this detour: write to
+            # <path>.tmp.npy (which IS .npy-terminated, so np.save uses
+            # it exactly), then atomic rename to <path>.
+            tmp = path + ".tmp.npy"
+            np.save(tmp, embs.astype(np.float16, copy=False))
+            os.replace(tmp, path)
+        except Exception:
+            logger.exception("[gallery] embs write failed for %s", oid[:8])
+
+    def load(self, oid: str) -> Tuple[List[bytes], Optional[np.ndarray]]:
+        """Load (crops_bytes_list, emb_gallery_or_None) from disk."""
+        if not self.enabled:
+            return [], None
+        d = self._dir(oid)
+        if not os.path.isdir(d):
+            return [], None
+        crops: List[bytes] = []
+        try:
+            jpegs = sorted(f for f in os.listdir(d) if f.endswith(".jpg"))
+            for fname in jpegs:
+                try:
+                    with open(os.path.join(d, fname), "rb") as fp:
+                        crops.append(fp.read())
+                except Exception:
+                    continue
+        except Exception:
+            logger.exception("[gallery] crop scan failed for %s", oid[:8])
+        embs: Optional[np.ndarray] = None
+        emb_path = self._embs_path(oid)
+        if os.path.exists(emb_path):
+            try:
+                arr = np.load(emb_path)
+                if arr.ndim == 2 and arr.shape[0] > 0:
+                    embs = arr
+            except Exception:
+                logger.exception("[gallery] embs load failed for %s", oid[:8])
+        return crops, embs
+
+    def remove(self, oid: str) -> None:
+        if not self.enabled:
+            return
+        d = self._dir(oid)
+        if os.path.isdir(d):
+            try:
+                shutil.rmtree(d)
+            except Exception:
+                logger.exception("[gallery] remove failed for %s", oid[:8])
+
+    def clear_all(self) -> None:
+        if not self.enabled:
+            return
+        if os.path.isdir(self.root):
+            try:
+                shutil.rmtree(self.root)
+                os.makedirs(self.root, exist_ok=True)
+            except Exception:
+                logger.exception("[gallery] clear_all failed")
+
+    def list_oids(self) -> List[str]:
+        """List OIDs that have on-disk gallery data. For diagnostic/cleanup."""
+        if not self.enabled or not os.path.isdir(self.root):
+            return []
+        try:
+            return [d for d in os.listdir(self.root)
+                    if os.path.isdir(os.path.join(self.root, d))]
+        except Exception:
+            return []
 
 
 # --- minimal observation contract (duck-typed) ---
@@ -138,7 +325,8 @@ class ObjectState:
     last_upsert_emb: Optional[Emb]
     last_upsert_xyz: Optional[Vec3]
 
-    # RGB crop gallery (JPEG-compressed bytes, most recent last)
+    # RGB crop gallery (JPEG-compressed bytes, most recent last).
+    # 2026-05-31: mirrored to disk via _PersistentGallery; survives restart.
     image_crops: List[bytes]
 
     # Frame tracking for precise pose corrections
@@ -148,42 +336,18 @@ class ObjectState:
     _dim: int
 
     # --- 2026-05-11 PR: user override + lifecycle hooks ---
-    # User-pinned label override. None = no override (use label_primary).
-    # Survives forever; signals "do not auto-evict" to future lifecycle logic.
-    # Set via PATCH /objects/{oid}.
     label_user: Optional[str] = None
-
-    # Movability class for future lifecycle/eviction logic. None = unset
-    # (eviction logic falls back to vocab default, then to "semi_static").
-    # Valid: permanent | static | semi_static | movable | roaming | ephemeral
-    # See docs/design/persistence.md for taxonomy.
     movability_class: Optional[str] = None
     pose_state_at_observation: str = "on_floor"
 
     # --- 2026-05-29: reference snapshot (named-moment ground truth) ---
-    # Path on disk to the canonical JPEG ("the moment you said this is
-    # Quackers"). None until set via POST /objects/{oid}/reference.
-    # The file lives outside the sidecar at /mnt/rtsm-data/refs/<oid>.jpg
-    # by default. Persisted as a string in the FAISS sidecar.
     reference_image_path: Optional[str] = None
-
-    # CLIP embedding of the reference snapshot. L2-normalized float32,
-    # same dim as emb_mean. Persisted through the FAISS sidecar (as a
-    # JSON list, coerced back to ndarray on rehydrate). On rehydrate,
-    # used to seed emb_gallery so named objects have appearance evidence
-    # at cold-start (no waiting for re-observation).
     reference_emb: Optional[Emb] = None
 
 # ------------------------- Proximity index interface -------------------------
 
 class ProximityIndexLike(Protocol):
-    """Protocol for the minimal methods WorkingMemory needs from the ProximityIndex.
-    
-    API:
-      - insert: insert an object into the index
-      - update: update an object in the index
-      - remove: remove an object from the index
-    """
+    """Protocol for the minimal methods WorkingMemory needs from the ProximityIndex."""
 
     def insert(self, oid: str, xyz_world: Vec3, wm_lookup: Optional[Callable[[str], Optional[Tuple[bool, float, float]]]] = None) -> None: ...
 
@@ -196,21 +360,14 @@ class ProximityIndexLike(Protocol):
 class WorkingMemory:
     def __init__(self, cfg: Dict[str, Any], *, index: Optional[ProximityIndexLike] = None) -> None:
         self.cfg = cfg
-        self.index = index  # ObjectIndex-like: insert/update/remove
+        self.index = index
 
         self._map: Dict[str, ObjectState] = {}
         self._lock = threading.RLock()
-        # Latest robot pose — passthrough from sensor, updated every processed frame
         self._latest_pose: Optional[Dict[str, Any]] = None
-        # Reverse index: frame_id -> set of object IDs last updated on that frame
         self._frame_to_objects: Dict[str, set] = {}
-        # Min-heap of (deadline_mono, oid) for proto expiry (lazy re-schedule on matches)
         self._proto_heap: List[Tuple[float, str]] = []
-
-        # Min-heap of (due_mono, oid) for LTM upsert scheduling (lazy duplicates OK)
         self._ltm_heap: List[Tuple[float, str]] = []
-
-        # counters / telemetry
         self._upsert_count_total: int = 0
 
         # configs (with defaults)
@@ -218,10 +375,7 @@ class WorkingMemory:
         self.proto_ttl_s: float = float(obj_cfg.get("proto_ttl_s", 10.0))
         self.promote_hits: int = int(obj_cfg.get("promote_hits", 2))
         self.stability_promote: float = float(obj_cfg.get("stability_promote", 0.50))
-        # 2026-05-11: was hardcoded 0.05 at promote-gate (line 498); now
-        # config-lifted. Default 0.18 is the resident-robot operating point.
         self.promote_min_conf: float = float(obj_cfg.get("promote_min_conf", 0.18))
-        # 2026-05-12: evidence-count gate, paired with promote_min_conf
         self.min_label_hits: int = int(obj_cfg.get("min_label_hits", 5))
         self.require_view_bins: int = int(obj_cfg.get("require_view_bins", 2))
         self.stab_k: float = float(obj_cfg.get("stab_k", 0.45))
@@ -233,8 +387,6 @@ class WorkingMemory:
         pose_cfg = cfg.get("pose", {})
         self.meas_var_xyz_cm2 = np.array(pose_cfg.get("meas_var_xyz_cm2", [1.5, 1.5, 3.0]), dtype=np.float32) / 1e4
         self.proc_var_xyz_cm2 = np.array(pose_cfg.get("proc_var_xyz_cm2", [0.2, 0.2, 0.4]), dtype=np.float32) / 1e4
-        # Threshold (meters) above which a pose correction demotes confirmed objects
-        # back to proto so they must re-earn confirmation from good-pose frames.
         self.pose_demote_thresh_m: float = float(pose_cfg.get("demote_thresh_m", 0.30))
 
         ltm_cfg = cfg.get("ltm", {})
@@ -244,22 +396,18 @@ class WorkingMemory:
         self.ltm_min_period_s: float = float(ltm_cfg.get("min_period_s", 1.0))
         self.ltm_force_period_s: float = float(ltm_cfg.get("force_period_s", 10.0))
 
-        self.max_gallery: int = int(obj_cfg.get("max_gallery", 6))
+        # 2026-05-31: gallery caps bumped from 6 to 10. With persistent
+        # storage, 10 viewpoints per object is ~30 KB/crop * 10 = ~300 KB,
+        # which is negligible (100 objects = ~30 MB, 1000 = ~300 MB).
+        # Larger N gives stronger cross-restart matching and survives
+        # individual bad crops (occlusion, blur, lighting).
+        self.max_gallery: int = int(obj_cfg.get("max_gallery", 10))
         self.gallery_dupe_cos: float = float(obj_cfg.get("gallery_dupe_cos", 0.995))
-        # 2026-05-27: Gate 2.5 EWMA tail on emb_mean. Running mean for
-        # the first N=emb_mean_hits_threshold observations (fast
-        # convergence on new protos), then EWMA at alpha to prevent
-        # canonical-embedding ossification on long-lived objects.
-        # See update_object() below.
+        self.max_image_crops: int = int(obj_cfg.get("max_image_crops", 10))
         self.emb_mean_hits_threshold: int = int(obj_cfg.get("emb_mean_hits_threshold", 20))
         self.emb_mean_ewma_alpha: float = float(obj_cfg.get("emb_mean_ewma_alpha", 0.05))
 
         # 2026-05-30: coarse-default movability_class on proto spawn.
-        # Per movability_assignment_design.md (accepted 2026-05-28):
-        #  - Default 'movable' (~3-day TTL) gives eviction something to act on.
-        #  - None is allowed for back-compat (eviction falls back to semi_static).
-        #  - static/permanent are landmark-eligible and MUST NOT be auto-assigned;
-        #    they require manual PATCH. Bad values warn and fall back to 'movable'.
         _raw_default_mov = obj_cfg.get("default_movability", "movable")
         if _raw_default_mov is None:
             self.default_movability: Optional[str] = None
@@ -275,10 +423,25 @@ class WorkingMemory:
             )
             self.default_movability = "movable"
 
+        # 2026-05-31: persistent gallery. Disk-backed mirror of
+        # image_crops + emb_gallery per OID. Default ON. Set
+        # cfg.object.persist_galleries = false to revert to RAM-only.
+        crops_root = str(obj_cfg.get(
+            "crops_root", "/mnt/rtsm-data/rtsm-workdir/crops"
+        ))
+        persist_galleries = bool(obj_cfg.get("persist_galleries", True))
+        self._gallery = _PersistentGallery(crops_root, persist_galleries)
+        if self._gallery.enabled:
+            logger.info(
+                "[WM] persistent gallery enabled at %s "
+                "(max_gallery=%d max_image_crops=%d)",
+                crops_root, self.max_gallery, self.max_image_crops,
+            )
+        else:
+            logger.info("[WM] persistent gallery disabled")
+
         self._pose_state: str = "on_floor"
-        # The tag we stamp on new/updated objects. Derived from _pose_state.
         self._current_observation_tag: str = "on_floor"
-        # Counter for skipped writes, surfaced in stats()
         self._writes_skipped_lifted: int = 0
         self._writes_skipped_unknown: int = 0
 
@@ -287,17 +450,6 @@ class WorkingMemory:
     # ---------- CRUD ----------
 
     def set_pose_state(self, state: str) -> Dict[str, Any]:
-        
-        #Update the current pose-state gate. Called from the HTTP /pose_state
-        #endpoint when Albert's lift_detector or action_service publishes a
-        #transition.
-
-        #Valid states: "on_floor", "lifted", "unknown", "confirmed_elevated".
-        #Invalid states are clamped to "unknown" (safest -- blocks writes,
-        #flags the issue in the response).
-
-        #Returns a small status dict for the HTTP response.
-        
         valid = {"on_floor", "lifted", "unknown", "confirmed_elevated"}
         old_state = self._pose_state
 
@@ -310,9 +462,6 @@ class WorkingMemory:
 
         with self._lock:
             self._pose_state = state
-            # Tag mapping: on_floor and unknown share "on_floor" tag (unknown
-            # blocks writes anyway, so the tag is moot). confirmed_elevated
-            # stamps "elevated". lifted blocks writes; tag never used.
             if state == "confirmed_elevated":
                 self._current_observation_tag = "elevated"
             else:
@@ -331,7 +480,6 @@ class WorkingMemory:
         }
 
     def get_pose_state(self) -> str:
-        #Current pose-state string. Read-only.
         return self._pose_state
 
 
@@ -352,18 +500,10 @@ class WorkingMemory:
                 return None
             return (o.confirmed, o.stability, o.last_seen_mono)
 
-    # --- 2026-05-11 PR: user override + lifecycle hooks ---
-    # Six-class movability ladder. See docs/design/persistence.md.
     _VALID_MOVABILITY = frozenset({
         "permanent", "static", "semi_static",
         "movable", "roaming", "ephemeral",
     })
-    # 2026-05-30: classes safe to assign AUTOMATICALLY at proto spawn.
-    # Excludes static/permanent: those are landmark-eligible per
-    # movability_assignment_design.md and require manual PATCH so a human
-    # confirms the pose-correctness-critical assignment. None is also
-    # valid (means "no default"); eviction has its own None -> semi_static
-    # fallback for back-compat.
     _AUTO_DEFAULT_MOVABILITY_OK = frozenset({
         "semi_static", "movable", "roaming", "ephemeral",
     })
@@ -375,14 +515,7 @@ class WorkingMemory:
         label_user: Any = _UNSET,
         movability_class: Any = _UNSET,
     ) -> Optional["ObjectState"]:
-        """Thread-safe update of user-controllable fields on an ObjectState.
-
-        Use the module-level `_UNSET` sentinel to distinguish "leave unchanged"
-        from "set to None". `None` means "clear the field".
-
-        Returns the updated ObjectState, or None if oid not found.
-        Raises ValueError on invalid movability_class or empty label_user.
-        """
+        """Thread-safe update of user-controllable fields on an ObjectState."""
         with self._lock:
             o = self._map.get(oid)
             if o is None:
@@ -409,38 +542,19 @@ class WorkingMemory:
 
     # ------------------------------------------------------------------ #
     # 2026-05-28: Tier-2 time-based eviction policy (movability-aware).
-    #
-    # Phase scope: the *time axis* of Tier-2 from docs/design/persistence.md.
-    # NOT included here (Phase-2b): Tier-1 frustum-miss counters (need the
-    # live camera) and the soft-eviction ghost-log + re-id buffer (a
-    # `ghost_sink` hook is provided for forward-compat, but this first cut
-    # hard-removes from WM). DISABLED by default: deploying changes nothing
-    # until cfg["eviction"]["enabled"] is set true AND the movability classes
-    # are confirmed to be assigned at ingest.
     # ------------------------------------------------------------------ #
 
-    # Class -> default TTL in SECONDS. These are the "Tier-2 TTL" column from
-    # docs/design/persistence.md and are explicitly PLACEHOLDERS for Phase-2
-    # calibration, not committed operating points. None == never evict (infinite).
-    # Override any class via cfg["eviction"]["ttl_s"][<class>].
     _DEFAULT_EVICTION_TTL_S = {
-        "permanent":   None,            # walls/doors/built-ins -> never
-        "static":      90.0 * 86400.0,  # couch/fridge/desk     -> 90 days
-        "semi_static": 14.0 * 86400.0,  # chair/lamp/basket     -> 14 days
-        "movable":      3.0 * 86400.0,  # mug/book/remote        -> 3 days
-        "roaming":      1.0 * 86400.0,  # toys/robot/person      -> 1 day
-        "ephemeral":   12.0 * 3600.0,   # snack bag/mail         -> 12 hours
+        "permanent":   None,
+        "static":      90.0 * 86400.0,
+        "semi_static": 14.0 * 86400.0,
+        "movable":      3.0 * 86400.0,
+        "roaming":      1.0 * 86400.0,
+        "ephemeral":   12.0 * 3600.0,
     }
-    # Fallback when movability_class is None/unset. Matches the ObjectState
-    # field docstring ("eviction logic falls back to ... 'semi_static'").
     _EVICTION_FALLBACK_CLASS = "semi_static"
 
     def _eviction_ttl_s(self, cls: Optional[str]) -> Optional[float]:
-        """Resolve the Tier-2 TTL (seconds) for a movability class.
-
-        Merges cfg["eviction"]["ttl_s"] over the class defaults. Returns
-        None for an infinite TTL (never evict). Pure / lock-free.
-        """
         if cls not in self._VALID_MOVABILITY:
             cls = self._EVICTION_FALLBACK_CLASS
         ttl = dict(self._DEFAULT_EVICTION_TTL_S)
@@ -451,30 +565,21 @@ class WorkingMemory:
         return ttl.get(cls)
 
     def _compute_evictable_locked(self, now_wall: float) -> List[Dict[str, Any]]:
-        """Return Tier-2 eviction candidates. Caller MUST hold self._lock.
-
-        A confirmed object is a candidate iff ALL of:
-          * label_user is None          (HARD INVARIANT: user-named is treasured)
-          * its class TTL is finite     (permanent / ?-override never evict)
-          * last_seen_wall_utc is known (>0)   (conservative: unknown -> keep)
-          * (now_wall - last_seen_wall_utc) > TTL
-        Protos are ignored (handled by expire_timeouts()).
-        """
         out: List[Dict[str, Any]] = []
         for oid, o in self._map.items():
             if not getattr(o, "confirmed", False):
                 continue
             if getattr(o, "label_user", None) is not None:
-                continue  # treasured; never auto-evict
+                continue
             raw_cls = getattr(o, "movability_class", None)
             eff_cls = (raw_cls if raw_cls in self._VALID_MOVABILITY
                        else self._EVICTION_FALLBACK_CLASS)
             ttl = self._eviction_ttl_s(eff_cls)
             if ttl is None:
-                continue  # infinite TTL
+                continue
             ls = float(getattr(o, "last_seen_wall_utc", 0.0) or 0.0)
             if ls <= 0.0:
-                continue  # unknown last-seen; never evict on absence of data
+                continue
             age = now_wall - ls
             if age > ttl:
                 out.append({
@@ -490,11 +595,6 @@ class WorkingMemory:
         return out
 
     def select_evictable(self, now_wall: Optional[float] = None) -> List[Dict[str, Any]]:
-        """Pure inspector: which confirmed objects WOULD Tier-2 eviction take?
-
-        No mutation; ignores the enabled flag (always reports). For a dry-run
-        curl / UI before arming the sweep. Sorted most-stale first.
-        """
         if now_wall is None:
             now_wall = _now_wall_utc()
         with self._lock:
@@ -507,17 +607,6 @@ class WorkingMemory:
         dry_run: Optional[bool] = None,
         ghost_sink: Optional[Callable[[str, "ObjectState"], None]] = None,
     ) -> Dict[str, Any]:
-        """Tier-2 sweep: evict confirmed objects past their class TTL.
-
-        DISABLED by default (cfg["eviction"]["enabled"] = False) -> no-op.
-        dry_run (arg overrides cfg["eviction"]["dry_run"], default False):
-            report candidates without mutating.
-        ghost_sink: optional callable(oid, ObjectState) invoked BEFORE removal
-            -- the forward-compat hook for the Phase-2 ghost-log/re-id buffer.
-
-        Mirrors expire_timeouts() for removal (frame-index cleanup, del from
-        _map, index.remove). Returns a telemetry dict.
-        """
         evic_cfg = self.cfg.get("eviction", {}) or {}
         enabled = bool(evic_cfg.get("enabled", False))
         if dry_run is None:
@@ -534,7 +623,7 @@ class WorkingMemory:
             "by_class": {},
         }
         if not enabled:
-            return result  # safe no-op until explicitly armed
+            return result
 
         removed: List[str] = []
         with self._lock:
@@ -553,7 +642,6 @@ class WorkingMemory:
                 o = self._map.get(oid)
                 if o is None:
                     continue
-                # Defensive re-check of the hard invariant under the same lock.
                 if getattr(o, "label_user", None) is not None:
                     continue
                 if ghost_sink is not None:
@@ -561,7 +649,6 @@ class WorkingMemory:
                         ghost_sink(oid, o)
                     except Exception:
                         logger.exception("eviction ghost_sink failed for %s", oid)
-                # frame -> objects reverse index cleanup (mirrors expire_timeouts)
                 fid = getattr(o, "last_update_frame_id", None)
                 if fid is not None:
                     fset = self._frame_to_objects.get(fid)
@@ -577,6 +664,9 @@ class WorkingMemory:
                     self.index.remove(oid, None)
                 except Exception:
                     logger.exception("eviction index.remove failed for %s", oid)
+        # 2026-05-31: clean disk gallery for evicted OIDs (outside the lock)
+        for oid in removed:
+            self._gallery.remove(oid)
         return result
 
     def iter_objects(self) -> Iterable[ObjectState]:
@@ -591,11 +681,7 @@ class WorkingMemory:
                       centroid_px: Optional[Tuple[float, float]] = None,
                       crop: Optional[np.ndarray] = None,
                       frame_id: Optional[str] = None) -> Optional[str]:
-        """Spawn a new proto object. Index is updated here as well.
-
-        Returns:
-            Object ID if created, None if rejected (e.g., out of bounds)
-        """
+        """Spawn a new proto object. Index is updated here as well."""
         ps = self._pose_state
         if ps == "lifted":
             self._writes_skipped_lifted += 1
@@ -608,7 +694,6 @@ class WorkingMemory:
         emb_vis = emb_vis.astype(np.float32)
         D = int(emb_vis.shape[0])
 
-        # Position bounds validation (optional)
         bounds_cfg = self.cfg.get("object", {}).get("position_bounds_m", None)
         if bounds_cfg is not None:
             x_bounds = bounds_cfg.get("x", [-100, 100])
@@ -627,7 +712,7 @@ class WorkingMemory:
 
         oid = uuid.uuid4().hex[:16]
         emb_mean = emb_vis.copy()
-        gallery = emb_vis.astype(np.float16)[None, :]  # (1,D)
+        gallery = emb_vis.astype(np.float16)[None, :]
         view_bins: Dict[int, Emb] = {}
         b = _view_bin_id(view_dir_cam, self.az_bins, self.el_bins)
         if b is not None:
@@ -641,18 +726,19 @@ class WorkingMemory:
                 label_hits[lbl]   = label_hits.get(lbl, 0) + 1
         label_primary = max(label_scores.items(), key=lambda kv: kv[1])[0] if label_scores else None
 
-        # Compress and store initial crop
         image_crops: List[bytes] = []
+        initial_crop_bytes: Optional[bytes] = None
         if crop is not None:
             jpeg_quality = int(self.cfg.get("object", {}).get("crop_jpeg_quality", 75))
             jpeg_bytes = _compress_crop_jpeg(crop, quality=jpeg_quality)
             if jpeg_bytes:
                 image_crops.append(jpeg_bytes)
+                initial_crop_bytes = jpeg_bytes
 
         o = ObjectState(
             id=oid,
             xyz_world=p_world.astype(np.float32),
-            cov_world=np.array([0.02, 0.02, 0.04], dtype=np.float32),  # loose init
+            cov_world=np.array([0.02, 0.02, 0.04], dtype=np.float32),
             emb_mean=emb_mean,
             emb_gallery=gallery,
             view_bins=view_bins,
@@ -675,18 +761,20 @@ class WorkingMemory:
             last_update_frame_id=frame_id,
             _dim=D,
             pose_state_at_observation=self._current_observation_tag,
-            # 2026-05-30: coarse default; see __init__ for validation.
             movability_class=self.default_movability,
         )
         with self._lock:
             self._map[oid] = o
-            # Register in frame → objects reverse index
             if frame_id is not None:
                 self._frame_to_objects.setdefault(frame_id, set()).add(oid)
-            # schedule proto expiry (confirmed objects are never scheduled here)
             self._schedule_proto(oid, o)
         if self.index is not None:
             self.index.insert(oid, o.xyz_world, wm_lookup=self.lookup_min)
+        # 2026-05-31: persist initial gallery state to disk (outside the lock)
+        if initial_crop_bytes is not None:
+            self._gallery.write_crop(oid, initial_crop_bytes, self.max_image_crops)
+        if o.emb_gallery.shape[0] > 0:
+            self._gallery.write_embs(oid, o.emb_gallery)
         logger.debug(
             f"[WM] create oid={oid} label={label_primary if label_primary else '-'} "
             f"xyz=[{p_world[0]:.2f},{p_world[1]:.2f},{p_world[2]:.2f}]"
@@ -695,40 +783,32 @@ class WorkingMemory:
 
 
     def update_object(self, oid: str, obs: Any, *, dt_s: Optional[float] = None) -> None:
-        """Update state from a matched observation. Association guarantees `obs.p_world` & `obs.emb_vis`.
-        Optional fields used if present: view_dir_cam, centroid_px, label_topk, depth_valid, quality.
-        """
+        """Update state from a matched observation."""
         with self._lock:
             o = self._map.get(oid)
             if o is None:
                 return
             old_xyz = o.xyz_world.copy()
 
-        # --- timestamps & deltas ---
         now_m = _now_mono()
         now_w = _now_wall_utc()
         dt_s = float(dt_s if dt_s is not None else max(1e-3, now_m - o.last_seen_mono))
 
-        # --- pose EMA (keyframe-dominant) ---
         depth_valid = float(getattr(obs, "depth_valid", 1.0) or 0.0)
         quality = float(getattr(obs, "quality", 1.0) or 0.0)
         is_kf = bool(getattr(obs, "is_keyframe", False))
         if is_kf:
-            # Keyframe: near-full trust in new measurement
             w = float(np.clip(0.9 + 0.09 * depth_valid * quality, 0.9, 0.99))
         else:
-            # Non-keyframe: minimal influence, preserve keyframe position
             w = float(np.clip(0.01 + 0.09 * depth_valid * quality, 0.01, 0.1))
         z_world = obs.p_world.astype(np.float32)
         xyz_new = (1.0 - w) * o.xyz_world + w * z_world
-        # diag covariance update (simple):
         R = self.meas_var_xyz_cm2
         o_cov = (1.0 - w) ** 2 * o.cov_world + (w ** 2) * R
         o_cov = o_cov + self.proc_var_xyz_cm2 * dt_s
 
         # --- embeddings (gallery, mean, view bin) ---
         e = obs.emb_vis.astype(np.float32)
-        # gallery: only add if not near-duplicate
         add_to_gallery = True
         if o.emb_gallery.shape[0] > 0:
             cos_max = float(np.max((o.emb_gallery.astype(np.float32) @ e).astype(np.float32)))
@@ -737,54 +817,41 @@ class WorkingMemory:
             if o.emb_gallery.shape[0] < self.max_gallery:
                 o.emb_gallery = np.vstack([o.emb_gallery, e.astype(np.float16)])
             else:
-                # FIFO: drop oldest (row 0)
                 o.emb_gallery = np.vstack([o.emb_gallery[1:], e.astype(np.float16)])
-        # mean
-        # 2026-05-27: hybrid emb_mean update. Running mean while the
-        # object is young (fast convergence), then EWMA at alpha once
-        # established (anti-ossification). The EWMA half is the
-        # second part of the original Gate 2.5 design — the first
-        # part, cosine re-id at tau=0.92, shipped 2026-05-25.
+
         if o.hits < self.emb_mean_hits_threshold:
             emb_mean = _l2norm(o.emb_mean * o.hits + e)
         else:
             alpha = self.emb_mean_ewma_alpha
             emb_mean = _l2norm((1.0 - alpha) * o.emb_mean + alpha * e)
 
-        # view-bin update
         b = _view_bin_id(getattr(obs, "view_dir_cam", None), self.az_bins, self.el_bins)
         if b is not None:
             prev = o.view_bins.get(b)
             o.view_bins[b] = e if prev is None else _l2norm(0.5 * prev + 0.5 * e)
 
-        # --- labels (EWMA) ---
         topk = getattr(obs, "label_topk", None)
         if topk:
             for lbl, sc in topk:
                 s_old = o.label_scores.get(lbl, 0.0)
-                # EWMA toward score; smaller beta keeps memory of history
                 beta = 0.5
                 o.label_scores[lbl] = (1 - beta) * s_old + beta * float(sc)
-                # 2026-05-12: track observation count for promotion gate
                 o.label_hits[lbl] = o.label_hits.get(lbl, 0) + 1
-        # primary
         if o.label_scores:
             o.label_primary = max(o.label_scores.items(), key=lambda kv: kv[1])[0]
 
-        # --- image crop gallery (FIFO, max 6) ---
+        # --- image crop gallery (FIFO, max_image_crops) ---
         crop = getattr(obs, 'crop', None)
+        crop_to_persist: Optional[bytes] = None
         if crop is not None:
             jpeg_quality = int(self.cfg.get("object", {}).get("crop_jpeg_quality", 75))
             jpeg_bytes = _compress_crop_jpeg(crop, quality=jpeg_quality)
             if jpeg_bytes:
-                max_crops = int(self.cfg.get("object", {}).get("max_image_crops", 6))
                 o.image_crops.append(jpeg_bytes)
-                # FIFO: keep only most recent max_crops
-                if len(o.image_crops) > max_crops:
-                    o.image_crops = o.image_crops[-max_crops:]
+                if len(o.image_crops) > self.max_image_crops:
+                    o.image_crops = o.image_crops[-self.max_image_crops:]
+                crop_to_persist = jpeg_bytes
 
-        # --- stability ---
-        # Build a simple gain from geometry + appearance (association can pass cos/dist/px if desired).
         cos_sim = float(getattr(obs, "cos_sim", 0.9))
         dist_m = float(getattr(obs, "dist_m", 0.0))
         gate = float(self.cfg.get("assoc", {}).get("gate_dist_base_m", 0.20))
@@ -796,7 +863,6 @@ class WorkingMemory:
         prev_hits = int(o.hits)
         stab = min(1.0, o.stability + self.stab_k * gain * (1.0 - o.stability))
 
-        # --- write back (under lock), and index move if needed ---
         new_frame_id = getattr(obs, "frame_id", None)
         with self._lock:
             o.xyz_world = xyz_new.astype(np.float32)
@@ -807,7 +873,6 @@ class WorkingMemory:
             o.last_seen_mono = now_m
             o.last_seen_wall_utc = now_w
             o.last_seen_px = getattr(obs, "centroid_px", None)
-            # Update frame → objects reverse index
             if new_frame_id is not None:
                 old_frame_id = o.last_update_frame_id
                 if old_frame_id is not None and old_frame_id != new_frame_id:
@@ -818,15 +883,21 @@ class WorkingMemory:
                             del self._frame_to_objects[old_frame_id]
                 self._frame_to_objects.setdefault(new_frame_id, set()).add(oid)
                 o.last_update_frame_id = new_frame_id
-            # view_bins, label_scores, label_primary already updated on o
-            # If still proto, push a fresh deadline (lazy heap pattern tolerates duplicates)
             if not o.confirmed:
                 self._schedule_proto(oid, o)
 
         if self.index is not None and np.any(self.index.grid.cell(old_xyz) != self.index.grid.cell(o.xyz_world)):
             self.index.update(oid, old_xyz, o.xyz_world, wm_lookup=self.lookup_min)
 
-        # --- logging: match update (DEBUG level to reduce noise) ---
+        # 2026-05-31: persist gallery deltas to disk (outside the lock).
+        # Crop writes happen every observation that has a crop. Embs
+        # writes are gated by add_to_gallery (dedup-check), so they
+        # fire rarely once an object has a few samples -- the steady-
+        # state I/O cost is dominated by crops, not embs.
+        if crop_to_persist is not None:
+            self._gallery.write_crop(oid, crop_to_persist, self.max_image_crops)
+        if add_to_gallery:
+            self._gallery.write_embs(oid, o.emb_gallery)
 
         lbl = getattr(o, 'label_primary', None)
         logger.debug(
@@ -839,12 +910,9 @@ class WorkingMemory:
     # ---------- miss / decay (call for unmatched objects) ----------
 
     def decay_unmatched(self, dt_s: float) -> None:
-        """Decay stability for all objects when they weren't observed this frame.
-        Call once per frame with dt from previous frame in *monotonic* seconds.
-        """
         if dt_s <= 0:
             return
-        decay = float(self.miss_decay ** max(1.0, dt_s * 30.0))  # approx per-30fps frames
+        decay = float(self.miss_decay ** max(1.0, dt_s * 30.0))
         with self._lock:
             for o in self._map.values():
                 o.stability *= decay
@@ -864,16 +932,6 @@ class WorkingMemory:
             top_lbl = max(o.label_scores, key=o.label_scores.get) if o.label_scores else None
             top_conf = (o.label_scores.get(top_lbl, 0.0) if top_lbl else 0.0)
 
-            # Label-quality gate: require a label that passed the CLIP classifier's
-            # own threshold (which means label_scores is non-empty AND the top
-            # score is a cosine similarity at or above the classifier's min_top).
-            # PATCHED 20260430: demo-clip validation
-            # 2026-05-11: threshold lifted to config (object.promote_min_conf,
-            # default 0.18). Demo patch had hardcoded 0.05 to pass the
-            # loosened vocab thresholds (0.06/0.005); both are now restored
-            # toward original strictness for resident-robot deployment.
-            # See docs/design/persistence.md.
-            # 2026-05-12: split label gate into score + evidence-count
             top_hits = o.label_hits.get(top_lbl, 0) if top_lbl else 0
             gate_label_score = (top_lbl is not None) and (top_conf >= self.promote_min_conf)
             gate_label_evid  = (top_lbl is not None) and (top_hits >= self.min_label_hits)
@@ -890,7 +948,7 @@ class WorkingMemory:
                 f"label={top_lbl} conf={top_conf:.3f}({int(gate_label_score)}) "
                 f"lhits={top_hits}/{self.min_label_hits}({int(gate_label_evid)}) "
                 f"decision={int(all_pass)}"
-            ) 
+            )
 
             if all_pass:
                 o.confirmed = True
@@ -898,51 +956,19 @@ class WorkingMemory:
                     f"[WM] promote oid={oid} label={top_lbl} "
                     f"conf={top_conf:.3f} hits={o.hits} stab={o.stability:.3f}"
                 )
-                # 2026-05-25: schedule for immediate LTM upsert eligibility.
-                # Without this, confirmed objects never reach FAISS in live
-                # ingest mode (the upsert path drains _ltm_heap; nothing else
-                # populates it). Lost in a previous refactor; force_all=True
-                # in replay mode bypassed the heap and masked the bug.
                 heapq.heappush(self._ltm_heap, (_now_mono(), oid))
 
-    #def maybe_promote(self, oid: str) -> None:
-        #with self._lock:
-            #o = self._map.get(oid)
-            #if o is None or o.confirmed:
-                #return
-            #if o.hits >= self.promote_hits and o.stability >= self.stability_promote and len(o.view_bins) >= self.require_view_bins:
-                #o.confirmed = True
-                # Schedule immediate LTM eligibility check
-                #top_lbl = o.label_primary
-                #conf = (o.label_scores.get(top_lbl, 0.0) if top_lbl else 0.0)
-                #logger.info(
-                    #f"[WM] promote oid={oid} label={top_lbl if top_lbl else '-'} "
-                    #f"conf={conf:.3f} hits={o.hits} stab={o.stability:.3f}"
-                #)
-               # heapq.heappush(self._ltm_heap, (_now_mono(), oid))
-
     def collect_ready_for_upsert(self, force_all: bool = False) -> List[Dict[str, Any]]:
-        """Collect confirmed objects that should be (re)upserted to LTM now.
-        Returns a list of dict payloads; caller performs the actual DB write.
-        Uses a due-time heap (monotonic seconds) to avoid scanning the entire map each time.
-
-        Args:
-            force_all: If True, skip all timing/change checks and upsert ALL
-                       confirmed objects. Used by demo mode to ensure all
-                       confirmed objects are searchable after replay completes.
-        """
         out: List[Dict[str, Any]] = []
         m_now = _now_mono()
         wall_now = _now_wall_utc()
 
         def _schedule_next_due(o: ObjectState, now_m: float) -> None:
-            # Next regular check after min_period based on monotonic timestamp
             last_m = float(o.last_upsert_mono or 0.0)
             next_regular = max(now_m, last_m + self.ltm_min_period_s)
             heapq.heappush(self._ltm_heap, (next_regular, o.id))
 
         with self._lock:
-            # Force-flush: upsert ALL confirmed objects, skip timing/change checks
             if force_all:
                 for o in self._map.values():
                     if not o.confirmed or o.emb_mean is None:
@@ -953,12 +979,10 @@ class WorkingMemory:
                         "emb": o.emb_mean.astype(np.float32),
                         "xyz": o.xyz_world.astype(np.float32),
                         "label_primary": o.label_primary,
-                        # 2026-05-11: user override + display label + movability hook
                         "label_user": o.label_user,
                         "display_label": o.label_user or o.label_primary,
                         "movability_class": o.movability_class,
                         "pose_state_at_observation": o.pose_state_at_observation,
-                        # 2026-05-29: reference snapshot (named-moment GT)
                         "reference_image_path": o.reference_image_path,
                         "reference_emb": (
                             o.reference_emb.astype(np.float32).tolist()
@@ -979,24 +1003,18 @@ class WorkingMemory:
                     self._upsert_count_total += 1
                 return out
 
-            # Drain heap for entries due now (lazy duplicates tolerated)
             while self._ltm_heap and self._ltm_heap[0][0] <= m_now:
                 _, oid = heapq.heappop(self._ltm_heap)
                 o = self._map.get(oid)
                 if o is None or not o.confirmed:
-                    continue  # stale or not eligible
-                # diversity requirement
+                    continue
                 if len(o.view_bins) < max(self.ltm_min_view_bins, 1):
-                    # re-check later
                     heapq.heappush(self._ltm_heap, (m_now + self.ltm_min_period_s, oid))
                     continue
-                # time since last upsert
                 elapsed_m = m_now - float(o.last_upsert_mono or 0.0)
                 if elapsed_m < self.ltm_min_period_s:
-                    # not yet; push to the min-period boundary
                     heapq.heappush(self._ltm_heap, (float(o.last_upsert_mono or 0.0) + self.ltm_min_period_s, oid))
                     continue
-                # change tests
                 changed = True
                 if o.last_upsert_emb is not None:
                     cos_same = _cos(o.emb_mean, o.last_upsert_emb)
@@ -1004,25 +1022,21 @@ class WorkingMemory:
                     pos_delta = float(np.linalg.norm(o.xyz_world - ref_xyz))
                     changed = (cos_same <= self.reupsert_cos_max) or (pos_delta >= self.reupsert_pos_m) or (elapsed_m >= self.ltm_force_period_s)
                 if not changed:
-                    # schedule sooner of next min-period or force window
                     remaining_to_force = max(0.0, (float(o.last_upsert_mono or m_now) + self.ltm_force_period_s) - m_now)
                     delay = min(self.ltm_min_period_s, remaining_to_force)
                     heapq.heappush(self._ltm_heap, (m_now + delay, oid))
                     continue
 
-                # build compact record (no huge blobs)
                 label_topk = sorted(o.label_scores.items(), key=lambda kv: kv[1], reverse=True)[:5]
                 payload = {
                     "object_id": o.id,
                     "emb": o.emb_mean.astype(np.float32),
                     "xyz": o.xyz_world.astype(np.float32),
                     "label_primary": o.label_primary,
-                    # 2026-05-11: user override + display label + movability hook
                     "label_user": o.label_user,
                     "display_label": o.label_user or o.label_primary,
                     "movability_class": o.movability_class,
                     "pose_state_at_observation": o.pose_state_at_observation,
-                    # 2026-05-29: reference snapshot (named-moment GT)
                     "reference_image_path": o.reference_image_path,
                     "reference_emb": (
                         o.reference_emb.astype(np.float32).tolist()
@@ -1039,12 +1053,10 @@ class WorkingMemory:
                     "updated_at": wall_now,
                 }
                 out.append(payload)
-                # mark last upsert snapshot
                 o.last_upsert_wall_utc = wall_now
                 o.last_upsert_mono = m_now
                 o.last_upsert_emb = o.emb_mean.copy()
                 o.last_upsert_xyz = o.xyz_world.copy()
-                # telemetry & logging
                 self._upsert_count_total += 1
 
                 reason = "first_upsert" if o.last_upsert_emb is None else (
@@ -1057,14 +1069,12 @@ class WorkingMemory:
                     f"views={len(o.view_bins)} stab={o.stability:.3f} reason={reason} total={self._upsert_count_total}"
                 )
 
-                # schedule next routine check
                 _schedule_next_due(o, m_now)
         return out
 
     # ---------- expiry / pruning ----------
 
     def expire_timeouts(self) -> List[str]:
-        """Expire proto objects past TTL using a min-heap. Returns list of removed IDs."""
         now_m = _now_mono()
         removed: List[str] = []
         with self._lock:
@@ -1072,43 +1082,35 @@ class WorkingMemory:
                 _, oid = heapq.heappop(self._proto_heap)
                 o = self._map.get(oid)
                 if o is None or o.confirmed:
-                    continue  # stale heap entry
-                # recompute the true current deadline (may have been extended by matches)
+                    continue
                 true_deadline = o.last_seen_mono + self.proto_ttl_s
                 if true_deadline > now_m:
-                    # deadline extended; push a fresh entry (lazy heap pattern)
                     heapq.heappush(self._proto_heap, (true_deadline, oid))
                     continue
-                # Clean up frame → objects reverse index
                 if o.last_update_frame_id is not None:
                     fset = self._frame_to_objects.get(o.last_update_frame_id)
                     if fset is not None:
                         fset.discard(oid)
                         if not fset:
                             del self._frame_to_objects[o.last_update_frame_id]
-                # really expired
                 removed.append(oid)
                 del self._map[oid]
         if self.index is not None:
             for oid in removed:
                 self.index.remove(oid, None)
+        # 2026-05-31: clean disk gallery for expired protos (outside the lock)
+        for oid in removed:
+            self._gallery.remove(oid)
         return removed
 
     # ---------- internal: proto scheduling ----------
     def _schedule_proto(self, oid: str, o: ObjectState) -> None:
-        """Push a (deadline, oid) for a proto object into the heap. Lock must be held."""
         deadline = o.last_seen_mono + self.proto_ttl_s
         heapq.heappush(self._proto_heap, (deadline, oid))
 
     # ---------- demotion (bad-pose recovery) ----------
 
     def _demote_object(self, o: ObjectState) -> None:
-        """Demote a confirmed object back to proto. Lock must be held.
-
-        Resets hits and stability so the object must re-earn confirmation
-        from future good-pose frames.  Schedules it for proto TTL expiry
-        so it gets cleaned up if not re-observed.
-        """
         was_confirmed = o.confirmed
         o.confirmed = False
         o.hits = 0
@@ -1126,21 +1128,6 @@ class WorkingMemory:
         self,
         frame_corrections: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
     ) -> int:
-        """Apply retroactive pose corrections from SLAM loop closure.
-
-        Uses the frame_id → object_ids reverse index for precise correction:
-        objects linked to a corrected frame get that frame's exact delta.
-        Objects not linked to any corrected frame fall back to the delta
-        from the spatially nearest corrected camera position.
-
-        Args:
-            frame_corrections: dict mapping frame_id to
-                (old_cam_pos_3, delta_R_3x3, delta_t_3).
-                delta transforms a world point: p_new = delta_R @ p_old + delta_t
-
-        Returns:
-            Number of objects corrected.
-        """
         if not frame_corrections:
             return 0
 
@@ -1150,7 +1137,6 @@ class WorkingMemory:
         thresh = self.pose_demote_thresh_m
 
         with self._lock:
-            # Phase 1: Direct frame_id → object lookup
             for frame_id, (_, delta_R, delta_t) in frame_corrections.items():
                 linked_oids = self._frame_to_objects.get(frame_id, set())
                 for oid in linked_oids:
@@ -1164,9 +1150,6 @@ class WorkingMemory:
                     corrected += 1
                     corrected_oids.add(oid)
 
-                    # Demote if the correction is large — the frame that last
-                    # updated this object had a bad pose, so the observations
-                    # that drove promotion are untrustworthy.
                     if shift_m >= thresh:
                         self._demote_object(o)
                         demoted_oids.append(oid)
@@ -1177,7 +1160,6 @@ class WorkingMemory:
                         if old_cell != new_cell:
                             self.index.update(oid, old_xyz, new_xyz, wm_lookup=self.lookup_min)
 
-            # Phase 2: Spatial fallback for objects not linked to any corrected frame
             uncorrected = [o for o in self._map.values() if o.id not in corrected_oids]
             if uncorrected:
                 cam_positions = np.array(
@@ -1219,11 +1201,6 @@ class WorkingMemory:
     # ---------- utilities ----------
 
     def update_robot_pose(self, t_wc: np.ndarray, q_wc_xyzw: np.ndarray, timestamp: float) -> None:
-        """Store latest robot pose (passthrough from sensor).
-
-        RTSM does NOT compute or filter pose — it stores what the sensor provides.
-        This allows agents to query robot position + object positions atomically.
-        """
         self._latest_pose = {
             "xyz": t_wc.tolist() if hasattr(t_wc, 'tolist') else list(t_wc),
             "quaternion_xyzw": q_wc_xyzw.tolist() if hasattr(q_wc_xyzw, 'tolist') else list(q_wc_xyzw),
@@ -1231,7 +1208,6 @@ class WorkingMemory:
         }
 
     def get_robot_pose(self) -> Optional[Dict[str, Any]]:
-        """Get the latest robot pose, or None if no frames processed yet."""
         return self._latest_pose
 
     def stats(self) -> Dict[str, Any]:
@@ -1239,79 +1215,55 @@ class WorkingMemory:
             n = len(self._map)
             c = sum(1 for o in self._map.values() if o.confirmed)
             avg_hits = (sum(o.hits for o in self._map.values()) / n) if n else 0.0
+            # 2026-05-31: gallery telemetry
+            on_disk_oids = len(self._gallery.list_oids()) if self._gallery.enabled else 0
             return {
                 "objects": n,
                 "confirmed": c,
                 "avg_hits": avg_hits,
                 "upserts_total": int(self._upsert_count_total),
                 "robot_pose": self._latest_pose,
+                "gallery_enabled": self._gallery.enabled,
+                "gallery_on_disk_oids": on_disk_oids,
+                "gallery_root": self._gallery.root if self._gallery.enabled else None,
             }
 
     def clear(self) -> Dict[str, int]:
-        """
-        Clear all objects from working memory.
-
-        Clears object map, scheduling heaps, and resets counters.
-        Also clears the attached spatial index if present.
-
-        Returns dict with counts of what was cleared.
-        """
+        """Clear all objects from working memory (and their disk galleries)."""
         with self._lock:
             obj_count = len(self._map)
             confirmed_count = sum(1 for o in self._map.values() if o.confirmed)
             proto_count = obj_count - confirmed_count
 
-            # Clear object map
             self._map.clear()
-
-            # Clear scheduling heaps and reverse index
             self._proto_heap.clear()
             self._ltm_heap.clear()
             self._frame_to_objects.clear()
-
-            # Reset counters
             self._upsert_count_total = 0
 
-            # Clear attached spatial index if present
             if self.index is not None:
                 self.index.clear()
 
-            logger.info(f"[WM] Cleared {obj_count} objects ({confirmed_count} confirmed, {proto_count} proto)")
+        # 2026-05-31: clear disk gallery for all objects (outside the lock)
+        self._gallery.clear_all()
 
-            return {
-                "objects_cleared": obj_count,
-                "confirmed_cleared": confirmed_count,
-                "proto_cleared": proto_count,
-            }
+        logger.info(f"[WM] Cleared {obj_count} objects ({confirmed_count} confirmed, {proto_count} proto)")
+
+        return {
+            "objects_cleared": obj_count,
+            "confirmed_cleared": confirmed_count,
+            "proto_cleared": proto_count,
+        }
 
     # ---------- rehydration ----------
 
     def rehydrate_from_faiss(self, faiss_client: Any) -> Dict[str, int]:
         """Inject persisted objects from a FaissClient into WM as confirmed.
 
-        Called once at live-mode startup so that association can match new
-        observations against objects from previous sessions. Without this,
-        every restart spawns fresh OIDs for already-known objects, breaking
-        cross-session continuity.
-
-        Reads `faiss_client._embeddings` (oid -> ndarray) and
-        `faiss_client._metadata` (oid -> dict). Skips objects with missing
-        or malformed data; never crashes the caller.
-
-        Returns counts: {loaded, skipped_no_emb, skipped_bad_xyz,
-        skipped_dim_mismatch, skipped_dup}.
-
-        Notes on what's NOT carried across:
-        - emb_gallery: empty. Association falls back to emb_mean (verified
-          in association.py:307-308). Gallery rebuilds as Albert re-observes.
-        - view_bins: empty. Same fallback rationale.
-        - cov_world: initialized wide ([0.04, 0.04, 0.08]) since we have
-          no certainty about how stale the stored xyz is.
-        - last_seen_*: set to "now" so rehydrated objects don't immediately
-          look stale to downstream consumers.
-        - last_upsert_*: also "now" with current emb/xyz, so change-detection
-          in collect_ready_for_upsert correctly skips them until they
-          actually change.
+        2026-05-31: ALSO loads the on-disk persistent gallery for each
+        rehydrated OID, restoring image_crops and emb_gallery. This closes
+        the cross-restart matching gap that caused new OIDs to spawn for
+        re-observed physical objects (see handoff_2026-05-30-addendum-part-2.md).
         """
         counts = {
             "loaded": 0,
@@ -1319,6 +1271,9 @@ class WorkingMemory:
             "skipped_bad_xyz": 0,
             "skipped_dim_mismatch": 0,
             "skipped_dup": 0,
+            "gallery_restored_oids": 0,
+            "gallery_restored_crops": 0,
+            "gallery_restored_embs": 0,
         }
 
         embeddings = getattr(faiss_client, "_embeddings", None) or {}
@@ -1327,8 +1282,6 @@ class WorkingMemory:
             logger.info("[WM] rehydrate: FAISS has no persisted objects (cold start)")
             return counts
 
-        # Determine expected embedding dimension. Prefer FaissClient's
-        # configured dim if available; otherwise infer from first embedding.
         expected_dim = getattr(faiss_client, "dim", None)
         if expected_dim is None:
             for v in embeddings.values():
@@ -1344,10 +1297,6 @@ class WorkingMemory:
 
         now_m = _now_mono()
         now_w = _now_wall_utc()
-
-        # Wider initial covariance than fresh-create (0.02/0.02/0.04) since
-        # we don't know how stale this position is. EWMA on new observations
-        # will tighten it as evidence accumulates.
         cov_init = np.array([0.04, 0.04, 0.08], dtype=np.float32)
 
         new_objects: List[ObjectState] = []
@@ -1355,8 +1304,6 @@ class WorkingMemory:
         for oid, meta in metadata.items():
             oid = str(oid)
 
-            # Skip if already present (shouldn't happen at startup, but
-            # defensive: a second rehydrate call is a no-op for existing oids).
             if oid in self._map:
                 counts["skipped_dup"] += 1
                 continue
@@ -1374,8 +1321,6 @@ class WorkingMemory:
                 counts["skipped_dim_mismatch"] += 1
                 continue
 
-            # xyz comes back from FaissClient.load() as either ndarray or list
-            # depending on sidecar version; coerce defensively.
             xyz_raw = meta.get("xyz")
             try:
                 xyz = np.asarray(xyz_raw, dtype=np.float32).reshape(-1)
@@ -1386,8 +1331,6 @@ class WorkingMemory:
                 counts["skipped_bad_xyz"] += 1
                 continue
 
-            # Reconstruct label dicts from parallel lists stored in the
-            # upsert payload (see collect_ready_for_upsert).
             label_topk = list(meta.get("label_topk", []) or [])
             label_scores_list = list(meta.get("label_scores", []) or [])
             label_hits_list = list(meta.get("label_hits", []) or [])
@@ -1399,9 +1342,6 @@ class WorkingMemory:
                 if i < len(label_hits_list):
                     label_hits[str(name)] = int(label_hits_list[i])
 
-            # hits is the WM observation counter, not in the upsert payload.
-            # Default to promote_hits — a confirmed object must have passed
-            # that gate at least once, so this is a safe lower bound.
             hits_default = int(max(self.promote_hits, 1))
 
             o = ObjectState(
@@ -1410,16 +1350,6 @@ class WorkingMemory:
                 cov_world=cov_init.copy(),
                 emb_mean=emb.astype(np.float32),
                 emb_gallery=np.zeros((0, expected_dim), dtype=np.float16),
-                # 2026-05-25: seed one view_bin from emb_mean so rehydrated
-                # objects can pass downstream diversity gates (notably
-                # ltm_min_view_bins in collect_ready_for_upsert). Without
-                # this, rehydrated objects with view_bins={} are stuck in a
-                # re-scheduling loop and never get re-upserted, which means
-                # they never receive write-side fields added after their
-                # original persistence (e.g. pose_state_at_observation).
-                # Bin id 0 is an arbitrary slot; we have no record of the
-                # original viewpoint. The emb is the same as emb_mean, which
-                # is consistent with "what association would see today."
                 view_bins={0: emb.astype(np.float32)},
                 label_scores=label_scores,
                 label_hits=label_hits,
@@ -1427,7 +1357,7 @@ class WorkingMemory:
                 stability=float(meta.get("stability", 0.5)),
                 hits=hits_default,
                 confirmed=True,
-                created_mono=now_m,  # monotonic clock is process-local; reset
+                created_mono=now_m,
                 created_wall_utc=float(meta.get("created_at", now_w)),
                 last_seen_mono=now_m,
                 last_seen_wall_utc=float(meta.get("last_seen_wall_utc", now_w)),
@@ -1441,21 +1371,40 @@ class WorkingMemory:
                 _dim=expected_dim,
                 label_user=meta.get("label_user"),
                 movability_class=meta.get("movability_class"),
-                # 2026-05-25: preserve the two-tier memory tag from May-22.
-                # Default "on_floor" matches frozen_wm's back-compat behavior
-                # for sidecars written before the field existed. NOTE: the
-                # write side (collect_ready_for_upsert) must also include
-                # this field for the round-trip to fully work; verify before
-                # relying on elevated objects surviving restarts.
                 pose_state_at_observation=str(
                     meta.get("pose_state_at_observation", "on_floor")
                 ),
             )
+
+            # 2026-05-31: load persisted gallery from disk.  This is the
+            # actual fix for cross-restart matching -- rehydrated objects
+            # get their full appearance history back instead of being
+            # reduced to an emb_mean-only matcher.
+            disk_crops, disk_embs = self._gallery.load(oid)
+            gallery_restored_here = False
+            if disk_crops:
+                o.image_crops = disk_crops
+                counts["gallery_restored_crops"] += len(disk_crops)
+                gallery_restored_here = True
+            if disk_embs is not None and disk_embs.ndim == 2 and disk_embs.shape[0] > 0:
+                if disk_embs.shape[-1] == expected_dim:
+                    o.emb_gallery = disk_embs.astype(np.float16, copy=False)
+                    counts["gallery_restored_embs"] += int(disk_embs.shape[0])
+                    gallery_restored_here = True
+                else:
+                    logger.warning(
+                        f"[WM] rehydrate: disk gallery dim mismatch for "
+                        f"oid={oid[:8]}: got {disk_embs.shape[-1]} "
+                        f"expected {expected_dim}; ignoring disk gallery"
+                    )
+            if gallery_restored_here:
+                counts["gallery_restored_oids"] += 1
+
             # 2026-05-29: reference snapshot (named-moment ground truth).
-            # Reads from sidecar; seeds emb_gallery so association has
-            # appearance evidence on rehydrate (no waiting for re-observation).
-            # Solves the "rehydrated = emb_mean-only matcher" gap noted in
-            # handoff_2026-05-25.md lesson #5 — for named objects, anyway.
+            # The disk gallery above is the stronger signal; reference_emb
+            # is only used as a single-entry fallback when the disk gallery
+            # is empty (e.g. object was named but never re-observed under
+            # the new persistent-gallery code).
             ref_path = meta.get("reference_image_path")
             o.reference_image_path = ref_path
             ref_emb_raw = meta.get("reference_emb")
@@ -1464,9 +1413,8 @@ class WorkingMemory:
                     ref_emb_arr = np.asarray(ref_emb_raw, dtype=np.float32).reshape(-1)
                     if ref_emb_arr.shape[0] == expected_dim:
                         o.reference_emb = ref_emb_arr
-                        # Seed gallery: rehydrated object DID have appearance
-                        # at naming-time, even if we have no view_bins record.
-                        o.emb_gallery = ref_emb_arr.astype(np.float16).reshape(1, -1)
+                        if o.emb_gallery.shape[0] == 0:
+                            o.emb_gallery = ref_emb_arr.astype(np.float16).reshape(1, -1)
                     else:
                         logger.warning(
                             f"[WM] rehydrate: reference_emb dim mismatch for "
@@ -1479,23 +1427,12 @@ class WorkingMemory:
                     )
             new_objects.append(o)
 
-        # Single-shot lock acquisition for the actual insert.
         with self._lock:
             for o in new_objects:
                 self._map[o.id] = o
-                # 2026-05-25: schedule for LTM upsert eligibility. Without
-                # this, rehydrated objects are never considered for re-upsert
-                # (collect_ready_for_upsert only drains _ltm_heap). Any
-                # write-side fields added after the object's original
-                # persistence (e.g. pose_state_at_observation) would never
-                # reach disk for that OID. Change-detection still gates the
-                # actual write — unchanged objects skip — but the force-
-                # period check eventually re-upserts them with current
-                # payload format.
                 heapq.heappush(self._ltm_heap, (_now_mono(), o.id))
                 counts["loaded"] += 1
 
-        # Spatial index insertion is outside the WM lock (matches create_object).
         if self.index is not None:
             for o in new_objects:
                 self.index.insert(o.id, o.xyz_world, wm_lookup=self.lookup_min)
@@ -1505,7 +1442,10 @@ class WorkingMemory:
             f"(skipped no_emb={counts['skipped_no_emb']} "
             f"bad_xyz={counts['skipped_bad_xyz']} "
             f"dim={counts['skipped_dim_mismatch']} "
-            f"dup={counts['skipped_dup']})"
+            f"dup={counts['skipped_dup']}) | "
+            f"gallery: {counts['gallery_restored_oids']} OIDs restored "
+            f"({counts['gallery_restored_crops']} crops, "
+            f"{counts['gallery_restored_embs']} embs from disk)"
         )
         return counts
 
@@ -1518,24 +1458,7 @@ class WorkingMemory:
         image_path: Optional[str],
         embedding: Optional[np.ndarray],
     ) -> Optional["ObjectState"]:
-        """Thread-safe update of reference snapshot fields on an ObjectState.
-
-        Args:
-            oid: target object id.
-            image_path: filesystem path to the JPEG (callers handle the
-                actual file write). None = clear the field.
-            embedding: CLIP embedding of the reference image, expected to be
-                a float32 vector of shape (D,). L2-normalized defensively
-                here. None = clear the field.
-
-        Side effects:
-            If the object is confirmed, pushes oid onto the LTM upsert heap
-            so the new reference fields persist through the FAISS sidecar
-            quickly (without waiting for the next regular upsert window).
-
-        Returns the updated ObjectState, or None if oid not found.
-        Raises ValueError on dim mismatch with the object's existing _dim.
-        """
+        """Thread-safe update of reference snapshot fields on an ObjectState."""
         with self._lock:
             o = self._map.get(oid)
             if o is None:
@@ -1550,14 +1473,10 @@ class WorkingMemory:
                         f"reference embedding dim {arr.shape[0]} != "
                         f"object dim {o._dim}"
                     )
-                # L2-normalize defensively (CLIP outputs typically are,
-                # but the upload path is unauditable from here).
                 n = float(np.linalg.norm(arr) + 1e-12)
                 o.reference_emb = (arr / n).astype(np.float32)
             else:
                 o.reference_emb = None
-            # Force a fresh LTM upsert so the new reference fields make it
-            # to the sidecar without waiting for the regular cadence.
             if o.confirmed:
                 heapq.heappush(self._ltm_heap, (_now_mono(), oid))
             return o
@@ -1565,23 +1484,12 @@ class WorkingMemory:
     # ---------- removal ----------
 
     def remove_object(self, oid: str) -> bool:
-        """Remove an object from WM entirely. Mirrors the cleanup logic in
-        expire_timeouts() (proto) and evict_stale() (Tier-2 confirmed).
-
-        Returns True if removed, False if oid was not in WM.
-
-        Note: does NOT remove from the FAISS sidecar. If the caller wants
-        permanent removal, they must also clean the sidecar (typically by
-        stopping RTSM, editing the on-disk sidecar, and restarting). Without
-        that, the object will rehydrate on the next startup. The HTTP layer
-        attempts vectors.remove(oid) if the FaissClient exposes it.
-        """
+        """Remove an object from WM entirely (including disk gallery)."""
         last_xyz = None
         with self._lock:
             o = self._map.get(oid)
             if o is None:
                 return False
-            # frame -> objects reverse index cleanup
             fid = getattr(o, "last_update_frame_id", None)
             if fid is not None:
                 fset = self._frame_to_objects.get(fid)
@@ -1597,5 +1505,7 @@ class WorkingMemory:
                 self.index.remove(oid, last_xyz)
             except Exception:
                 logger.exception("remove_object: index.remove failed for %s", oid)
+        # 2026-05-31: clean disk gallery
+        self._gallery.remove(oid)
         logger.info("[WM] removed oid=%s", oid)
         return True

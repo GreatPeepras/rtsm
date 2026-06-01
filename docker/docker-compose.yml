@@ -15,5 +15,29 @@ services:
       - /mnt/rtsm-data/rtsm-workdir:/workspace/workdir
       - /mnt/rtsm-data/rtsm-recordings:/mnt/rtsm-data/rtsm-recordings
     environment:
-      RTSM_MODE: ${RTSM_MODE:-serve}
+      RTSM_MODE: ${RTSM_MODE:-live}
     command: ["/workspace/rtsm/scripts/entrypoint.sh"]
+
+  rtsm-ingest:
+    image: rtsm-ingest:skeleton
+    container_name: rtsm-ingest
+    restart: unless-stopped
+    network_mode: host
+    ipc: host
+    depends_on:
+      - rtsm-dev
+    environment:
+      ROS_DOMAIN_ID: 30
+      ROS_LOCALHOST_ONLY: 0
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///cyclonedds.xml
+    volumes:
+      - /home/peep/cyclonedds.xml:/cyclonedds.xml:ro
+      - /home/peep/rtsm/ingest:/workspace/rtsm-ingest
+      - /mnt/rtsm-data/rtsm-recordings:/recordings
+    command:
+      - python3
+      - /workspace/rtsm-ingest/src/subscriber.py
+      - --post-to=http://localhost:8002/ingest/keyframe
+      - --post-hz=6
+      - --camera-frame=realsense_color_optical_frame
