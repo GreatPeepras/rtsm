@@ -46,7 +46,7 @@ Live HTTP wire (added 2026-05-14):
                            endpoint, with real TF pose attached.
                            Example: http://localhost:8002/ingest/keyframe
   - --world-frame NAME     TF target frame for pose lookup (default: map)
-  - --camera-frame NAME    TF source frame    (default: camera_color_optical_frame)
+  - --camera-frame NAME    TF source frame    (default: realsense_color_optical_frame)
   - --pose-timeout MS      max wait per TF lookup (default: 100 ms)
 
   When --post-to is set, every synced frame triggers a TF lookup of
@@ -276,7 +276,7 @@ class HttpEmitter:  # PATCH 20260514
             "K": list(K_flat),
             "pose": frame.pose,
             "timestamp_ros": frame.t_capture_ns / 1e9,
-            "frame_id": frame.color_frame_id or "camera_color_optical_frame",
+            "frame_id": frame.color_frame_id or "realsense_color_optical_frame",
             "sequence": frame.seq,
         }
         # PATCH 20260518: wall-clock latency around the POST call only
@@ -381,7 +381,7 @@ class IngestSubscriber(Node):
         recorder: Optional[Recorder] = None,
         http_emitter: Optional[HttpEmitter] = None,           # PATCH 20260514
         world_frame: str = "map",                              # PATCH 20260514
-        camera_frame: str = "camera_color_optical_frame",      # PATCH 20260514
+        camera_frame: str = "realsense_color_optical_frame",      # PATCH 20260514
         pose_timeout_s: float = 0.10,                          # PATCH 20260514
         post_hz: float = 2.0,  # PATCH 20260518: default tuned for bursty workload, see backpressure-2026-05-18
     ):
@@ -755,9 +755,9 @@ def main():
         help="TF target frame for pose lookup (default: map)"
     )
     parser.add_argument(
-        "--camera-frame", default="camera_color_optical_frame",
+        "--camera-frame", default="realsense_color_optical_frame",
         help="TF source frame for pose lookup "
-             "(default: camera_color_optical_frame)"
+             "(default: realsense_color_optical_frame)"
     )
     parser.add_argument(
         "--pose-timeout-ms", type=int, default=100,
