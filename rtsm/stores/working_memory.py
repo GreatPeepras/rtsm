@@ -1181,6 +1181,187 @@ class WorkingMemory:
                 "pose_state_at_observation": o.pose_state_at_observation,
             }
 
+    # 2026-06-02: suggest_merges -- surface high-cosine + co-located pairs
+    # for human review. Read-only sweep; does NOT mutate WM or FAISS.
+    # The endpoint exists to make the manual merge pass systematic instead
+    # of eyeballing. Conservative defaults (cos>=0.95, dist<=1.0m) match
+    # the calibration finding that auto-merge is not safe at the storage
+    # layer with emb_mean cosine alone, but human review of these
+    # candidates is high-signal -- and each confirmed merge produces a
+    # labeled positive pair as a side effect.
+
+    def suggest_merges(
+        self,
+        *,
+        cos_threshold: float = 0.95,
+        dist_threshold_m: float = 1.0,
+        require_same_label: bool = False,
+        limit: int = 50,
+        include_unconfirmed: bool = False,
+    ) -> Dict[str, Any]:
+        """Find candidate Mode B duplicate pairs by visual + spatial proximity.
+
+        Returns pairs (a, b) where cosine(a.emb_mean, b.emb_mean) >=
+        cos_threshold AND ||a.xyz - b.xyz|| <= dist_threshold_m.
+
+        emb_mean is L2-normalized on every ObjectState, so dot product
+        equals cosine similarity. The sweep is O(N^2); at the current
+        corpus size (~230 OIDs) this is microseconds. Backlog: swap to
+        FAISS range search when N > ~2000.
+
+        Pairs are sorted by cosine descending (best matches first), then
+        distance ascending. The response includes a suggested_winner_oid
+        heuristic (reference-image > label_user > hits > stability), but
+        the caller is free to ignore it -- POST /objects/merge accepts any
+        winner_oid the user chooses.
+
+        Read-only. Does not mutate WM or persist anything. The caller is
+        responsible for reviewing snapshots (e.g., via
+        /objects/{oid}/snapshots) and explicitly POSTing /objects/merge
+        for each pair they confirm.
+        """
+        # Snapshot all relevant fields under the lock; do all compute on
+        # local copies so we don't hold the lock during the O(N^2) sweep.
+        with self._lock:
+            if include_unconfirmed:
+                pool = list(self._map.values())
+            else:
+                pool = [o for o in self._map.values() if o.confirmed]
+            snapshots = [
+                {
+                    "oid": o.id,
+                    "emb": o.emb_mean.astype(np.float32),
+                    "xyz": o.xyz_world.astype(np.float32).copy(),
+                    "label_primary": o.label_primary,
+                    "label_user": o.label_user,
+                    "hits": int(o.hits),
+                    "stability": float(o.stability),
+                    "has_reference": o.reference_image_path is not None,
+                    "last_seen_wall_utc": float(o.last_seen_wall_utc),
+                }
+                for o in pool
+            ]
+
+        thresholds = {
+            "cos_threshold": float(cos_threshold),
+            "dist_threshold_m": float(dist_threshold_m),
+            "require_same_label": bool(require_same_label),
+            "include_unconfirmed": bool(include_unconfirmed),
+            "limit": int(limit),
+        }
+
+        n = len(snapshots)
+        if n < 2:
+            return {
+                "candidates": [],
+                "total_pairs_above_thresholds": 0,
+                "returned": 0,
+                "scanned_objects": n,
+                "thresholds": thresholds,
+            }
+
+        # Stack embeddings + compute one big cosine matrix. Embeddings
+        # are pre-normalized so cos = dot. Float32 throughout to match
+        # the numerics in update_object / _compute_merge_locked.
+        embs = np.stack([s["emb"] for s in snapshots], axis=0)
+        xyzs = np.stack([s["xyz"] for s in snapshots], axis=0)
+        cos_mat = embs @ embs.T
+
+        pairs: List[Dict[str, Any]] = []
+        total_above = 0
+
+        for i in range(n):
+            a = snapshots[i]
+            a_disp = a["label_user"] or a["label_primary"]
+            for j in range(i + 1, n):
+                cos_ij = float(cos_mat[i, j])
+                if cos_ij < cos_threshold:
+                    continue
+                dist_ij = float(np.linalg.norm(xyzs[i] - xyzs[j]))
+                if dist_ij > dist_threshold_m:
+                    continue
+                b = snapshots[j]
+                b_disp = b["label_user"] or b["label_primary"]
+                same_label = (
+                    a_disp is not None
+                    and b_disp is not None
+                    and a_disp == b_disp
+                )
+                if require_same_label and not same_label:
+                    continue
+
+                total_above += 1
+                suggested = self._suggest_merge_winner(a, b)
+                pairs.append({
+                    "a_oid": a["oid"],
+                    "b_oid": b["oid"],
+                    "suggested_winner_oid": suggested,
+                    "cosine": round(cos_ij, 4),
+                    "distance_m": round(dist_ij, 4),
+                    "same_display_label": same_label,
+                    "a_label_primary": a["label_primary"],
+                    "b_label_primary": b["label_primary"],
+                    "a_label_user": a["label_user"],
+                    "b_label_user": b["label_user"],
+                    "a_display_label": a_disp,
+                    "b_display_label": b_disp,
+                    "a_hits": a["hits"],
+                    "b_hits": b["hits"],
+                    "a_stability": round(a["stability"], 3),
+                    "b_stability": round(b["stability"], 3),
+                    "a_has_reference": a["has_reference"],
+                    "b_has_reference": b["has_reference"],
+                    "a_xyz": xyzs[i].tolist(),
+                    "b_xyz": xyzs[j].tolist(),
+                    "a_last_seen_wall_utc": a["last_seen_wall_utc"],
+                    "b_last_seen_wall_utc": b["last_seen_wall_utc"],
+                })
+
+        # Sort: highest cosine first, then closest distance.
+        pairs.sort(key=lambda p: (-p["cosine"], p["distance_m"]))
+        truncated = pairs[: max(0, int(limit))]
+
+        return {
+            "candidates": truncated,
+            "total_pairs_above_thresholds": total_above,
+            "returned": len(truncated),
+            "scanned_objects": n,
+            "thresholds": thresholds,
+        }
+
+    @staticmethod
+    def _suggest_merge_winner(
+        a: Dict[str, Any], b: Dict[str, Any],
+    ) -> str:
+        """Pick a suggested winner OID for a candidate merge pair.
+
+        Heuristic priority (mirrors what survives in _compute_merge_locked,
+        so the suggested winner is the one that would lose the least state
+        in the merge):
+          1. Reference image set -> keep that one (canonical photo).
+          2. label_user set      -> keep that one (human pin).
+          3. More hits           -> keep that one (more observations).
+          4. Higher stability    -> tiebreak.
+        Caller can ignore -- /objects/merge accepts any winner_oid.
+        """
+        if a["has_reference"] and not b["has_reference"]:
+            return a["oid"]
+        if b["has_reference"] and not a["has_reference"]:
+            return b["oid"]
+        a_lu = a["label_user"] is not None
+        b_lu = b["label_user"] is not None
+        if a_lu and not b_lu:
+            return a["oid"]
+        if b_lu and not a_lu:
+            return b["oid"]
+        if a["hits"] > b["hits"]:
+            return a["oid"]
+        if b["hits"] > a["hits"]:
+            return b["oid"]
+        if a["stability"] >= b["stability"]:
+            return a["oid"]
+        return b["oid"]
+
     def iter_objects(self) -> Iterable[ObjectState]:
         with self._lock:
             return list(self._map.values())

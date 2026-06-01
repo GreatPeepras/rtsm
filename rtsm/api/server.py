@@ -92,6 +92,23 @@ class MergeObjectsRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class SuggestMergesRequest(BaseModel):
+    """Body schema for POST /objects/suggest_merges.
+
+    Conservative gate (defaults cos>=0.95, dist<=1.0m) surfaces high-
+    confidence Mode B duplicate candidates. Caller reviews snapshots
+    via /objects/{oid}/snapshots and POSTs /objects/merge for each pair
+    they confirm.
+    """
+    cos_threshold: float = Field(0.95, ge=0.0, le=1.0)
+    dist_threshold_m: float = Field(1.0, gt=0.0)
+    require_same_label: bool = False
+    limit: int = Field(50, ge=1, le=500)
+    include_unconfirmed: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
 # 2026-05-29: reference-snapshot endpoint schemas.
 class ReferenceImagePayload(BaseModel):
     """Body schema for POST /objects/{oid}/reference.
@@ -765,6 +782,44 @@ def create_app(
         winner = working_memory.get(winner_oid)
         if winner is not None:
             result["winner"] = _obj_detail(winner)
+        return result
+
+    @app.post("/objects/suggest_merges")
+    def suggest_merges_endpoint(
+        req: SuggestMergesRequest = Body(...),
+    ) -> Dict[str, Any]:
+        """Surface high-confidence Mode B duplicate candidates for review.
+
+        Read-only. Does NOT call merge_objects -- the caller reviews each
+        candidate (e.g., via /objects/{oid}/snapshots) and explicitly POSTs
+        /objects/merge to consolidate.
+
+        Defaults (cos>=0.95, dist<=1.0m) match the conservative gate
+        documented in handoff_2026-06-01-addendum.md. Tighter or looser
+        thresholds are accepted for exploration.
+
+        Errors:
+          405 -- WM is frozen (serve-mode)
+          500 -- unexpected failure inside the WM sweep
+        """
+        if not hasattr(working_memory, "suggest_merges"):
+            raise HTTPException(
+                status_code=405,
+                detail="suggest_merges not supported on frozen working memory",
+            )
+        try:
+            result = working_memory.suggest_merges(
+                cos_threshold=req.cos_threshold,
+                dist_threshold_m=req.dist_threshold_m,
+                require_same_label=req.require_same_label,
+                limit=req.limit,
+                include_unconfirmed=req.include_unconfirmed,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"suggest_merges failed: {e}",
+            )
         return result
 
     # ---- 2026-05-29: reference snapshot endpoints ----
