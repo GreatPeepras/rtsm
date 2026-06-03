@@ -384,6 +384,7 @@ class IngestSubscriber(Node):
         camera_frame: str = "realsense_color_optical_frame",      # PATCH 20260514
         pose_timeout_s: float = 0.10,                          # PATCH 20260514
         post_hz: float = 2.0,  # PATCH 20260518: default tuned for bursty workload, see backpressure-2026-05-18
+        watchdog_no_frame_s: float = 180.0,  # PATCH 20260603: subscription-staleness watchdog
     ):
         super().__init__("rtsm_ingest_subscriber")
 
@@ -495,6 +496,39 @@ class IngestSubscriber(Node):
             f"tf={self._world_frame}->{self._camera_frame}"
         )
 
+        # PATCH 20260603: subscription-staleness watchdog.
+        # If no synced frame arrives within watchdog_no_frame_s of either
+        # startup or the last successful sync, raise SystemExit so the
+        # container's `restart: unless-stopped` recycles into a fresh
+        # subscription. Covers two known modes:
+        #   1. DDS late-join race when subscriber starts before publisher
+        #      is reachable (Execution Jetson boots; Albert hours later).
+        #   2. Subscription handle staleness across publisher reboots.
+        self._last_synced_mono = self._t_start
+        self._watchdog_no_frame_s = watchdog_no_frame_s
+        if watchdog_no_frame_s > 0:
+            self._watchdog_timer = self.create_timer(30.0, self._watchdog_check)
+            self.get_logger().info(
+                f"watchdog: exit if no synced frame for "
+                f"{watchdog_no_frame_s:.0f}s (checked every 30s)"
+            )
+        else:
+            self.get_logger().info(
+                "watchdog: disabled (--watchdog-no-frame-s 0)"
+            )
+
+    def _watchdog_check(self):
+        # PATCH 20260603: exit if no synced frame for too long.
+        silent_s = time.monotonic() - self._last_synced_mono
+        if silent_s > self._watchdog_no_frame_s:
+            self.get_logger().warning(
+                f"watchdog: no synced frame for {silent_s:.0f}s "
+                f"(threshold={self._watchdog_no_frame_s:.0f}s). "
+                f"Exiting; container restart policy will recycle with "
+                f"a fresh subscription."
+            )
+            raise SystemExit(1)
+
     def _on_camera_info(self, msg: CameraInfo):
         if self._camera_info is not None:
             return
@@ -510,6 +544,7 @@ class IngestSubscriber(Node):
         self._info_sub = None
 
     def _on_synced(self, color_msg: CompressedImage, depth_msg: CompressedImage):
+        self._last_synced_mono = time.monotonic()  # PATCH 20260603: watchdog heartbeat
         try:
             rgb = self._decode_jpeg(color_msg.data)
         except Exception as e:
@@ -776,6 +811,12 @@ def main():
              "Joinable with stats-poller.py output on t_wall_ns. "
              "Default: off.",
     )
+    # PATCH 20260603: subscription-staleness watchdog.
+    parser.add_argument(
+        "--watchdog-no-frame-s", type=float, default=180.0,
+        help="Exit (so container can restart) if no synced frame arrives "
+             "for this many seconds. 0 disables. Default: 180.",
+    )
     args = parser.parse_args()
 
     recorder = None
@@ -797,6 +838,7 @@ def main():
         camera_frame=args.camera_frame,
         pose_timeout_s=args.pose_timeout_ms / 1000.0,
         post_hz=args.post_hz,
+        watchdog_no_frame_s=args.watchdog_no_frame_s,  # PATCH 20260603
     )
     try:
         rclpy.spin(node)
