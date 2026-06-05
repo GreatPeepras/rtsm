@@ -135,3 +135,21 @@ site/
 # Local backup files from in-place patches
 *.bak.*
 .weekend-snapshot/
+
+# Per-run audit logs from merge/auto-merge tooling — kept locally, not versioned
+scripts/merge_review_log_*.tsv
+scripts/auto_merge_log_*.tsv
+auto_merge_log_*.tsv
+merge_review_log_*.tsv
+
+
+# Stray duplicates of source-of-truth files (canonical lives elsewhere)
+/scripts/working_memory.py
+/scripts/working_memory_old.py
+
+# Stale .bak archives (moved to bak/ locally; not versioned)
+*.bak
+
+# Stray empty/typo artifact at repo root
+/.sh
+/bak/

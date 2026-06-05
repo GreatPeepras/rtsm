@@ -238,12 +238,22 @@ class ProximityIndex:
         rings: int = 1,
         *,
         prune_with: Optional[Callable[[str], bool]] = None,
+        max_results: Optional[int] = None,
     ) -> List[str]:
         """
         Get object IDs in the ±rings neighborhood of xyz_world's cell.
         - prune_with(oid) should return True if the ID is still live in WM.
           Stale IDs are lazily removed from the index.
-        - The returned list is clamped to neighbors_max by recency (most-recent first).
+        - max_results: per-query cap on returned ids.
+            None (default) -> use self.neighbors_max (historical behavior;
+                              suitable for ingest-time association queries
+                              that don't want huge candidate sets).
+            0              -> disable the cap entirely; return all hits.
+                              Use for exhaustive spatial queries (whole-
+                              apartment landmark/object listings) where
+                              recency-based eviction would silently drop
+                              the least-recently-observed objects.
+            N > 0          -> explicit cap override.
         """
         c = self.grid.cell(xyz_world)
         with self._lock:
@@ -283,10 +293,21 @@ class ProximityIndex:
                         self._touch.pop(oid, None)
                     ids.difference_update(dead)
 
+            # Resolve effective cap:
+            #   max_results=None -> historical default (self.neighbors_max)
+            #   max_results=0    -> unlimited (no clamp)
+            #   max_results=N>0  -> explicit override
+            if max_results is None:
+                _cap = self.neighbors_max
+            elif max_results == 0:
+                _cap = None
+            else:
+                _cap = int(max_results)
+
             # Clamp by recency (keep most-recent touched)
-            if len(ids) > self.neighbors_max:
+            if _cap is not None and len(ids) > _cap:
                 ids_sorted = sorted(ids, key=lambda k: self._touch.get(k, 0.0), reverse=True)
-                ids = set(ids_sorted[: self.neighbors_max])
+                ids = set(ids_sorted[:_cap])
 
             # Touch survivors (they’re active)
             now = self._now_tick()

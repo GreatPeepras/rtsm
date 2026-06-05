@@ -2174,6 +2174,63 @@ class WorkingMemory:
                 heapq.heappush(self._ltm_heap, (_now_mono(), oid))
             return o
 
+    # 2026-06-02: synchronous flush of PATCH-style mutations.  Bypasses
+    # the collect_ready_for_upsert change-detection gate so label_user
+    # and movability_class changes can be persisted to FAISS
+    # immediately, matching the architectural pattern used by
+    # /objects/merge (vectors.upsert_batch via build_faiss_record_for_merge).
+    # See handoff_2026-06-01-evening-addendum.md, Bug 1.
+    def force_flush_now(self, oid: str) -> Optional[Dict[str, Any]]:
+        """Build a FAISS upsert payload for `oid` and update last_upsert_*.
+
+        Returns the payload (caller passes it to vectors.upsert_batch),
+        or None if the OID is unknown / unconfirmed / has no emb_mean.
+        Payload shape matches collect_ready_for_upsert's regular loop
+        exactly so the FAISS sidecar stays consistent.
+        """
+        m_now = _now_mono()
+        wall_now = _now_wall_utc()
+        with self._lock:
+            o = self._map.get(oid)
+            if o is None or not o.confirmed or o.emb_mean is None:
+                return None
+            label_topk = sorted(
+                o.label_scores.items(), key=lambda kv: kv[1], reverse=True
+            )[:5]
+            payload = {
+                "object_id": o.id,
+                "emb": o.emb_mean.astype(np.float32),
+                "xyz": o.xyz_world.astype(np.float32),
+                "label_primary": o.label_primary,
+                "label_user": o.label_user,
+                "display_label": o.label_user or o.label_primary,
+                "movability_class": o.movability_class,
+                "pose_state_at_observation": o.pose_state_at_observation,
+                "reference_image_path": o.reference_image_path,
+                "reference_emb": (
+                    o.reference_emb.astype(np.float32).tolist()
+                    if o.reference_emb is not None else None
+                ),
+                "label_confidence": (
+                    o.label_scores.get(o.label_primary, 0.0)
+                    if o.label_primary else 0.0
+                ),
+                "label_topk": [k for k, _ in label_topk],
+                "label_scores": [float(v) for _, v in label_topk],
+                "label_hits":   [int(o.label_hits.get(k, 0)) for k, _ in label_topk],
+                "stability": float(o.stability),
+                "last_seen_wall_utc": o.last_seen_wall_utc,
+                "created_at": o.created_wall_utc,
+                "created_mono": o.created_mono,
+                "updated_at": wall_now,
+            }
+            o.last_upsert_wall_utc = wall_now
+            o.last_upsert_mono = m_now
+            o.last_upsert_emb = o.emb_mean.copy()
+            o.last_upsert_xyz = o.xyz_world.copy()
+            self._upsert_count_total += 1
+            return payload
+
     # ---------- removal ----------
 
     def remove_object(self, oid: str) -> bool:
