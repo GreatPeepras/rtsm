@@ -334,3 +334,21 @@ analytics:
 logging:
   periodic_summary: true
   summary_interval_s: 10.0
+
+# === Phase B.3 eviction block v1 (2026-06-05) ===
+# Tier-2 time-based eviction (movability-aware). Hard invariant in WM:
+#     label_user is not None  =>  never evicted
+# All named OIDs (~12 at arming time) are protected unconditionally.
+# Dry-run on: evict_stale computes and logs candidates without deleting.
+eviction:
+  enabled: true
+  dry_run: true
+  period_s: 300            # sweep cadence (monotonic); day-scale TTLs, so generous
+  ttl_s:
+    movable: 604800        # 7d (bumped from default 3d, 2026-06-05)
+                           #   permanent:   null  (never)
+                           #   static:      90d
+                           #   semi_static: 14d   (default fallback)
+                           #   movable:      3d
+                           #   roaming:      1d
+                           #   ephemeral:   12h

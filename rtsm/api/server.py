@@ -669,20 +669,21 @@ def create_app(
         if o is None:
             raise HTTPException(status_code=404, detail=f"Object {oid} not found")
 
-        # 2026-05-29: force-flush PATCH'd label_user/movability to FAISS.
-        # update_user_fields modifies WM only; without this push the change
-        # waits for natural re-observation, and a restart in that window
-        # loses the user's label. Re-asserting reference state via
-        # set_object_reference triggers the same lock-protected heap push
-        # that pinning a reference image already does.
+        # 2026-06-02: synchronous flush of PATCH'd label_user/movability
+        # to FAISS. Supersedes the 2026-05-29 set_object_reference heap-
+        # push, which the change-detection gate in collect_ready_for_upsert
+        # silently dropped when neither emb nor xyz had moved (handoff_
+        # 2026-06-01-evening-addendum.md, Bug 1). force_flush_now builds
+        # the same payload collect_ready_for_upsert would build and writes
+        # it via vectors.upsert_batch directly -- same pattern as
+        # /objects/merge.
         if (getattr(o, "confirmed", False)
-                and hasattr(working_memory, "set_object_reference")):
+                and vectors is not None
+                and hasattr(working_memory, "force_flush_now")):
             try:
-                working_memory.set_object_reference(
-                    oid,
-                    image_path=getattr(o, "reference_image_path", None),
-                    embedding=getattr(o, "reference_emb", None),
-                )
+                payload = working_memory.force_flush_now(oid)
+                if payload is not None:
+                    vectors.upsert_batch([payload])
             except Exception as e:
                 logger.warning(
                     f"PATCH force-flush for {oid} failed: {e}"
@@ -1207,9 +1208,9 @@ def create_app(
                     "[delete_object] failed to remove reference %s: %s", ref_path, e
                 )
         faiss_removed = False
-        if vectors is not None and hasattr(vectors, "remove"):
+        if vectors is not None and hasattr(vectors, "delete"):
             try:
-                vectors.remove(oid)
+                vectors.delete([oid])
                 faiss_removed = True
             except Exception as e:
                 logger.warning(
@@ -1381,6 +1382,57 @@ def create_app(
             raise HTTPException(status_code=500, detail=f"reload failed: {e}")
         return {"status": "ok", **summary}
 
+    # ---- Admin / eviction inspection (Phase B.3, 2026-06-05) ----
+    # === eviction admin endpoints v1 (2026-06-05) ===
+    @app.get("/admin/evictable")
+    def admin_evictable() -> Dict[str, Any]:
+        """List what WOULD evict right now (no side effects).
+
+        Pure read. Does NOT check cfg.eviction.enabled, so it works for
+        TTL tuning even when the periodic sweep is disabled. Returns
+        candidate list sorted oldest-first plus a per-class histogram.
+        """
+        if not hasattr(working_memory, "select_evictable"):
+            raise HTTPException(
+                status_code=400,
+                detail="select_evictable not supported (frozen mode?)",
+            )
+        try:
+            candidates = working_memory.select_evictable()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"select failed: {e}")
+        by_class: Dict[str, int] = {}
+        for c in candidates:
+            cls = (c.get("movability_class") or "unknown")
+            by_class[cls] = by_class.get(cls, 0) + 1
+        return {
+            "status": "ok",
+            "count": len(candidates),
+            "by_class": by_class,
+            "candidates": candidates,
+        }
+
+    @app.post("/admin/evict")
+    def admin_evict(dry_run: bool = True) -> Dict[str, Any]:
+        """Trigger one eviction sweep on demand.
+
+        Honors cfg.eviction.enabled (if False, returns scanned=0/evicted=[]).
+        The `dry_run` query-param OVERRIDES cfg.eviction.dry_run. Default
+        True -- this endpoint never deletes unless explicitly called with
+        ?dry_run=false. Safety net so an accidental curl doesn't evict
+        the world.
+        """
+        if not hasattr(working_memory, "evict_stale"):
+            raise HTTPException(
+                status_code=400,
+                detail="evict_stale not supported (frozen mode?)",
+            )
+        try:
+            result = working_memory.evict_stale(dry_run=dry_run)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"evict failed: {e}")
+        return {"status": "ok", **result}
+
     # ---- Detailed stats endpoint ----
     @app.get("/stats/detailed")
     def stats_detailed() -> Dict[str, Any]:
@@ -1434,33 +1486,70 @@ def create_app(
         top_k: int = 10,
         threshold: float = 0.0,
         include_snapshot: bool = False,
-        pose_state: str = "on_floor",   # NEW: "on_floor" | "elevated" | "any"
+        pose_state: str = "on_floor",   # "on_floor" | "elevated" | "any"
     ) -> Dict[str, Any]:
 
         """
-        Semantic search for objects using CLIP text encoding + FAISS KNN.
+        Semantic search for objects.
+
+        Two-stage ranking:
+          1. User-label matches (label_user equal-or-substring of query)
+             returned first with synthetic scores (1.0 exact, 0.9 partial).
+             Surfaces human-named objects reliably regardless of visual
+             embedding similarity. label_user is the canonical truth used
+             by goto_object; semantic search should respect that.
+          2. Visual similarity via CLIP text encoding + FAISS KNN, with
+             the same per-result enrichment as before.
+
+        Results are merged (dedup by oid; user-label entries win),
+        sorted by score desc, then truncated to top_k.
+
+        Each result includes a `match_type` field:
+          - "user_label_exact"   - label_user == query (case-insensitive)
+          - "user_label_partial" - query is substring of label_user
+          - "visual_similarity"  - CLIP visual embedding match
 
         Cosine scores vary by model: CLIP ViT-B/32 clusters 0.25-0.35,
-        SigLIP ViT-B-16 clusters 0.05-0.15 for indoor objects. The ranking
-        is meaningful (top results are most relevant) even though absolute
-        scores are low. Default threshold=0.0 returns all ranked results
-        so agents can decide their own cutoff.
-
-        For visual verification, set include_snapshot=true to get the most
-        recent observation crop (base64 JPEG) for each result. This enables
-        multimodal LLM planners to visually verify objects without relying
-        on CLIP classification.
+        SigLIP ViT-B-16 clusters 0.05-0.15 for indoor objects. Default
+        threshold=0.0 returns all ranked visual results so agents can
+        decide their own cutoff. User-label hits ignore `threshold`.
 
         Args:
-            query: Natural language search query (e.g., "red cup", "chair")
-            top_k: Maximum number of results to return
-            threshold: Minimum cosine similarity threshold (default 0.0 = return all ranked)
+            query: Natural language search query (e.g., "red cup", "bed")
+            top_k: Maximum number of results to return (after merge)
+            threshold: Minimum visual-similarity score; user-label hits bypass
             include_snapshot: If true, include base64 JPEG of most recent crop
+            pose_state: Filter by pose_state_at_observation (default "on_floor")
         """
         if not clip_adapter or not vectors:
             raise HTTPException(status_code=503, detail="Semantic search not available (CLIP or vectors not configured)")
 
-        # 1. Encode query text with CLIP
+        # --- Stage 0: user-label matches (always win) ---
+        # 2026-06-03: surface label_user matches in semantic results.
+        # Without this, a human-named object never appears for a query
+        # matching its name unless its averaged visual embedding also
+        # ranks near the top -- which it usually doesn't for well-observed
+        # objects whose emb_mean has been diluted across many views.
+        user_label_hits: Dict[str, tuple] = {}  # oid -> (synthetic_score, match_type)
+        q_lower = (query or "").strip().lower()
+        if q_lower:
+            try:
+                for o in working_memory.iter_objects():
+                    lu = getattr(o, "label_user", None)
+                    if not lu:
+                        continue
+                    lu_l = lu.lower()
+                    if lu_l == q_lower:
+                        user_label_hits[getattr(o, "id", None)] = (1.0, "user_label_exact")
+                    elif q_lower in lu_l:
+                        oid_ = getattr(o, "id", None)
+                        if oid_ is not None and oid_ not in user_label_hits:
+                            user_label_hits[oid_] = (0.9, "user_label_partial")
+            except Exception:
+                # Fail open: pure visual fallback if WM iteration breaks.
+                user_label_hits = {}
+
+        # --- Stage 1: encode query text with CLIP ---
         # For OpenAI CLIP models, wrap short queries in caption format
         # ("a photo of a dog") since CLIP was trained on image-caption pairs.
         # SigLIP models work better with raw queries (trained differently).
@@ -1472,15 +1561,31 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to encode query: {e}")
 
-        # 2. KNN search via FAISS
+        # --- Stage 2: FAISS KNN ---
+        # Request extra so user-label dedup doesn't shrink the visual list.
+        knn_k = int(top_k) + len(user_label_hits)
         try:
-            matches = vectors.search(query_emb, top_k=top_k)  # [(oid, score), ...]
+            matches = vectors.search(query_emb, top_k=knn_k)  # [(oid, score), ...]
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Vector search failed: {e}")
+        # Drop visual matches already covered by user-label hits.
+        matches = [(oid, sc) for oid, sc in matches if oid not in user_label_hits]
 
-        # 3. Filter by threshold and enrich with WM metadata, falling back
-        #    to the FAISS-side metadata sidecar when WM has no entry for the
-        #    oid (e.g. a fresh process that only loaded FAISS from disk).
+        # --- Stage 3: build combined candidate list ---
+        # User-label hits first (always pass; threshold doesn't apply).
+        # Visual matches second (threshold-gated). Each entry carries a
+        # match_type tag so the WebUI / agent can distinguish provenance.
+        combined: List[tuple] = []
+        for _oid, (_sc, _mtype) in user_label_hits.items():
+            if _oid is None:
+                continue
+            combined.append((_oid, float(_sc), _mtype))
+        for _oid, _sc in matches:
+            if _sc < threshold:
+                continue
+            combined.append((_oid, float(_sc), "visual_similarity"))
+
+        # --- Stage 4: enrich each entry ---
         # 2026-05-26 Gate 3: compute robot_pose / robot_xyz once and reuse
         # for distance_from_robot on every result. None-safe; if robot pose
         # isn't published the per-result distance just becomes None and the
@@ -1488,10 +1593,9 @@ def create_app(
         robot_pose = working_memory.get_robot_pose()
         robot_xyz = _robot_xyz(robot_pose)
         results = []
-        for oid, score in matches:
-            if score < threshold:
-                continue
+        for oid, score, match_type in combined:
             obj = working_memory.get(oid)
+            meta = None
             if obj is not None:
                 source = "wm"
                 confirmed_v = obj.confirmed
@@ -1499,7 +1603,6 @@ def create_app(
                 xyz = obj.xyz_world
                 xyz_v = xyz.tolist() if xyz is not None else None
             else:
-                meta = None
                 get_meta = getattr(vectors, "get_metadata", None)
                 if callable(get_meta):
                     try:
@@ -1561,6 +1664,8 @@ def create_app(
             # back None, which the bridge degrades gracefully on.
             if obj is not None:
                 label_v = _display_label(obj)
+                label_user_v = getattr(obj, "label_user", None)
+                label_primary_v = getattr(obj, "label_primary", None)
                 last_seen_v = _iso_from_wall_utc(
                     getattr(obj, "last_seen_wall_utc", 0.0)
                 )
@@ -1568,14 +1673,23 @@ def create_app(
                 label_v = (meta.get("label")
                            or meta.get("label_user")
                            or meta.get("label_primary"))
+                label_user_v = meta.get("label_user")
+                label_primary_v = meta.get("label_primary")
                 last_seen_v = _iso_from_wall_utc(meta.get("last_seen_wall_utc"))
             else:
                 label_v = None
+                label_user_v = None
+                label_primary_v = None
                 last_seen_v = None
 
             entry: Dict[str, Any] = {
                 "id": oid,
                 "score": round(float(score), 4),
+                # 2026-06-03 search-boost additions:
+                "match_type": match_type,
+                "label_user": label_user_v,
+                "label_primary": label_primary_v,
+                # ---
                 "confirmed": confirmed_v,
                 "stability": stability_v,
                 "xyz_world": xyz_v,
@@ -1599,6 +1713,10 @@ def create_app(
                     entry["snapshot_count"] = len(crops)
 
             results.append(entry)
+
+        # --- Stage 5: sort by score desc, truncate to top_k ---
+        results.sort(key=lambda r: -float(r.get("score") or 0.0))
+        results = results[:int(top_k)]
 
         return {
             "query": query,
@@ -1677,6 +1795,134 @@ def create_app(
             "center": [x, y, z],
             "radius_m": radius_m,
             "robot_pose": robot_pose,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "count": len(page),
+            "results": page,
+        }
+
+    @app.get("/landmarks/near")
+    def landmarks_near(
+        x: float, y: float, z: float,
+        radius_m: float = 2.0,
+        include_semi_static: bool = False,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """Landmark-eligible spatial search.
+
+        Returns objects with movability_class IN ('static', 'permanent'),
+        or optionally widened to include 'semi_static'. Hard invariant:
+        this endpoint NEVER returns objects with movability_class outside
+        the allow-list, regardless of label or hits. The landmark consumer
+        must be able to trust the filter completely.
+
+        Per on_demand_nav_and_landmark_gate_design.md (2026-06-02) —
+        shared infrastructure for nav2 goal resolution and AMCL landmark
+        gating.
+
+        Args:
+            x, y, z: Center point in world coordinates (meters)
+            radius_m: Search radius in meters (default 2.0 — wider than
+                /search/spatial because landmarks are sparser than the
+                general observation population)
+            include_semi_static: If True, widen the allow-list to include
+                'semi_static' (3D printer, label printer, etc.). Default
+                False — semi_statics are not landmarks by default.
+            offset: Skip first N results (for pagination)
+            limit: Maximum results to return (default 50, max 200)
+
+        Returns:
+            Landmarks sorted by distance ascending, with pagination.
+        """
+        limit = min(max(1, limit), 200)
+        offset = max(0, offset)
+
+        # Build the allow-list. ALWAYS includes 'static' + 'permanent';
+        # optionally widens to 'semi_static'. NEVER includes movable /
+        # roaming / ephemeral / None.
+        allowed = {"static", "permanent"}
+        if include_semi_static:
+            allowed.add("semi_static")
+
+        center = np.array([x, y, z], dtype=np.float32)
+
+        # 2026-06-03: full WM scan instead of proximity-index lookup.
+        # The proximity index is optimized for tight "what's near me"
+        # queries fired per-ingest; its rings-based cell iteration drops
+        # some cells for far-from-object centers with large radii (e.g.
+        # whole-apartment queries centered on origin). Landmark queries
+        # are infrequent and the candidate set is tiny (~dozens of
+        # static/permanent objects in a typical home), so iter_objects()
+        # is fast enough and correct in all cases. Also makes the
+        # endpoint work in serve-mode (frozen WM, no proximity index).
+
+        all_results: List[Dict[str, Any]] = []
+        for obj in working_memory.iter_objects():
+            # Hard invariant: positive allow-list match only. Objects with
+            # movability_class = None, "" (empty), or any other value not
+            # in the canonical set are excluded. No fuzzy matching.
+            mov = getattr(obj, "movability_class", None)
+            if mov not in allowed:
+                continue
+
+            xyz = getattr(obj, "xyz_world", None)
+            if xyz is None:
+                continue
+
+            dist = float(np.linalg.norm(xyz - center))
+            if dist > radius_m:
+                continue
+
+            oid = getattr(obj, "id", None)
+            if oid is None:
+                continue
+
+            # Surface the fields landmark consumers actually need:
+            #   - label_user for goto-by-name resolution
+            #   - display_label for TTS narration
+            #   - last_seen_wall_utc for staleness reasoning
+            # Compute label_primary the same way _obj_summary does
+            # (min_label_hits gate), so display_label is consistent
+            # across this and the rest of the API.
+            _scores = getattr(obj, "label_scores", {}) or {}
+            _hits = getattr(obj, "label_hits", {}) or {}
+            _min_hits = int(getattr(working_memory, "min_label_hits", 5))
+            _gated = {k: v for k, v in _scores.items()
+                      if int(_hits.get(k, 0)) >= _min_hits}
+            if _gated:
+                label_primary = max(_gated, key=_gated.get)
+            else:
+                label_primary = getattr(obj, "label_primary", None)
+            label_user = getattr(obj, "label_user", None)
+
+            all_results.append({
+                "id": oid,
+                "distance_m": round(dist, 4),
+                "xyz_world": obj.xyz_world.tolist(),
+                "confirmed": bool(getattr(obj, "confirmed", False)),
+                "stability": round(float(getattr(obj, "stability", 0.0)), 3),
+                "hits": int(getattr(obj, "hits", 0)),
+                "label_user": label_user,
+                "label_primary": label_primary,
+                "display_label": label_user or label_primary,
+                "movability_class": mov,
+                "last_seen_wall_utc": float(
+                    getattr(obj, "last_seen_wall_utc", 0.0)
+                ),
+            })
+
+        all_results.sort(key=lambda r: r["distance_m"])
+        total = len(all_results)
+        page = all_results[offset : offset + limit]
+
+        return {
+            "center": [x, y, z],
+            "radius_m": radius_m,
+            "include_semi_static": include_semi_static,
+            "allowed_movability": sorted(allowed),
+            "robot_pose": working_memory.get_robot_pose(),
             "total": total,
             "offset": offset,
             "limit": limit,
