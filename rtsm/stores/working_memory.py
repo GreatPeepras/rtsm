@@ -15,6 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, List, Iterable, Any, Callable, Protocol
 import numpy as np
+# NAME_INTENT_2026-06-29: deferred name-intent registry
+try:
+    from .name_intent import NameIntentRegistry, ResolvedMatch
+except ImportError:
+    from name_intent import NameIntentRegistry, ResolvedMatch
 import time
 import uuid
 import threading
@@ -378,6 +383,8 @@ class WorkingMemory:
         self.promote_min_conf: float = float(obj_cfg.get("promote_min_conf", 0.18))
         self.min_label_hits: int = int(obj_cfg.get("min_label_hits", 5))
         self.require_view_bins: int = int(obj_cfg.get("require_view_bins", 2))
+        # NAME_INTENT_2026-06-29: pending name-intent registry (deferred labeling)
+        self.name_intents = NameIntentRegistry()
         self.stab_k: float = float(obj_cfg.get("stab_k", 0.45))
         self.miss_decay: float = float(obj_cfg.get("miss_decay", 0.92))
 
@@ -1329,6 +1336,225 @@ class WorkingMemory:
             "thresholds": thresholds,
         }
 
+    # Added 2026-06-11. Marker: FIND_FRAGMENTS_2026-06-11.
+    def find_fragments(
+        self,
+        anchor_oid: str,
+        *,
+        cos_threshold: float = 0.85,
+        dist_threshold_m: Optional[float] = None,
+        include_unconfirmed: bool = True,
+        exclude_named: bool = False,
+        pose_state: str = "any",
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Per-anchor merge-candidate search.
+
+        Finds OIDs that may be fragments of the same physical object as
+        anchor_oid. Unlike suggest_merges (pairwise O(N^2) sweep with
+        fixed thresholds), this fixes the anchor and widens the gates.
+        Designed for human review of "is anything else in WM a fragment
+        of this named object?" -- particularly useful for catching
+        across-room movement of movable items and lifted/lowered
+        duplicates.
+
+        Adaptive dist_threshold_m:
+          If dist_threshold_m is None, the threshold is selected from
+          the anchor's movability_class:
+            permanent / static / semi_static -> 3.0m  (furniture extent)
+            movable / roaming / ephemeral    -> 9.0m  (room diagonal)
+            null / unset                     -> 5.0m  (fallback)
+          Caller can override with any positive float.
+
+        pose_state filter (candidates only; anchor always included):
+          "any"          -- both buckets (default; surfaces lift/lower)
+          "on_floor"     -- candidates seen on the floor only
+          "elevated"     -- candidates seen elevated only
+          "match_anchor" -- candidates matching the anchor's pose_state
+
+        Read-only. Does NOT mutate WM. The caller is responsible for
+        reviewing snapshots and POSTing /objects/merge for each
+        confirmed fragment.
+
+        Returns {"error": "not_found", "id": ...} if anchor_oid is
+        unknown. The HTTP wrapper converts that to a 404.
+        """
+        DIST_DEFAULTS_M = {
+            "permanent":   3.0,
+            "static":      3.0,
+            "semi_static": 3.0,
+            "movable":     9.0,
+            "roaming":     9.0,
+            "ephemeral":   9.0,
+        }
+        DIST_FALLBACK_M = 5.0
+
+        VALID_POSE_STATES = ("any", "on_floor", "elevated", "match_anchor")
+        if pose_state not in VALID_POSE_STATES:
+            raise ValueError(
+                f"pose_state must be one of {VALID_POSE_STATES}, "
+                f"got {pose_state!r}"
+            )
+
+        # Snapshot all relevant fields under the lock; compute outside.
+        with self._lock:
+            anchor = self._map.get(anchor_oid)
+            if anchor is None:
+                return {"error": "not_found", "id": anchor_oid}
+
+            anchor_snap = {
+                "oid": anchor.id,
+                "emb": anchor.emb_mean.astype(np.float32).copy(),
+                "xyz": anchor.xyz_world.astype(np.float32).copy(),
+                "label_primary": anchor.label_primary,
+                "label_user": anchor.label_user,
+                "movability_class": anchor.movability_class,
+                "hits": int(anchor.hits),
+                "stability": float(anchor.stability),
+                "has_reference": anchor.reference_image_path is not None,
+                "last_seen_wall_utc": float(anchor.last_seen_wall_utc),
+                "pose_state_at_observation": getattr(
+                    anchor, "pose_state_at_observation", "on_floor"
+                ),
+                "confirmed": bool(getattr(anchor, "confirmed", False)),
+            }
+
+            # Candidate pool: everything except the anchor itself.
+            candidates_raw = []
+            for o in self._map.values():
+                if o.id == anchor_oid:
+                    continue
+                if not include_unconfirmed and not getattr(o, "confirmed", False):
+                    continue
+                candidates_raw.append({
+                    "oid": o.id,
+                    "emb": o.emb_mean.astype(np.float32).copy(),
+                    "xyz": o.xyz_world.astype(np.float32).copy(),
+                    "label_primary": o.label_primary,
+                    "label_user": o.label_user,
+                    "movability_class": o.movability_class,
+                    "hits": int(o.hits),
+                    "stability": float(o.stability),
+                    "has_reference": o.reference_image_path is not None,
+                    "last_seen_wall_utc": float(o.last_seen_wall_utc),
+                    "pose_state_at_observation": getattr(
+                        o, "pose_state_at_observation", "on_floor"
+                    ),
+                    "confirmed": bool(getattr(o, "confirmed", False)),
+                })
+
+        # Resolve adaptive distance threshold.
+        if dist_threshold_m is None:
+            anchor_cls = anchor_snap["movability_class"]
+            resolved_dist = DIST_DEFAULTS_M.get(anchor_cls, DIST_FALLBACK_M)
+            dist_default_used = True
+        else:
+            resolved_dist = float(dist_threshold_m)
+            dist_default_used = False
+
+        # Resolve pose_state filter.
+        if pose_state == "match_anchor":
+            resolved_pose = anchor_snap["pose_state_at_observation"]
+        else:
+            resolved_pose = pose_state
+
+        # Apply pool filters (post-snapshot, pre-sweep).
+        if resolved_pose != "any":
+            candidates_raw = [
+                c for c in candidates_raw
+                if c["pose_state_at_observation"] == resolved_pose
+            ]
+        if exclude_named:
+            candidates_raw = [
+                c for c in candidates_raw if c["label_user"] is None
+            ]
+
+        thresholds = {
+            "cos_threshold": float(cos_threshold),
+            "dist_threshold_m": float(resolved_dist),
+            "dist_threshold_default_used": dist_default_used,
+            "include_unconfirmed": bool(include_unconfirmed),
+            "exclude_named": bool(exclude_named),
+            "pose_state": pose_state,
+            "pose_state_resolved": resolved_pose,
+            "limit": int(limit),
+        }
+
+        # Build the anchor response block (no emb in output).
+        anchor_block = {
+            "oid": anchor_snap["oid"],
+            "label_user": anchor_snap["label_user"],
+            "label_primary": anchor_snap["label_primary"],
+            "movability_class": anchor_snap["movability_class"],
+            "xyz": anchor_snap["xyz"].tolist(),
+            "hits": anchor_snap["hits"],
+            "stability": round(anchor_snap["stability"], 3),
+            "has_reference": anchor_snap["has_reference"],
+            "confirmed": anchor_snap["confirmed"],
+            "pose_state_at_observation": anchor_snap["pose_state_at_observation"],
+            "last_seen_wall_utc": anchor_snap["last_seen_wall_utc"],
+        }
+
+        n = len(candidates_raw)
+        if n == 0:
+            return {
+                "anchor": anchor_block,
+                "fragments": [],
+                "scanned_objects": 0,
+                "returned": 0,
+                "total_above_thresholds": 0,
+                "thresholds": thresholds,
+            }
+
+        # Vectorized cosine + distance vs the anchor. Embeddings are
+        # pre-normalized (L2) so dot product equals cosine similarity.
+        anchor_emb = anchor_snap["emb"]
+        anchor_xyz = anchor_snap["xyz"]
+        cand_embs = np.stack([c["emb"] for c in candidates_raw], axis=0)
+        cand_xyzs = np.stack([c["xyz"] for c in candidates_raw], axis=0)
+        cosines = (cand_embs @ anchor_emb).astype(np.float32)
+        dists = np.linalg.norm(
+            cand_xyzs - anchor_xyz, axis=1
+        ).astype(np.float32)
+
+        fragments: List[Dict[str, Any]] = []
+        total_above = 0
+        for idx, c in enumerate(candidates_raw):
+            cos_i = float(cosines[idx])
+            if cos_i < cos_threshold:
+                continue
+            dist_i = float(dists[idx])
+            if dist_i > resolved_dist:
+                continue
+            total_above += 1
+            fragments.append({
+                "oid": c["oid"],
+                "label_user": c["label_user"],
+                "label_primary": c["label_primary"],
+                "movability_class": c["movability_class"],
+                "cosine": round(cos_i, 4),
+                "distance_m": round(dist_i, 4),
+                "hits": c["hits"],
+                "stability": round(c["stability"], 3),
+                "has_reference": c["has_reference"],
+                "confirmed": c["confirmed"],
+                "pose_state_at_observation": c["pose_state_at_observation"],
+                "xyz": cand_xyzs[idx].tolist(),
+                "last_seen_wall_utc": c["last_seen_wall_utc"],
+            })
+
+        fragments.sort(key=lambda f: (-f["cosine"], f["distance_m"]))
+        truncated = fragments[: max(0, int(limit))]
+
+        return {
+            "anchor": anchor_block,
+            "fragments": truncated,
+            "scanned_objects": n,
+            "returned": len(truncated),
+            "total_above_thresholds": total_above,
+            "thresholds": thresholds,
+        }
+
     @staticmethod
     def _suggest_merge_winner(
         a: Dict[str, Any], b: Dict[str, Any],
@@ -1650,6 +1876,17 @@ class WorkingMemory:
                     f"conf={top_conf:.3f} hits={o.hits} stab={o.stability:.3f}"
                 )
                 heapq.heappush(self._ltm_heap, (_now_mono(), oid))
+                # NAME_INTENT_2026-06-29: reconcile newly-confirmed object vs pending intents
+                try:
+                    _m = self.name_intents.reconcile_object(
+                        o.id, getattr(o, 'emb_mean', None),
+                        getattr(o, 'xyz_world', None), bool(getattr(o, 'label_user', None)))
+                    if _m is not None:
+                        o.label_user = _m.label
+                        logger.info(f"[name-intent] applied label_user={_m.label!r} "
+                                    f"to oid={o.id[:8]} sim={_m.sim:.3f}")
+                except Exception as _e:
+                    logger.warning(f"[name-intent] reconcile-on-confirm failed: {_e}")
 
     def collect_ready_for_upsert(self, force_all: bool = False) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -1899,6 +2136,36 @@ class WorkingMemory:
             "quaternion_xyzw": q_wc_xyzw.tolist() if hasattr(q_wc_xyzw, 'tolist') else list(q_wc_xyzw),
             "timestamp": float(timestamp),
         }
+
+    # NAME_INTENT_2026-06-29: deferred name-intent registration + reconcile-at-registration
+    def register_name_intent(self, *, label, description, memory_name,
+                             intent_emb, ttl_s=None):
+        """Register a pending name-intent and immediately try to match it
+        against already-confirmed, unlabeled objects (covers the case where
+        the object confirmed between dispatch and this call). Returns
+        (intent_id, immediate_oid_or_None, immediate_sim_or_None)."""
+        robot_pose = self.get_robot_pose()
+        with self._lock:
+            iid = self.name_intents.register(
+                label=label, description=description, memory_name=memory_name,
+                intent_emb=intent_emb, robot_pose=robot_pose, ttl_s=ttl_s)
+            # reconcile-at-registration: scan recent confirmed unlabeled objs
+            imm_oid, imm_sim = None, None
+            for o in self._map.values():
+                if not getattr(o, 'confirmed', False):
+                    continue
+                if getattr(o, 'label_user', None):
+                    continue
+                _m = self.name_intents.reconcile_object(
+                    o.id, getattr(o, 'emb_mean', None),
+                    getattr(o, 'xyz_world', None), False)
+                if _m is not None:
+                    o.label_user = _m.label
+                    imm_oid, imm_sim = o.id, _m.sim
+                    logger.info(f"[name-intent] immediate match intent={iid[:8]} "
+                                f"-> oid={o.id[:8]} sim={_m.sim:.3f}")
+                    break
+        return iid, imm_oid, imm_sim
 
     def get_robot_pose(self) -> Optional[Dict[str, Any]]:
         return self._latest_pose

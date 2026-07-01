@@ -1,0 +1,1567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RTSM Fragment Review — 2026-06-11 14:54</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         background: #1a1a1a; color: #ddd; margin: 0; padding: 24px; }
+  h1 { font-size: 18px; color: #fff; margin: 0 0 4px 0; }
+  .meta { color: #888; font-size: 12px; margin-bottom: 24px; }
+  .anchor { background: #252525; border: 1px solid #333; border-radius: 8px;
+            padding: 16px; margin-bottom: 32px; }
+  .anchor-header { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+  .anchor-header h2 { margin: 0; font-size: 20px; color: #ffc857; }
+  .anchor-header .meta-row { font-family: ui-monospace, "SF Mono", Menlo, monospace;
+                             font-size: 12px; color: #888; }
+  .row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .card { background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+          padding: 8px; width: 240px; }
+  .card.anchor-card { border-color: #ffc857; border-width: 2px; }
+  .card img { width: 224px; height: 224px; object-fit: cover; background: #000;
+              border-radius: 4px; display: block; }
+  .card .label { color: #fff; font-weight: 600; margin: 6px 0 2px 0;
+                 word-break: break-word; }
+  .card .oid { font-family: ui-monospace, "SF Mono", Menlo, monospace;
+               font-size: 11px; color: #888; word-break: break-all; }
+  .card .stats { font-size: 11px; color: #aaa; margin-top: 6px; line-height: 1.5; }
+  .card .stats span { display: inline-block; padding: 1px 5px; background: #2a2a2a;
+                       border-radius: 3px; margin-right: 4px; }
+  .card .cosine { color: #5fb878; font-weight: 600; }
+  .card .has-ref { color: #5fb878; }
+  .card .no-ref { color: #d97757; }
+  .clean { color: #5fb878; font-style: italic; }
+  .candidates-row { margin-top: 16px; }
+  .copy-cmd { background: #1a1a1a; border: 1px solid #333; border-radius: 4px;
+              padding: 8px 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+              font-size: 11px; color: #aaa; margin-top: 8px; overflow-x: auto; }
+  hr { border: none; border-top: 1px solid #333; margin: 24px 0; }
+  .summary { background: #2a2a2a; padding: 12px 16px; border-radius: 6px;
+             margin-bottom: 24px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>RTSM Fragment Review</h1>
+<div class="meta">
+  Generated 2026-06-11 14:54:13 &middot;
+  cos &ge; 0.95 &middot;
+  RTSM @ http://192.168.0.53:8002
+</div>
+<div class="summary">
+  <strong>19 named OIDs</strong> audited at cos &ge; 0.95.
+  <strong>12</strong> have at least one candidate above gate.
+  <br>
+  Anchor snapshots have a <span style="color:#ffc857">yellow border</span>.
+  Eyeball each candidate against the anchor; real duplicates get the merge curl below.
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>bed</h2>
+    <div class="meta-row">2f797dd53bca40a0 &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[-1.3522957563400269,-0.12999467551708221,0.002207743236795068]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/2f797dd53bca40a0/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">bed <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">2f797dd53bca40a0</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="clean" style="padding: 16px; align-self: center;">No candidates above gate. Anchor appears clean.</div>
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>wooden floor</h2>
+    <div class="meta-row">7462532b7d194be7 &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[-0.9192321300506592,-0.6016389727592468,0.003932544030249119]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/7462532b7d194be7/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">wooden floor <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">7462532b7d194be7</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="clean" style="padding: 16px; align-self: center;">No candidates above gate. Anchor appears clean.</div>
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>stool</h2>
+    <div class="meta-row">f71fe808918b4805 &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[0.44122105836868286,5.549196243286133,0.5193623304367065]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/f71fe808918b4805/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">stool <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">f71fe808918b4805</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/135ba327ec564c24/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">computer</div>
+      <div class="oid">135ba327ec564c24</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9692</span>
+        <span>6.0402&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "f71fe808918b4805", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "f71fe808918b4805"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>drawer</h2>
+    <div class="meta-row">42916ddf31ad4deb &middot; static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[-1.330744743347168,-1.294313669204712,0.3008529543876648]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/42916ddf31ad4deb/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">drawer <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">42916ddf31ad4deb</div>
+      <div class="stats"><span>static</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/c5804cd278214b13/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">television</div>
+      <div class="oid">c5804cd278214b13</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9639</span>
+        <span>2.8197&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/360ac1af518f4270/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bowl</div>
+      <div class="oid">360ac1af518f4270</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9548</span>
+        <span>0.4595&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "42916ddf31ad4deb", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "42916ddf31ad4deb"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>heater</h2>
+    <div class="meta-row">fa716a8d2fb045e4 &middot; static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[-1.2201926708221436,-1.811732292175293,0.3583754003047943]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/fa716a8d2fb045e4/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">heater <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">fa716a8d2fb045e4</div>
+      <div class="stats"><span>static</span></div>
+    </div>
+    <div class="clean" style="padding: 16px; align-self: center;">No candidates above gate. Anchor appears clean.</div>
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>picture</h2>
+    <div class="meta-row">45abc0586d5e44db &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[-0.8155451416969299,1.6055545806884766,0.39854946732521057]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/45abc0586d5e44db/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">picture <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">45abc0586d5e44db</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="clean" style="padding: 16px; align-self: center;">No candidates above gate. Anchor appears clean.</div>
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>label printer</h2>
+    <div class="meta-row">eedbace9f79f45b8 &middot; semi_static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[-0.8983598947525024,1.7744742631912231,0.7701698541641235]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/eedbace9f79f45b8/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">label printer <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">eedbace9f79f45b8</div>
+      <div class="stats"><span>semi_static</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/5555e7e2ad104843/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">ottoman</div>
+      <div class="oid">5555e7e2ad104843</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9549</span>
+        <span>2.5559&nbsp;m</span>
+        <br>
+        <span>ephemeral</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "eedbace9f79f45b8", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "eedbace9f79f45b8"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>desk</h2>
+    <div class="meta-row">73771974f104419b &middot; static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[-0.628044843673706,2.0271830558776855,0.6695871353149414]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/73771974f104419b/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">desk <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">73771974f104419b</div>
+      <div class="stats"><span>static</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/360ac1af518f4270/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bowl</div>
+      <div class="oid">360ac1af518f4270</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9852</span>
+        <span>2.9828&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/16f5e813172542dc/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">hammer</div>
+      <div class="oid">16f5e813172542dc</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9812</span>
+        <span>2.7274&nbsp;m</span>
+        <br>
+        <span>ephemeral</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/3296c6cfb7e04d62/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bag</div>
+      <div class="oid">3296c6cfb7e04d62</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9785</span>
+        <span>0.6802&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/01db3ddcf5b94e2c/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">window</div>
+      <div class="oid">01db3ddcf5b94e2c</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9749</span>
+        <span>0.954&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>elevated</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/143e542460204af8/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">shoe</div>
+      <div class="oid">143e542460204af8</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9726</span>
+        <span>1.2667&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/f5b67645c1a2402e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">door</div>
+      <div class="oid">f5b67645c1a2402e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9721</span>
+        <span>2.0488&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/cd4bb83867a54671/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">webcam</div>
+      <div class="oid">cd4bb83867a54671</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9719</span>
+        <span>2.5334&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/75b4df403fd6417d/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">mirror</div>
+      <div class="oid">75b4df403fd6417d</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9708</span>
+        <span>2.6163&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/c5804cd278214b13/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">television</div>
+      <div class="oid">c5804cd278214b13</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9699</span>
+        <span>0.7877&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/a070d53e9e354373/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">night light</div>
+      <div class="oid">a070d53e9e354373</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9661</span>
+        <span>2.9098&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/ff1172130a8c4671/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">desk</div>
+      <div class="oid">ff1172130a8c4671</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9611</span>
+        <span>2.9345&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>elevated</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/743e876f7bde4e84/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">recliner</div>
+      <div class="oid">743e876f7bde4e84</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9603</span>
+        <span>1.2122&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/93c14906020f423f/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bed</div>
+      <div class="oid">93c14906020f423f</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9576</span>
+        <span>2.4571&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/63caa4dc266b464e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">hammer</div>
+      <div class="oid">63caa4dc266b464e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9566</span>
+        <span>1.2446&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "73771974f104419b", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "73771974f104419b"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>dad`s chair</h2>
+    <div class="meta-row">743e876f7bde4e84 &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[0.5473470687866211,2.240220785140991,0.4632508158683777]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/743e876f7bde4e84/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">dad`s chair <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">743e876f7bde4e84</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/143e542460204af8/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">shoe</div>
+      <div class="oid">143e542460204af8</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9722</span>
+        <span>1.3591&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/7ec9d8da13df4748/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">7ec9d8da13df4748</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9721</span>
+        <span>3.1316&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/73771974f104419b/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">computer</div>
+      <div class="oid">73771974f104419b</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9603</span>
+        <span>1.2122&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/135ba327ec564c24/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">computer</div>
+      <div class="oid">135ba327ec564c24</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9596</span>
+        <span>2.787&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/9b343c2c0d34441e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">night light</div>
+      <div class="oid">9b343c2c0d34441e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9561</span>
+        <span>3.2851&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="has-ref">has ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/3296c6cfb7e04d62/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bag</div>
+      <div class="oid">3296c6cfb7e04d62</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9558</span>
+        <span>1.2377&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/75b4df403fd6417d/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">mirror</div>
+      <div class="oid">75b4df403fd6417d</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9543</span>
+        <span>1.6494&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/ce40c0cd61e64383/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">ce40c0cd61e64383</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9541</span>
+        <span>3.7558&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/d9dd089b7bbd4c47/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">printer</div>
+      <div class="oid">d9dd089b7bbd4c47</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9534</span>
+        <span>3.362&nbsp;m</span>
+        <br>
+        <span>ephemeral</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/01db3ddcf5b94e2c/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">window</div>
+      <div class="oid">01db3ddcf5b94e2c</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9527</span>
+        <span>0.4064&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>elevated</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/360ac1af518f4270/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bowl</div>
+      <div class="oid">360ac1af518f4270</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9527</span>
+        <span>3.5498&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/c5804cd278214b13/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">television</div>
+      <div class="oid">c5804cd278214b13</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9507</span>
+        <span>1.8446&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "743e876f7bde4e84", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "743e876f7bde4e84"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>dad`s work bag</h2>
+    <div class="meta-row">3296c6cfb7e04d62 &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[-0.45845913887023926,1.5707236528396606,0.19471395015716553]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/3296c6cfb7e04d62/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">dad`s work bag <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">3296c6cfb7e04d62</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/360ac1af518f4270/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bowl</div>
+      <div class="oid">360ac1af518f4270</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9841</span>
+        <span>2.5463&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/73771974f104419b/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">computer</div>
+      <div class="oid">73771974f104419b</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9785</span>
+        <span>0.6802&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/16f5e813172542dc/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">hammer</div>
+      <div class="oid">16f5e813172542dc</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9759</span>
+        <span>2.209&nbsp;m</span>
+        <br>
+        <span>ephemeral</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/c5804cd278214b13/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">television</div>
+      <div class="oid">c5804cd278214b13</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9729</span>
+        <span>0.7119&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/cd4bb83867a54671/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">webcam</div>
+      <div class="oid">cd4bb83867a54671</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9715</span>
+        <span>2.0647&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/75b4df403fd6417d/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">mirror</div>
+      <div class="oid">75b4df403fd6417d</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9695</span>
+        <span>2.7669&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/7ec9d8da13df4748/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">7ec9d8da13df4748</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9694</span>
+        <span>4.0209&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/01db3ddcf5b94e2c/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">window</div>
+      <div class="oid">01db3ddcf5b94e2c</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9672</span>
+        <span>0.9463&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>elevated</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/143e542460204af8/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">shoe</div>
+      <div class="oid">143e542460204af8</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9613</span>
+        <span>1.5691&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/7a5783769f274831/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">chair</div>
+      <div class="oid">7a5783769f274831</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9576</span>
+        <span>4.5182&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>elevated</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/743e876f7bde4e84/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">recliner</div>
+      <div class="oid">743e876f7bde4e84</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9558</span>
+        <span>1.2377&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/98fb3c04612e4968/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">cup</div>
+      <div class="oid">98fb3c04612e4968</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9537</span>
+        <span>4.6014&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/ce40c0cd61e64383/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">ce40c0cd61e64383</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9536</span>
+        <span>4.7493&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/eb704ba84465444c/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">shoe</div>
+      <div class="oid">eb704ba84465444c</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9521</span>
+        <span>1.1456&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/ff1172130a8c4671/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">desk</div>
+      <div class="oid">ff1172130a8c4671</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9513</span>
+        <span>2.4318&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>elevated</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/63caa4dc266b464e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">hammer</div>
+      <div class="oid">63caa4dc266b464e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9507</span>
+        <span>1.5181&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "3296c6cfb7e04d62", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "3296c6cfb7e04d62"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>mom`s chair</h2>
+    <div class="meta-row">143e542460204af8 &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[-0.40738099813461304,3.136019468307495,0.09830588102340698]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/143e542460204af8/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">mom`s chair <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">143e542460204af8</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/7ec9d8da13df4748/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">7ec9d8da13df4748</div>
+      <div class="stats">
+        <span class="cosine">cos=0.975</span>
+        <span>2.6027&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/73771974f104419b/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">computer</div>
+      <div class="oid">73771974f104419b</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9726</span>
+        <span>1.2667&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/743e876f7bde4e84/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">recliner</div>
+      <div class="oid">743e876f7bde4e84</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9722</span>
+        <span>1.3591&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/16f5e813172542dc/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">hammer</div>
+      <div class="oid">16f5e813172542dc</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9712</span>
+        <span>3.7728&nbsp;m</span>
+        <br>
+        <span>ephemeral</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/360ac1af518f4270/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bowl</div>
+      <div class="oid">360ac1af518f4270</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9661</span>
+        <span>4.0891&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/01db3ddcf5b94e2c/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">window</div>
+      <div class="oid">01db3ddcf5b94e2c</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9645</span>
+        <span>1.0876&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>elevated</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/cd4bb83867a54671/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">webcam</div>
+      <div class="oid">cd4bb83867a54671</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9636</span>
+        <span>3.6204&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/7a5783769f274831/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">chair</div>
+      <div class="oid">7a5783769f274831</div>
+      <div class="stats">
+        <span class="cosine">cos=0.963</span>
+        <span>6.0769&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>elevated</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/3296c6cfb7e04d62/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bag</div>
+      <div class="oid">3296c6cfb7e04d62</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9613</span>
+        <span>1.5691&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/ce40c0cd61e64383/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">ce40c0cd61e64383</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9601</span>
+        <span>3.3909&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/eb704ba84465444c/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">shoe</div>
+      <div class="oid">eb704ba84465444c</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9598</span>
+        <span>1.1638&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/93c14906020f423f/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">bed</div>
+      <div class="oid">93c14906020f423f</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9554</span>
+        <span>3.5489&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/c5804cd278214b13/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">television</div>
+      <div class="oid">c5804cd278214b13</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9545</span>
+        <span>1.7987&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/f5b67645c1a2402e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">door</div>
+      <div class="oid">f5b67645c1a2402e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9544</span>
+        <span>1.3166&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/b65baea32a244487/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">heater</div>
+      <div class="oid">b65baea32a244487</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9543</span>
+        <span>4.8231&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/a070d53e9e354373/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">night light</div>
+      <div class="oid">a070d53e9e354373</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9542</span>
+        <span>3.9685&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/9b343c2c0d34441e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">night light</div>
+      <div class="oid">9b343c2c0d34441e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9534</span>
+        <span>2.6924&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="has-ref">has ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/d9dd089b7bbd4c47/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">printer</div>
+      <div class="oid">d9dd089b7bbd4c47</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9528</span>
+        <span>4.408&nbsp;m</span>
+        <br>
+        <span>ephemeral</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/75b4df403fd6417d/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">mirror</div>
+      <div class="oid">75b4df403fd6417d</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9519</span>
+        <span>1.857&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "143e542460204af8", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "143e542460204af8"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>hamlet</h2>
+    <div class="meta-row">9b343c2c0d34441e &middot; semi_static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[0.8622381687164307,5.504255771636963,0.2668761909008026]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/9b343c2c0d34441e/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">hamlet <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">9b343c2c0d34441e</div>
+      <div class="stats"><span>semi_static</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/7ec9d8da13df4748/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">7ec9d8da13df4748</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9666</span>
+        <span>0.4916&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/f5b67645c1a2402e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">door</div>
+      <div class="oid">f5b67645c1a2402e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9573</span>
+        <span>2.1906&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/143e542460204af8/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">shoe</div>
+      <div class="oid">143e542460204af8</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9534</span>
+        <span>2.6924&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/8fd22fc64dee41c6/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">window</div>
+      <div class="oid">8fd22fc64dee41c6</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9529</span>
+        <span>1.1807&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "9b343c2c0d34441e", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "9b343c2c0d34441e"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>windowsill</h2>
+    <div class="meta-row">365d1c3c2fb54fbe &middot; static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[0.8196666240692139,6.167525291442871,1.121171236038208]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/365d1c3c2fb54fbe/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">windowsill <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">365d1c3c2fb54fbe</div>
+      <div class="stats"><span>static</span></div>
+    </div>
+    <div class="clean" style="padding: 16px; align-self: center;">No candidates above gate. Anchor appears clean.</div>
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>vertical shelf</h2>
+    <div class="meta-row">f9ecb8e636834b2a &middot; static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[1.8918653726577759,1.8604897260665894,1.0368565320968628]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/f9ecb8e636834b2a/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">vertical shelf <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">f9ecb8e636834b2a</div>
+      <div class="stats"><span>static</span></div>
+    </div>
+    <div class="clean" style="padding: 16px; align-self: center;">No candidates above gate. Anchor appears clean.</div>
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>basketball</h2>
+    <div class="meta-row">18503a243abd46fb &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[1.105725646018982,4.012428283691406,0.40838462114334106]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/18503a243abd46fb/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">basketball <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">18503a243abd46fb</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/98fb3c04612e4968/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">cup</div>
+      <div class="oid">98fb3c04612e4968</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9598</span>
+        <span>2.7171&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "18503a243abd46fb", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "18503a243abd46fb"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>couch</h2>
+    <div class="meta-row">f5b67645c1a2402e &middot; static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[0.8933024406433105,3.315070629119873,0.19587862491607666]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/f5b67645c1a2402e/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">couch <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">f5b67645c1a2402e</div>
+      <div class="stats"><span>static</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/73771974f104419b/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">computer</div>
+      <div class="oid">73771974f104419b</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9721</span>
+        <span>2.0488&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/8fd22fc64dee41c6/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">window</div>
+      <div class="oid">8fd22fc64dee41c6</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9671</span>
+        <span>2.0603&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/7ec9d8da13df4748/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">7ec9d8da13df4748</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9595</span>
+        <span>2.1053&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/9b343c2c0d34441e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">night light</div>
+      <div class="oid">9b343c2c0d34441e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9573</span>
+        <span>2.1906&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="has-ref">has ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/143e542460204af8/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">shoe</div>
+      <div class="oid">143e542460204af8</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9544</span>
+        <span>1.3166&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "f5b67645c1a2402e", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "f5b67645c1a2402e"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>Seedcube</h2>
+    <div class="meta-row">7ec9d8da13df4748 &middot; semi_static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[0.8069714307785034,5.349576473236084,0.7302432656288147]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/7ec9d8da13df4748/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">Seedcube <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">7ec9d8da13df4748</div>
+      <div class="stats"><span>semi_static</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/ce40c0cd61e64383/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">ce40c0cd61e64383</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9751</span>
+        <span>1.0688&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/143e542460204af8/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">shoe</div>
+      <div class="oid">143e542460204af8</div>
+      <div class="stats">
+        <span class="cosine">cos=0.975</span>
+        <span>2.6027&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/9b343c2c0d34441e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">night light</div>
+      <div class="oid">9b343c2c0d34441e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9666</span>
+        <span>0.4916&nbsp;m</span>
+        <br>
+        <span>semi_static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="has-ref">has ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/8fd22fc64dee41c6/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">window</div>
+      <div class="oid">8fd22fc64dee41c6</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9599</span>
+        <span>1.1818&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/f5b67645c1a2402e/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">door</div>
+      <div class="oid">f5b67645c1a2402e</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9595</span>
+        <span>2.1053&nbsp;m</span>
+        <br>
+        <span>static</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/98fb3c04612e4968/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">cup</div>
+      <div class="oid">98fb3c04612e4968</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9531</span>
+        <span>1.6407&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "7ec9d8da13df4748", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "7ec9d8da13df4748"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>small bin</h2>
+    <div class="meta-row">e00307de309f4465 &middot; movable &middot; cos&ge;0.95 &middot; dist&le;9m &middot; xyz=[0.8326625823974609,6.077901840209961,1.0138801336288452]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/e00307de309f4465/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">small bin <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">e00307de309f4465</div>
+      <div class="stats"><span>movable</span></div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/d9dd089b7bbd4c47/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">printer</div>
+      <div class="oid">d9dd089b7bbd4c47</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9619</span>
+        <span>7.2257&nbsp;m</span>
+        <br>
+        <span>ephemeral</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/ce40c0cd61e64383/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">coffee cup</div>
+      <div class="oid">ce40c0cd61e64383</div>
+      <div class="stats">
+        <span class="cosine">cos=0.958</span>
+        <span>1.1288&nbsp;m</span>
+        <br>
+        <span>movable</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+    <div class="card">
+      <img src="http://192.168.0.53:8002/objects/5555e7e2ad104843/snapshots/0/image" alt="candidate" onerror="this.style.opacity=0.3">
+      <div class="label">ottoman</div>
+      <div class="oid">5555e7e2ad104843</div>
+      <div class="stats">
+        <span class="cosine">cos=0.9548</span>
+        <span>6.8861&nbsp;m</span>
+        <br>
+        <span>ephemeral</span>
+        <span>on_floor</span>
+        <span>hits=2</span>
+        <span class="no-ref">no ref</span>
+      </div>
+    </div>
+  </div>
+  <div class="copy-cmd">
+# Merge a candidate INTO this anchor (anchor wins, candidate dies):
+curl -s -X POST http://192.168.0.53:8002/objects/merge -H 'Content-Type: application/json' \\
+     -d '{"a_oid": "e00307de309f4465", "b_oid": "&lt;CANDIDATE_OID&gt;", "winner_oid": "e00307de309f4465"}' | jq
+  </div>
+</div>
+<div class="anchor">
+  <div class="anchor-header">
+    <h2>Hamlet display</h2>
+    <div class="meta-row">83ee2dc3a35b4239 &middot; static &middot; cos&ge;0.95 &middot; dist&le;3m &middot; xyz=[0.8820739984512329,5.305983066558838,0.008625306189060211]</div>
+  </div>
+  <div class="row">
+    <div class="card anchor-card">
+      <img src="http://192.168.0.53:8002/objects/83ee2dc3a35b4239/snapshots/0/image" alt="anchor" onerror="this.style.opacity=0.3">
+      <div class="label">Hamlet display <span style="color:#ffc857">(anchor)</span></div>
+      <div class="oid">83ee2dc3a35b4239</div>
+      <div class="stats"><span>static</span></div>
+    </div>
+    <div class="clean" style="padding: 16px; align-self: center;">No candidates above gate. Anchor appears clean.</div>
+  </div>
+</div>
+</body>
+</html>

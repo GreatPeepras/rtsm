@@ -153,3 +153,7 @@ merge_review_log_*.tsv
 # Stray empty/typo artifact at repo root
 /.sh
 /bak/
+/bak/
+
+# deploy-script pre-patch backups (never source of truth)
+*.pre-*

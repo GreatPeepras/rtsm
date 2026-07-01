@@ -109,6 +109,45 @@ class SuggestMergesRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+# Added 2026-06-11. Marker: FIND_FRAGMENTS_2026-06-11.
+class FindFragmentsRequest(BaseModel):
+    """Body schema for POST /objects/{oid}/find_fragments.
+
+    Per-anchor merge-candidate search. All fields optional.
+
+    The distance threshold is adaptive to the anchor's movability_class
+    unless explicitly overridden:
+      permanent / static / semi_static -> 3.0m  (furniture extent)
+      movable / roaming / ephemeral    -> 9.0m  (room diagonal)
+      null / unset                     -> 5.0m  (fallback)
+
+    pose_state filter applies to candidates only (anchor always
+    included):
+      "any"          -- both buckets (default; surfaces lift/lower duplicates)
+      "on_floor"     -- candidates seen on the floor only
+      "elevated"     -- candidates seen elevated only
+      "match_anchor" -- candidates matching the anchor's pose_state
+    """
+    cos_threshold: float = Field(0.85, ge=0.0, le=1.0)
+    dist_threshold_m: Optional[float] = Field(None, gt=0.0)
+    include_unconfirmed: bool = True
+    exclude_named: bool = False
+    pose_state: str = Field("any")
+    limit: int = Field(20, ge=1, le=500)
+
+    @field_validator("pose_state")
+    @classmethod
+    def _check_pose_state(cls, v: str) -> str:
+        allowed = {"any", "on_floor", "elevated", "match_anchor"}
+        if v not in allowed:
+            raise ValueError(
+                f"pose_state must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return v
+
+    model_config = {"extra": "forbid"}
+
+
 # 2026-05-29: reference-snapshot endpoint schemas.
 class ReferenceImagePayload(BaseModel):
     """Body schema for POST /objects/{oid}/reference.
@@ -615,6 +654,59 @@ def create_app(
 
     # ---- Snapshot gallery endpoints ----
 
+    # ===== NAME_INTENT_2026-06-29: deferred name-intent endpoints =====
+    class NameIntentBody(BaseModel):
+        label: str
+        description: str = ""
+        memory_name: str = ""
+        image_b64: Optional[str] = None
+        ttl_s: Optional[float] = None
+
+    def _encode_intent_image(image_b64):
+        if not image_b64:
+            return None
+        try:
+            import io
+            import numpy as _np
+            from PIL import Image
+            raw = base64.b64decode(image_b64)
+            img = Image.open(io.BytesIO(raw)).convert("RGB")
+            enc = getattr(clip_adapter, "encode_image", None) \
+                  or getattr(clip_adapter, "embed_image", None)
+            if enc is None:
+                return None
+            v = enc(img)
+            # adapter.encode_image runs keep_on_device=True -> may return a
+            # torch tensor on GPU; move to host before numpy conversion.
+            if hasattr(v, "detach"):
+                v = v.detach().cpu().numpy()
+            return _np.asarray(v, dtype=_np.float32).reshape(-1)
+        except Exception as _e:
+            import logging as _l
+            _l.getLogger("rtsm.name_intent").warning(f"intent image encode failed: {_e}")
+            return None
+
+    @app.post("/name_intents")
+    def post_name_intent(body: NameIntentBody) -> Dict[str, Any]:
+        emb = _encode_intent_image(body.image_b64)
+        iid, imm_oid, imm_sim = working_memory.register_name_intent(
+            label=body.label, description=body.description,
+            memory_name=body.memory_name, intent_emb=emb, ttl_s=body.ttl_s)
+        return {"intent_id": iid, "immediate_oid": imm_oid, "immediate_sim": imm_sim,
+                "had_image": emb is not None}
+
+    @app.get("/name_intents")
+    def list_name_intents() -> Dict[str, Any]:
+        return {"intents": working_memory.name_intents.list_live()}
+
+    @app.get("/name_intents/resolved")
+    def list_resolved_name_intents() -> Dict[str, Any]:
+        return {"resolved": working_memory.name_intents.list_resolved_unacked()}
+
+    @app.delete("/name_intents/{intent_id}")
+    def ack_name_intent(intent_id: str) -> Dict[str, Any]:
+        return {"acked": working_memory.name_intents.ack(intent_id)}
+
     @app.get("/objects/{oid}")
     def get_object(oid: str, include_vectors: bool = False) -> Dict[str, Any]:
         try:
@@ -821,6 +913,74 @@ def create_app(
                 status_code=500,
                 detail=f"suggest_merges failed: {e}",
             )
+        return result
+
+    # Added 2026-06-11. Marker: FIND_FRAGMENTS_2026-06-11.
+    @app.post("/objects/{oid}/find_fragments")
+    def find_fragments_endpoint(
+        oid: str,
+        req: FindFragmentsRequest = Body(default_factory=FindFragmentsRequest),
+    ) -> Dict[str, Any]:
+        """Per-anchor merge-candidate search.
+
+        Finds OIDs that may be fragments of the same physical object as
+        the anchor oid. Sibling to /objects/suggest_merges; fixes the
+        anchor and widens the gates. Distance threshold is adaptive to
+        the anchor's movability_class unless explicitly overridden in
+        the body.
+
+        Read-only. Does NOT call merge_objects. Caller reviews
+        snapshots and POSTs /objects/merge for each confirmed fragment.
+
+        Errors:
+          404 -- anchor oid not in working memory
+          405 -- WM is frozen (serve-mode; no find_fragments method)
+          422 -- invalid body (e.g. pose_state outside enum)
+          500 -- unexpected failure inside the WM sweep
+        """
+        if not hasattr(working_memory, "find_fragments"):
+            raise HTTPException(
+                status_code=405,
+                detail="find_fragments not supported on frozen working memory",
+            )
+        try:
+            result = working_memory.find_fragments(
+                anchor_oid=oid,
+                cos_threshold=req.cos_threshold,
+                dist_threshold_m=req.dist_threshold_m,
+                include_unconfirmed=req.include_unconfirmed,
+                exclude_named=req.exclude_named,
+                pose_state=req.pose_state,
+                limit=req.limit,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"find_fragments failed: {e}",
+            )
+
+        # WM returns {"error": "not_found", ...} for unknown oid;
+        # convert to 404 HTTP semantics.
+        if isinstance(result, dict) and result.get("error") == "not_found":
+            raise HTTPException(
+                status_code=404,
+                detail=f"anchor oid not found: {oid}",
+            )
+
+        # Augment response with snapshot URLs (relative paths; caller
+        # composes base). HTTP-layer concern, not WM-layer.
+        anchor_block = result.get("anchor")
+        if isinstance(anchor_block, dict) and anchor_block.get("oid"):
+            anchor_block["snapshot_url"] = (
+                f"/objects/{anchor_block['oid']}/snapshots/0/image"
+            )
+        for frag in result.get("fragments", []) or []:
+            if isinstance(frag, dict) and frag.get("oid"):
+                frag["snapshot_url"] = (
+                    f"/objects/{frag['oid']}/snapshots/0/image"
+                )
         return result
 
     # ---- 2026-05-29: reference snapshot endpoints ----
@@ -1487,6 +1647,7 @@ def create_app(
         threshold: float = 0.0,
         include_snapshot: bool = False,
         pose_state: str = "on_floor",   # "on_floor" | "elevated" | "any"
+        max_stale_s: Optional[int] = None,  # CAMERA_DOWN_GATE_2026-06-12
     ) -> Dict[str, Any]:
 
         """
@@ -1635,6 +1796,36 @@ def create_app(
             # For faiss_meta-only objects: they predate this field; treat
             # them as on_floor (historically they were only persisted from
             # floor observations).
+            # For source=="none": filter them out unless pose_state=="any".
+
+            # CAMERA_DOWN_GATE_2026-06-12: optional observation-freshness
+            # filter. When max_stale_s is provided, drop matches whose
+            # last_seen_mono is older than that, OR whose freshness is
+            # unknown (faiss_meta-only / source=="none" carry no monotonic
+            # timestamp; after a restart even WM objects start at 0.0).
+            # Dropping unknown-freshness is the SAFE direction: name_object
+            # should refuse rather than label something not freshly seen.
+            # Default None == no filtering (every other caller unaffected).
+            # WALLCLOCK_FRESHNESS_2026-06-30: age off wall-clock, not monotonic. last_seen_mono resets
+            # to a boot baseline on rehydrate, so the old gate dropped every
+            # rehydrated object as ~uptime stale and nuked the whole corpus when
+            # max_stale_s was set. last_seen_wall_utc persists across reboot.
+            # Window + "name only what is in view" semantics unchanged; unknown
+            # freshness still dropped (safe direction for name_object).
+            if max_stale_s is not None:
+                _now_wall = time.time()
+                _age = None
+                if obj is not None:
+                    _lw = float(getattr(obj, "last_seen_wall_utc", 0.0) or 0.0)
+                    if _lw > 0:
+                        _age = _now_wall - _lw
+                elif source == "faiss_meta" and meta is not None:
+                    _lw = meta.get("last_seen_wall_utc")
+                    if _lw:
+                        _age = _now_wall - float(_lw)
+                if _age is None or _age > max_stale_s:
+                    continue
+
             # For source=="none": filter them out unless pose_state=="any".
             if pose_state != "any":
                 if obj is not None:
