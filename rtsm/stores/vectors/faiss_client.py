@@ -170,10 +170,19 @@ class FaissClient:
         self._row_to_id = ids_sorted
         self._id_to_row = {oid: i for i, oid in enumerate(ids_sorted)}
         self._ensure_index()
+        assert self._index is not None
         self._index.reset()
+        # FAISS_DELETE_REBUILD_2026-07-06: previously left the index EMPTY after
+        # reset (the `pass` stub), so search returned nothing and save() wrote an
+        # empty index to disk while the shadow stores still held survivors. Mirror
+        # upsert_batch's rebuild: re-add the survivor embeddings after reset,
+        # guarding the 0-survivor case (faiss.add on a 0-row array throws).
         if ids_sorted:
-            # require caller to upsert with embeddings later; empty index for now
-            pass
+            embs = np.zeros((len(ids_sorted), self.dim), dtype=np.float32)
+            for row, oid in enumerate(ids_sorted):
+                embs[row] = self._embeddings[oid]
+            if len(embs) > 0:
+                self._index.add(embs)
         if self.persistent_path:
             try:
                 self.save(self.persistent_path)
