@@ -336,7 +336,13 @@ def main():
 
     # Prepare ingest plumbing
     # Note: Intrinsics are now dynamic per-frame from camera.rgbd topic
-    ingest_q = IngestQueue(maxsize=512)
+    # INGEST_SATURATION_2026-07-06: small drop-oldest queue. A 512-deep FIFO
+    # at ~1-3 Hz drain meant frames were minutes stale by processing time.
+    _ing_cfg = cfg.get("ingest", {})
+    ingest_q = IngestQueue(
+        maxsize=int(_ing_cfg.get("queue_maxsize", 32)),
+        drop_oldest=bool(_ing_cfg.get("queue_drop_oldest", True)),
+    )
     sweep_cache = SweepCache(
         grid_size_m=float(cfg.get("sweep_cache", {}).get("grid_size_m", 0.25)),
         per_cell_cap=int(cfg.get("sweep_cache", {}).get("per_cell_cap", 64)),
@@ -494,6 +500,7 @@ def main():
         clip_adapter=clip,
         vectors=vectors,
         ingest_queue=ingest_q,
+        ingest_cfg=_ing_cfg,  # INGEST_SATURATION_2026-07-06
         extra_stats_provider=lambda: {
             "ingest_q": ingest_q.qsize(),
         },

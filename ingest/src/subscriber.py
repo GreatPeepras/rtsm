@@ -385,6 +385,9 @@ class IngestSubscriber(Node):
         pose_timeout_s: float = 0.10,                          # PATCH 20260514
         post_hz: float = 2.0,  # PATCH 20260518: default tuned for bursty workload, see backpressure-2026-05-18
         watchdog_no_frame_s: float = 180.0,  # PATCH 20260603: subscription-staleness watchdog
+        min_move_m: float = 0.05,        # INGEST_SATURATION_2026-07-06
+        min_rot_deg: float = 5.0,        # INGEST_SATURATION_2026-07-06
+        still_heartbeat_s: float = 2.0,  # INGEST_SATURATION_2026-07-06
     ):
         super().__init__("rtsm_ingest_subscriber")
 
@@ -408,6 +411,19 @@ class IngestSubscriber(Node):
         self._last_post_ns = 0
         self._post_skipped = 0
         self._last_pose_stale_ms = 0.0
+        # INGEST_SATURATION_2026-07-06: motion gate. Don't POST while the
+        # camera hasn't moved -- dwelling streams near-identical frames that
+        # saturate rtsm-dev's ingest queue. A heartbeat still posts one
+        # frame every still_heartbeat_s so persistence monitoring continues.
+        self._min_move_m = float(min_move_m)
+        self._min_rot_cos_half = float(
+            np.cos(np.radians(max(0.0, min_rot_deg)) / 2.0)
+        )
+        self._still_heartbeat_ns = (
+            int(still_heartbeat_s * 1e9) if still_heartbeat_s > 0 else 0
+        )
+        self._last_posted_pose = None
+        self._post_skipped_still = 0
 
         self._seq = 0
         self._t_start = time.monotonic()
@@ -690,6 +706,34 @@ class IngestSubscriber(Node):
             "qw": t.transform.rotation.w,
         }
 
+    def _motion_gate_says_skip(self, frame: "Frame", now_ns: int) -> bool:
+        """INGEST_SATURATION_2026-07-06: True = suppress this POST.
+
+        Skip iff the camera moved < min_move_m AND rotated < min_rot_deg
+        since the last successfully posted frame, unless the still-heartbeat
+        interval has elapsed. |dot(q1,q2)| = cos(theta/2) for unit quats.
+        Disabled when min_move_m <= 0, when no pose is attached, or before
+        the first successful post.
+        """
+        if self._min_move_m <= 0.0 or frame.pose is None:
+            return False
+        if self._last_posted_pose is None:
+            return False
+        if (self._still_heartbeat_ns > 0
+                and now_ns - self._last_post_ns >= self._still_heartbeat_ns):
+            return False
+        p, q = frame.pose, self._last_posted_pose
+        dx = p["tx"] - q["tx"]
+        dy = p["ty"] - q["ty"]
+        dz = p["tz"] - q["tz"]
+        if (dx * dx + dy * dy + dz * dz) >= self._min_move_m ** 2:
+            return False
+        dot = abs(p["qx"] * q["qx"] + p["qy"] * q["qy"]
+                  + p["qz"] * q["qz"] + p["qw"] * q["qw"])
+        if dot < self._min_rot_cos_half:
+            return False
+        return True
+
     def _emit(self, frame: Frame):
         """Downstream seam. Writes to recorder and/or POSTs to rtsm-dev."""
         # PATCH 20260514: recorder and http_emitter are independent sinks.
@@ -705,9 +749,16 @@ class IngestSubscriber(Node):
             now_ns = self.get_clock().now().nanoseconds
             if (self._post_interval_ns == 0
                     or now_ns - self._last_post_ns >= self._post_interval_ns):
+                # INGEST_SATURATION_2026-07-06: motion gate, after the hz
+                # decimator. On skip, _last_post_ns is NOT advanced so the
+                # still-heartbeat measures time since the last real POST.
+                if self._motion_gate_says_skip(frame, now_ns):
+                    self._post_skipped_still += 1
+                    return
                 ok, err = self._http_emitter.post(frame, list(self._camera_info.k))
                 if ok:
                     self._post_ok += 1
+                    self._last_posted_pose = frame.pose  # INGEST_SATURATION_2026-07-06
                 else:
                     self._post_fail += 1
                     if self._post_fail % 30 == 1:
@@ -753,6 +804,7 @@ class IngestSubscriber(Node):
                 f" tf_stale={self._last_pose_stale_ms:.0f}ms"
                 f" post_ok={self._post_ok} post_fail={self._post_fail}"
                 f" post_skip={self._post_skipped}"
+                f" post_skip_still={self._post_skipped_still}"
                 f"{lat_str}"
             )
         self.get_logger().info(
@@ -817,6 +869,24 @@ def main():
         help="Exit (so container can restart) if no synced frame arrives "
              "for this many seconds. 0 disables. Default: 180.",
     )
+    # INGEST_SATURATION_2026-07-06: motion gate flags.
+    parser.add_argument(
+        "--min-move-m", type=float, default=0.05,
+        help="Skip POSTs when the camera moved less than this (meters) "
+             "since the last posted frame. 0 disables the motion gate. "
+             "Default: 0.05.",
+    )
+    parser.add_argument(
+        "--min-rot-deg", type=float, default=5.0,
+        help="Rotation threshold (degrees) paired with --min-move-m. "
+             "Default: 5.0.",
+    )
+    parser.add_argument(
+        "--still-heartbeat-s", type=float, default=2.0,
+        help="While stationary, still POST one frame every this many "
+             "seconds (persistence monitoring). 0 = never post while "
+             "still. Default: 2.0.",
+    )
     args = parser.parse_args()
 
     recorder = None
@@ -839,6 +909,9 @@ def main():
         pose_timeout_s=args.pose_timeout_ms / 1000.0,
         post_hz=args.post_hz,
         watchdog_no_frame_s=args.watchdog_no_frame_s,  # PATCH 20260603
+        min_move_m=args.min_move_m,                    # INGEST_SATURATION_2026-07-06
+        min_rot_deg=args.min_rot_deg,                  # INGEST_SATURATION_2026-07-06
+        still_heartbeat_s=args.still_heartbeat_s,      # INGEST_SATURATION_2026-07-06
     )
     try:
         rclpy.spin(node)

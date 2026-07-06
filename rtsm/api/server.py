@@ -197,6 +197,7 @@ def create_app(
     vis_registry: Optional[Any] = None,
     static_dir: Optional[str] = None,
     ingest_queue: Optional[Any] = None,
+    ingest_cfg: Optional[Dict[str, Any]] = None,  # INGEST_SATURATION_2026-07-06
 ) -> FastAPI:
     """
     Build a FastAPI app exposing:
@@ -241,6 +242,11 @@ def create_app(
         "frames_queued": 0,
     }
     _ingest_queue = ingest_queue  # closure ref; None in --serve mode
+    # INGEST_SATURATION_2026-07-06: HTTP keyframe demotion config + state.
+    _ing_cfg = dict(ingest_cfg or {})
+    _kf_every_n = max(1, int(_ing_cfg.get("http_keyframe_every_n", 10)))
+    _kf_max_interval_s = float(_ing_cfg.get("http_keyframe_max_interval_s", 5.0))
+    _kf_state = {"since_kf": 0, "last_kf_mono": 0.0}
     objects_gauge = Gauge(
         "rtsm_working_objects",
         "Total objects in WorkingMemory",
@@ -2370,10 +2376,28 @@ def create_app(
             t_wc=np.array([pq.tx, pq.ty, pq.tz], dtype=np.float32),
             q_wc_xyzw=np.array([pq.qx, pq.qy, pq.qz, pq.qw], dtype=np.float32),
         )
+        # INGEST_SATURATION_2026-07-06: keyframe demotion. Hardcoding
+        # is_keyframe=True bypassed the SweepPolicy TTL/parallax gate for
+        # every HTTP frame (keyframes are accepted unconditionally in
+        # ingest_gate.should_accept), so dwell floods ran the full heavy
+        # pipeline per frame. Promote every Nth frame, or after a max
+        # interval, to KF; the rest are non-KF and get gated post-dequeue.
+        _now_mono = time.monotonic()
+        _kf_state["since_kf"] += 1
+        _is_kf = (
+            _kf_state["since_kf"] >= _kf_every_n
+            or (_now_mono - _kf_state["last_kf_mono"]) >= _kf_max_interval_s
+        )
+        if _is_kf:
+            _kf_state["since_kf"] = 0
+            _kf_state["last_kf_mono"] = _now_mono
+            _ingest_counters["keyframes_promoted"] = (
+                _ingest_counters.get("keyframes_promoted", 0) + 1
+            )
         pkt = FramePacket(
             time=tb, rgb=rgb, depth_m=depth_m,
             pose=pose, intr=intr,
-            is_keyframe=True,
+            is_keyframe=_is_kf,
         )
 
         # If no queue is bound (e.g. --serve mode), behave as 2.f.1.
@@ -2392,10 +2416,14 @@ def create_app(
             }
 
         # Queue put (non-blocking). Full -> 503.
+        # INGEST_SATURATION_2026-07-06: BUG FIX. IngestQueue.put() swallows
+        # queue.Full and returns False -- the old `except _queue.Full` was
+        # dead code. Full-queue frames were dropped silently while counted
+        # as frames_queued and answered "status: queued". Check the bool.
+        # (With drop_oldest=True on the queue, put() now rarely fails.)
         t_q0 = time.perf_counter()
-        try:
-            _ingest_queue.put(pkt, block=False)
-        except _queue.Full:
+        _put_ok = _ingest_queue.put(pkt, block=False)
+        if not _put_ok:
             _ingest_counters["queue_full_drops"] += 1
             _log.getLogger(__name__).warning(
                 "[ingest] queue full; drop seq=%s", payload.sequence,
@@ -2434,6 +2462,13 @@ def create_app(
         if _ingest_queue is not None:
             out["queue_depth"] = int(_ingest_queue.qsize())
             out["queue_maxsize"] = int(getattr(_ingest_queue, "maxsize", 0))
+            # INGEST_SATURATION_2026-07-06: drop-oldest eviction accounting.
+            out["queue_evicted_oldest"] = int(
+                getattr(_ingest_queue, "evicted_oldest", 0)
+            )
+            out["keyframes_promoted"] = int(
+                _ingest_counters.get("keyframes_promoted", 0)
+            )
             out["mode"] = "queued"
         else:
             out["mode"] = "decode-only"
