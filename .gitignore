@@ -157,3 +157,7 @@ merge_review_log_*.tsv
 
 # deploy-script pre-patch backups (never source of truth)
 *.pre-*
+scripts/rtsm_decisions*.json
+scripts/rtsm_cleanup_log_*.tsv
+scripts/rtsm_cleanup_remap_*.json
+scripts/review.html

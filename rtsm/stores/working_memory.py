@@ -1903,6 +1903,16 @@ class WorkingMemory:
                 for o in self._map.values():
                     if not o.confirmed or o.emb_mean is None:
                         continue
+                    # PERSIST_IFF_DURABLE_FLUSH_2026-07-06: persist only durable
+                    # objects (named OR static/semi_static/permanent
+                    # landmark). Unnamed non-landmarks are session-
+                    # volatile -> never written to FAISS -> evaporate on
+                    # the next reboot. Gate is at FLUSH, NOT rehydrate
+                    # (rehydrate stays a dumb full loader; disk only ever
+                    # holds durables, so both agree by construction).
+                    if not (o.label_user or o.movability_class in
+                            ("static", "semi_static", "permanent")):
+                        continue
                     label_topk = sorted(o.label_scores.items(), key=lambda kv: kv[1], reverse=True)[:5]
                     out.append({
                         "object_id": o.id,
@@ -1937,6 +1947,13 @@ class WorkingMemory:
                 _, oid = heapq.heappop(self._ltm_heap)
                 o = self._map.get(oid)
                 if o is None or not o.confirmed:
+                    continue
+                # PERSIST_IFF_DURABLE_FLUSH_2026-07-06: skip volatile (unnamed
+                # non-landmark) objects -- same durability predicate as
+                # the force_all branch. force_flush_now (naming path) is
+                # NOT gated, so naming still persists immediately.
+                if not (o.label_user or o.movability_class in
+                        ("static", "semi_static", "permanent")):
                     continue
                 if len(o.view_bins) < max(self.ltm_min_view_bins, 1):
                     heapq.heappush(self._ltm_heap, (m_now + self.ltm_min_period_s, oid))
