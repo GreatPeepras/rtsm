@@ -80,6 +80,8 @@ from rclpy.duration import Duration  # PATCH 20260514
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import CameraInfo, CompressedImage
+from std_msgs.msg import String as _GateString  # INGEST_GATE_2026-09-23
+import dataclasses as _gate_dc
 # PATCH 20260514: TF and HTTP deps
 from tf2_ros import (  # noqa: E402
     Buffer,
@@ -209,6 +211,122 @@ class Recorder:
             meta = json.loads(meta_path.read_text())
             meta["frames_written"] = self.written
             meta_path.write_text(json.dumps(meta, indent=2))
+
+
+# ===== INGEST_GATE_2026-09-23 : localization gate (pure, no ROS) =====
+class LocGate:
+    """Delay line with retroactive veto. See deploy script header.
+
+    All times are monotonic seconds on THIS host. Not thread-safe; the node
+    is spun single-threaded, so callbacks and timers never overlap."""
+
+    MODES = ("enforce", "observe", "off")
+
+    def __init__(self, mode="enforce", delay_s=3.0, holdoff_s=3.0,
+                 hb_max_age_s=1.5, tf_max_stale_ms=2000.0, hb_key="localized",
+                 log_every_s=10.0, max_queue=256):
+        if mode not in self.MODES:
+            raise ValueError("loc-gate mode %r" % (mode,))
+        self.mode = mode
+        self.delay_s = float(delay_s)
+        self.holdoff_s = float(holdoff_s)
+        self.hb_max_age_s = float(hb_max_age_s)
+        self.tf_max_stale_ms = float(tf_max_stale_ms)
+        self.hb_key = hb_key
+        self.log_every_s = float(log_every_s)
+        self.max_queue = int(max_queue)
+        self.queue = deque()               # (item, t_recv, tf_stale_ms)
+        self.last_hb = None                # mono time of last heartbeat
+        self.hb_ok = False
+        self.hb_reason = "none"
+        self.last_bad = None               # mono time of latest bad obs
+        self.last_bad_cls = "hb_none"
+        self.win = {}
+        self.tot = {}
+        self._last_log = None
+
+    # -- observations -------------------------------------------------
+    def _bad(self, now, cls):
+        self.last_bad = now
+        self.last_bad_cls = cls
+
+    def on_heartbeat(self, now, payload):
+        self.last_hb = now
+        try:
+            d = json.loads(payload)
+            ok = isinstance(d, dict) and d.get(self.hb_key) is True
+            reason = str((d.get("reason") if isinstance(d, dict) else "")
+                         or ("ok" if ok else "false"))[:24]
+        except Exception:
+            self.hb_ok, self.hb_reason = False, "parse"
+            self._bad(now, "hb_parse")
+            return
+        self.hb_ok, self.hb_reason = ok, reason
+        if not ok:
+            self._bad(now, "hb_false")
+
+    def tick(self, now):
+        if self.last_hb is None:
+            self._bad(now, "hb_none")
+        elif now - self.last_hb > self.hb_max_age_s:
+            self._bad(now, "hb_stale")
+
+    # -- frames ---------------------------------------------------------
+    def _count(self, key):
+        self.win[key] = self.win.get(key, 0) + 1
+        self.tot[key] = self.tot.get(key, 0) + 1
+
+    def enqueue(self, item, now, tf_stale_ms):
+        """Returns items evicted by the size cap (already counted)."""
+        self.queue.append((item, float(now), float(tf_stale_ms)))
+        out = []
+        while len(self.queue) > self.max_queue:
+            out.append(self.queue.popleft()[0])
+            self._count("overflow")
+        return out
+
+    def release(self, now):
+        """-> [(item, verdict)] for every frame older than delay_s.
+        verdict is "pass" or a drop class."""
+        self.tick(now)
+        out = []
+        while self.queue and now - self.queue[0][1] >= self.delay_s:
+            item, t, tf_ms = self.queue.popleft()
+            if tf_ms > self.tf_max_stale_ms:
+                v = "tf_stale"
+            elif self.last_bad is not None and self.last_bad >= t - self.holdoff_s:
+                v = self.last_bad_cls
+            else:
+                v = "pass"
+            self._count(v)
+            out.append((item, v))
+        return out
+
+    # -- logging ------------------------------------------------------
+    @staticmethod
+    def _fmt(c):
+        drops = ",".join("%s:%d" % (k, c[k]) for k in sorted(c) if k != "pass")
+        return "pass=%d drop=%s" % (c.get("pass", 0), drops or "0")
+
+    def log_line(self, now):
+        if self._last_log is None:
+            self._last_log = now
+            return None
+        if now - self._last_log < self.log_every_s:
+            return None
+        if self.last_hb is None:
+            hb = "none"
+        elif now - self.last_hb > self.hb_max_age_s:
+            hb = "stale age=%.1fs" % (now - self.last_hb)
+        else:
+            hb = ("ok" if self.hb_ok else "false(%s)" % self.hb_reason) + \
+                " age=%.1fs" % (now - self.last_hb)
+        line = ("[INGEST_GATE] mode=%s %.0fs %s | total %s | hb=%s | queue=%d"
+                % (self.mode, now - self._last_log, self._fmt(self.win),
+                   self._fmt(self.tot), hb, len(self.queue)))
+        self.win = {}
+        self._last_log = now
+        return line
 
 
 class HttpEmitter:  # PATCH 20260514
@@ -388,6 +506,8 @@ class IngestSubscriber(Node):
         min_move_m: float = 0.05,        # INGEST_SATURATION_2026-07-06
         min_rot_deg: float = 5.0,        # INGEST_SATURATION_2026-07-06
         still_heartbeat_s: float = 2.0,  # INGEST_SATURATION_2026-07-06
+        loc_gate: Optional["LocGate"] = None,  # INGEST_GATE_2026-09-23
+        hb_topic: str = "/albert/loc_heartbeat",
     ):
         super().__init__("rtsm_ingest_subscriber")
 
@@ -424,6 +544,24 @@ class IngestSubscriber(Node):
         )
         self._last_posted_pose = None
         self._post_skipped_still = 0
+        # INGEST_GATE_2026-09-23: localization gate. Heartbeat subscription
+        # and the 10 Hz release timer exist only when the gate is on.
+        self._loc_gate = loc_gate
+        if loc_gate is not None and loc_gate.mode != "off":
+            self._hb_sub = self.create_subscription(
+                _GateString, hb_topic, self._on_loc_heartbeat,
+                QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                           durability=DurabilityPolicy.VOLATILE,
+                           history=HistoryPolicy.KEEP_LAST, depth=10))
+            self._gate_timer = self.create_timer(0.1, self._gate_tick)
+            self.get_logger().info(
+                "[INGEST_GATE] mode=%s topic=%s key=%s delay=%.1fs "
+                "holdoff=%.1fs hb_max_age=%.1fs tf_max_stale=%.0fms"
+                % (loc_gate.mode, hb_topic, loc_gate.hb_key,
+                   loc_gate.delay_s, loc_gate.holdoff_s,
+                   loc_gate.hb_max_age_s, loc_gate.tf_max_stale_ms))
+        else:
+            self.get_logger().info("[INGEST_GATE] mode=off (legacy)")
 
         self._seq = 0
         self._t_start = time.monotonic()
@@ -755,6 +893,17 @@ class IngestSubscriber(Node):
                 if self._motion_gate_says_skip(frame, now_ns):
                     self._post_skipped_still += 1
                     return
+                # INGEST_GATE_2026-09-23: decimator + motion gate have
+                # chosen this frame; the loc gate decides LATER whether it is
+                # posted. Pose bookkeeping advances now so the decimator and
+                # motion gate keep their normal cadence; a veto resets it.
+                if self._loc_gate is not None and self._loc_gate.mode != "off":
+                    self._loc_gate.enqueue(
+                        _gate_dc.replace(frame, rgb=None, depth_mm=None),
+                        time.monotonic(), self._last_pose_stale_ms)
+                    self._last_posted_pose = frame.pose
+                    self._last_post_ns = now_ns
+                    return
                 ok, err = self._http_emitter.post(frame, list(self._camera_info.k))
                 if ok:
                     self._post_ok += 1
@@ -769,6 +918,38 @@ class IngestSubscriber(Node):
                 self._last_post_ns = now_ns
             else:
                 self._post_skipped += 1
+
+    def _on_loc_heartbeat(self, msg):  # INGEST_GATE_2026-09-23
+        self._loc_gate.on_heartbeat(time.monotonic(), msg.data)
+
+    def _gate_tick(self):
+        """10 Hz: release frames past the delay; post (enforce) or count
+        (observe) the clean ones. Never raises into the executor."""
+        g = self._loc_gate
+        try:
+            now = time.monotonic()
+            for fr, verdict in g.release(now):
+                if verdict != "pass":
+                    # Next clean frame must not be motion-suppressed against
+                    # a pose that never reached RTSM.
+                    self._last_posted_pose = None
+                    continue
+                if g.mode != "enforce" or self._camera_info is None:
+                    continue
+                ok, err = self._http_emitter.post(fr, list(self._camera_info.k))
+                if ok:
+                    self._post_ok += 1
+                else:
+                    self._post_fail += 1
+                    if self._post_fail % 30 == 1:
+                        self.get_logger().warn(
+                            f"POST to rtsm-dev failed: {err} "
+                            f"({self._post_fail} fails, {self._post_ok} ok)")
+            line = g.log_line(now)
+            if line:
+                self.get_logger().info(line)
+        except Exception as e:
+            self.get_logger().error(f"[INGEST_GATE] tick failed: {e!r}")
 
     def _maybe_log(self):
         """Log aggregate stats every ~2 s so we don't spam."""
@@ -887,6 +1068,19 @@ def main():
              "seconds (persistence monitoring). 0 = never post while "
              "still. Default: 2.0.",
     )
+    # INGEST_GATE_2026-09-23: localization gate.
+    parser.add_argument(
+        "--loc-gate", choices=["enforce", "observe", "off"], default="enforce",
+        help="enforce (default, fail-closed): post only frames with a clean "
+             "localization heartbeat around them. observe: full gate logic "
+             "and logs, never posts. off: legacy.")
+    parser.add_argument("--hb-topic", default="/albert/loc_heartbeat")
+    parser.add_argument("--hb-key", default="localized",
+                        help="JSON key that must be boolean true")
+    parser.add_argument("--hb-max-age-s", type=float, default=1.5)
+    parser.add_argument("--gate-delay-s", type=float, default=3.0)
+    parser.add_argument("--gate-holdoff-s", type=float, default=3.0)
+    parser.add_argument("--tf-max-stale-ms", type=float, default=2000.0)
     args = parser.parse_args()
 
     recorder = None
@@ -912,6 +1106,12 @@ def main():
         min_move_m=args.min_move_m,                    # INGEST_SATURATION_2026-07-06
         min_rot_deg=args.min_rot_deg,                  # INGEST_SATURATION_2026-07-06
         still_heartbeat_s=args.still_heartbeat_s,      # INGEST_SATURATION_2026-07-06
+        loc_gate=LocGate(  # INGEST_GATE_2026-09-23
+            mode=args.loc_gate, delay_s=args.gate_delay_s,
+            holdoff_s=args.gate_holdoff_s,
+            hb_max_age_s=args.hb_max_age_s,
+            tf_max_stale_ms=args.tf_max_stale_ms, hb_key=args.hb_key),
+        hb_topic=args.hb_topic,
     )
     try:
         rclpy.spin(node)
